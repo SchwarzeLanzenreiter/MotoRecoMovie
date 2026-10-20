@@ -1,0 +1,26 @@
+# 依存・ビルドの結果
+node_modules/
+app/out/
+app/dist/
+# npm run dist で作る（tools/notices.ts）
+app/build/THIRD-PARTY-NOTICES.txt
+
+# 大きなファイル（npm run fetch-assets で出典から取る）
+app/src/renderer/public/models/*.onnx
+app/resources/ffmpeg/
+
+# デバッグに使った動画・音声・描いた画像（個人の走行の映像を含む）
+testdata/seam/*.insv
+testdata/seam/*.insv.json
+testdata/seam/*.png
+testdata/seam/out/
+testdata/seam/out_prev/
+testdata/audio/
+
+# Python の試作の環境と出力
+proto/.venv/
+proto/out/
+__pycache__/
+*.pyc
+
+*.log

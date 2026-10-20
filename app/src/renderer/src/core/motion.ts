@@ -1,0 +1,286 @@
+// ジャイロ積分・取り付け推定・姿勢の平滑化（proto/stabilize.py, proto/mount.py の移植）。
+//
+//   q(t)  : リグ座標→世界座標のカメラ姿勢（ジャイロ積分）
+//   qs(t) : q を車体の軸（ピッチ/ヨー/ロール）ごとにガウス平滑化した姿勢
+//   仮想カメラ = qs · [ロール補完] · [水平補正] · R_mount · R_視点
+import type { Imu } from './insv'
+import { matT, matVec, qConj, qFromRotvec, qMul, qNormalize, qSlerp, qToRotvec, type Mat3, type Quat } from './quat'
+
+/** IMU座標 → リグ座標（X6、映像との突き合わせで推定） */
+export const IMU_TO_RIG: Mat3 = new Float64Array([0, 0, -1, 1, 0, 0, 0, -1, 0])
+
+export interface Orientation {
+  ts: Float64Array // us
+  q: Float64Array // [x,y,z,w]×N
+}
+
+export function integrate(imu: Imu, M: Mat3 = IMU_TO_RIG): Orientation {
+  const n = imu.ts.length
+  const q = new Float64Array(n * 4)
+  const d2r = Math.PI / 180
+  let cur: Quat = [0, 0, 0, 1]
+  let pw = rigRate(imu.gyro, 0, M)
+  q.set(cur, 0)
+  for (let i = 1; i < n; i++) {
+    const w = rigRate(imu.gyro, i, M)
+    const dt = (imu.ts[i] - imu.ts[i - 1]) / 1e6
+    // 中点則: 区間 [i-1, i] の角速度は両端の平均
+    const s = qFromRotvec(((w[0] + pw[0]) / 2) * d2r * dt, ((w[1] + pw[1]) / 2) * d2r * dt, ((w[2] + pw[2]) / 2) * d2r * dt)
+    cur = qMul(cur, s)
+    if ((i & 1023) === 0) cur = qNormalize(cur)
+    q.set(cur, i * 4)
+    pw = w
+  }
+  return { ts: imu.ts, q }
+}
+
+function rigRate(g: Float32Array, i: number, M: Mat3): [number, number, number] {
+  return matVec(M, [g[i * 3], g[i * 3 + 1], g[i * 3 + 2]])
+}
+
+/** 時刻 t [us] の姿勢（球面線形補間） */
+export function sampleQ(o: Orientation, t: number): Quat {
+  const ts = o.ts
+  const n = ts.length
+  if (t <= ts[0]) return Array.from(o.q.subarray(0, 4)) as Quat
+  if (t >= ts[n - 1]) return Array.from(o.q.subarray((n - 1) * 4, n * 4)) as Quat
+  let lo = 0
+  let hi = n - 1
+  while (hi - lo > 1) {
+    const m = (lo + hi) >> 1
+    if (ts[m] <= t) lo = m
+    else hi = m
+  }
+  const a = o.q.subarray(lo * 4, lo * 4 + 4)
+  const b = o.q.subarray(hi * 4, hi * 4 + 4)
+  return qSlerp(a, b, (t - ts[lo]) / (ts[hi] - ts[lo]))
+}
+
+// ---- 取り付け推定 ----
+
+/** 対称3×3行列の固有分解（ヤコビ法）。固有値の昇順で返す */
+export function eigSym3(a: number[][]): { values: number[]; vectors: number[][] } {
+  const A = a.map((r) => r.slice())
+  const V = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1]
+  ]
+  for (let sweep = 0; sweep < 50; sweep++) {
+    let off = 0
+    for (let p = 0; p < 3; p++) for (let q = p + 1; q < 3; q++) off += A[p][q] * A[p][q]
+    if (off < 1e-20) break
+    for (let p = 0; p < 3; p++)
+      for (let q = p + 1; q < 3; q++) {
+        if (Math.abs(A[p][q]) < 1e-30) continue
+        const th = (A[q][q] - A[p][p]) / (2 * A[p][q])
+        const t = Math.sign(th || 1) / (Math.abs(th) + Math.sqrt(th * th + 1))
+        const c = 1 / Math.sqrt(t * t + 1)
+        const s = t * c
+        for (let k = 0; k < 3; k++) {
+          const akp = A[k][p]
+          const akq = A[k][q]
+          A[k][p] = c * akp - s * akq
+          A[k][q] = s * akp + c * akq
+        }
+        for (let k = 0; k < 3; k++) {
+          const apk = A[p][k]
+          const aqk = A[q][k]
+          A[p][k] = c * apk - s * aqk
+          A[q][k] = s * apk + c * aqk
+        }
+        for (let k = 0; k < 3; k++) {
+          const vkp = V[k][p]
+          const vkq = V[k][q]
+          V[k][p] = c * vkp - s * vkq
+          V[k][q] = s * vkp + c * vkq
+        }
+      }
+  }
+  const idx = [0, 1, 2].sort((i, j) => A[i][i] - A[j][j])
+  return { values: idx.map((i) => A[i][i]), vectors: idx.map((i) => [V[0][i], V[1][i], V[2][i]]) }
+}
+
+const cross = (a: number[], b: number[]): [number, number, number] => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0]
+]
+const dot = (a: number[], b: number[]): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+const unit = (a: number[]): [number, number, number] => {
+  const n = Math.hypot(a[0], a[1], a[2])
+  return [a[0] / n, a[1] / n, a[2] / n]
+}
+
+/** 前後の向きを「曲がる側へ倒れる」関係で決めるのに要る、リーン角とヨー角速度の相関の強さ（これより弱ければレンズの向きで決める） */
+export const FWD_MIN_CORR = 0.1
+
+/**
+ * カメラの取り付け姿勢を推定する。戻り値は列 = 車体の右・下・前（リグ座標）の行列（行優先）。
+ * 上方向 = 加速度の平均（バイクはリーン中も合力が車体の鉛直方向）、
+ * 前後の軸 = 0.5秒平均したジャイロの、上方向に垂直な成分の主成分（リーンのロール回転が最大）。
+ * 前後の向き = バイクは曲がる側へ倒れるので、前方の軸まわりのリーン角（ロール角速度の積分）は、右へ曲がる間は右へ倒れる。
+ * この関係（リーン角とヨー角速度の相関 coupling。正しい向きなら負）で決める。レンズが横・上下・後ろを向けて付けてあっても分かる。
+ * 曲がりが少なく関係が弱い（|coupling| < FWD_MIN_CORR）ときだけ、前の決め方（レンズ1 の向き forwardHint に近い方）にする。
+ * byHint = 前の決め方での前後の向きと逆になったか（前の版で作った編集内容との違いの確認用）
+ */
+export function estimateMount(
+  imu: Imu,
+  M: Mat3 = IMU_TO_RIG,
+  forwardHint: number[] = [0, 0, -1]
+): { R: Mat3; ratio: number; coupling: number; by: 'lean' | 'lens'; flippedFromLens: boolean } {
+  const n = imu.ts.length
+  let up = [0, 0, 0]
+  for (let i = 0; i < n; i++) {
+    const a = matVec(M, [imu.acc[i * 3], imu.acc[i * 3 + 1], imu.acc[i * 3 + 2]])
+    up[0] += a[0]
+    up[1] += a[1]
+    up[2] += a[2]
+  }
+  up = unit(up)
+  const C = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0]
+  ]
+  const B = 500
+  for (let s = 0; s + B <= n; s += B) {
+    const m = [0, 0, 0]
+    for (let i = s; i < s + B; i++) {
+      const g = matVec(M, [imu.gyro[i * 3], imu.gyro[i * 3 + 1], imu.gyro[i * 3 + 2]])
+      m[0] += g[0]
+      m[1] += g[1]
+      m[2] += g[2]
+    }
+    const k = dot(m, up)
+    const p = [(m[0] - k * up[0]) / B, (m[1] - k * up[1]) / B, (m[2] - k * up[2]) / B]
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) C[a][b] += p[a] * p[b]
+  }
+  const e = eigSym3(C)
+  let fwd = e.vectors[2]
+  const kk = dot(fwd, up)
+  fwd = unit([fwd[0] - up[0] * kk, fwd[1] - up[1] * kk, fwd[2] - up[2] * kk])
+  const lensSays = dot(fwd, forwardHint) < 0 // 前の決め方: レンズ1 の向きに近い方
+  const coupling = leanYawCoupling(imu, M, fwd, up)
+  const by = Math.abs(coupling) >= FWD_MIN_CORR ? 'lean' : 'lens'
+  const flip = by === 'lean' ? coupling > 0 : lensSays
+  if (flip) fwd = [-fwd[0], -fwd[1], -fwd[2]]
+  const right = cross(fwd, up)
+  const down = [-up[0], -up[1], -up[2]]
+  const R = new Float64Array([right[0], down[0], fwd[0], right[1], down[1], fwd[1], right[2], down[2], fwd[2]])
+  return { R, ratio: e.values[2] / Math.max(e.values[1], 1e-12), coupling: flip ? -coupling : coupling, by, flippedFromLens: flip !== lensSays }
+}
+
+/**
+ * 軸 fwd まわりのリーン角（ロール角速度を 100Hz で積分し、10 秒の移動平均を引いてドリフトを除いたもの）と、
+ * 上方向 up まわりのヨー角速度の相関係数。fwd が本当の前方なら負（右へ曲がる = 上から見て時計回り = ヨー負の間、右へ倒れる = ロール正）
+ */
+export function leanYawCoupling(imu: Imu, M: Mat3, fwd: number[], up: number[]): number {
+  const n = imu.ts.length
+  if (n < 2) return 0
+  const rate = (n - 1) / ((imu.ts[n - 1] - imu.ts[0]) / 1e6)
+  const B = Math.max(1, Math.round(rate / 100)) // 100Hz にまとめる
+  const m = Math.floor(n / B)
+  const roll = new Float64Array(m)
+  const yaw = new Float64Array(m)
+  for (let b = 0; b < m; b++) {
+    let r = 0
+    let y = 0
+    for (let i = b * B; i < (b + 1) * B; i++) {
+      const g = matVec(M, [imu.gyro[i * 3], imu.gyro[i * 3 + 1], imu.gyro[i * 3 + 2]])
+      r += dot(g, fwd)
+      y += dot(g, up)
+    }
+    roll[b] = r / B
+    yaw[b] = y / B
+  }
+  const ang = new Float64Array(m)
+  for (let i = 1; i < m; i++) ang[i] = ang[i - 1] + roll[i] / 100
+  const cs = new Float64Array(m + 1)
+  for (let i = 0; i < m; i++) cs[i + 1] = cs[i] + ang[i]
+  const W = 1000
+  let sxy = 0
+  let sxx = 0
+  let syy = 0
+  for (let i = 0; i < m; i++) {
+    const a = Math.max(0, i - W / 2)
+    const b = Math.min(m, i + W / 2)
+    const lean = ang[i] - (cs[b] - cs[a]) / (b - a)
+    sxy += lean * yaw[i]
+    sxx += lean * lean
+    syy += yaw[i] * yaw[i]
+  }
+  return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0
+}
+
+// ---- 平滑化 ----
+
+/**
+ * times [us] の各時刻について、周囲の姿勢を車体の軸ごとのガウス窓で平均した姿勢を返す（位相遅れなし）。
+ * sigma = [ピッチ, ヨー, ロール] 秒。axes = R_mount（列 = 車体の右・下・前）。
+ */
+export function smooth(
+  o: Orientation,
+  times: Float64Array,
+  sigma: [number, number, number],
+  axes: Mat3 | ((t: number) => Mat3),
+  stepUs = 5000
+): Float64Array {
+  const smax = Math.max(...sigma)
+  const half = Math.ceil((3 * smax * 1e6) / stepUs)
+  const w: number[][] = [[], [], []]
+  for (let j = 0; j < 3; j++) {
+    let sum = 0
+    for (let k = -half; k <= half; k++) {
+      const dt = (k * stepUs) / 1e6
+      const v = Math.exp(-0.5 * (dt / Math.max(sigma[j], 1e-6)) ** 2)
+      w[j].push(v)
+      sum += v
+    }
+    w[j] = w[j].map((v) => v / sum)
+  }
+  // 等間隔グリッド上の姿勢を前計算
+  const tmin = times[0] - (half + 2) * stepUs
+  const tmax = times[times.length - 1] + (half + 2) * stepUs
+  const ng = Math.floor((tmax - tmin) / stepUs) + 1
+  const grid = new Float64Array(ng * 4)
+  for (let i = 0; i < ng; i++) grid.set(sampleQ(o, tmin + i * stepUs), i * 4)
+  // 車体の軸（取り付け姿勢が時間で変わるときは、その時刻のもの）
+  const axesAt = typeof axes === 'function' ? axes : (): Mat3 => axes
+  const out = new Float64Array(times.length * 4)
+  for (let f = 0; f < times.length; f++) {
+    const t = times[f]
+    const ax = axesAt(t)
+    const axT = matT(ax) // 行 = 車体の右・下・前
+    const center = sampleQ(o, t)
+    const ci = qConj(center)
+    const c = Math.round((t - tmin) / stepUs)
+    let a0 = 0
+    let a1 = 0
+    let a2 = 0
+    for (let k = -half; k <= half; k++) {
+      const gi = Math.min(Math.max(c + k, 0), ng - 1)
+      const rel = qToRotvec(qMul(ci, grid.subarray(gi * 4, gi * 4 + 4)))
+      const b = matVec(axT, rel) // 車体の軸成分
+      const wi = k + half
+      a0 += w[0][wi] * b[0]
+      a1 += w[1][wi] * b[1]
+      a2 += w[2][wi] * b[2]
+    }
+    const avg = matVec(ax, [a0, a1, a2])
+    out.set(qMul(center, qFromRotvec(avg[0], avg[1], avg[2])), f * 4)
+  }
+  return out
+}
+
+/** フレーム中央を基準に、読み出し中の K 時刻の相対回転（回転ベクトル, リグ座標）を返す */
+export function readoutRotations(o: Orientation, tc: number, readoutUs: number, K = 17): Float32Array {
+  const qc = qConj(sampleQ(o, tc))
+  const out = new Float32Array(K * 3)
+  for (let k = 0; k < K; k++) {
+    const t = tc + (k / (K - 1) - 0.5) * readoutUs
+    const r = qToRotvec(qMul(qc, sampleQ(o, t)))
+    out.set(r, k * 3)
+  }
+  return out
+}
