@@ -20,7 +20,7 @@ let nextId = 1
 const api = {
   openDialog: (opts: Electron.OpenDialogOptions): Promise<string[] | null> => ipcRenderer.invoke('dialog:open', opts),
   saveDialog: (opts: Electron.SaveDialogOptions): Promise<string | null> => ipcRenderer.invoke('dialog:save', opts),
-  runFfmpeg: (args: string[]): Promise<{ code: number; log: string }> => ipcRenderer.invoke('ffmpeg:run', args),
+  runFfmpeg: (args: string[], opts?: { background?: boolean }): Promise<{ code: number; log: string }> => ipcRenderer.invoke('ffmpeg:run', args, opts),
   /** App cache folder (tidied audio, etc.) */
   cacheDir: (): Promise<string> => ipcRenderer.invoke('app:cacheDir'),
 

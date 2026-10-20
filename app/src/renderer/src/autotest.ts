@@ -253,7 +253,7 @@ export async function runAutotest(): Promise<void> {
           console.log(`Drag ${step.dragHandle} (${step.dx}, ${step.dy}) →`, JSON.stringify(st().rects))
         } else if (step.print) {
           const x = st()
-          console.log(`[${step.print}] frame ${x.frame} playing ${x.playing} fps ${(x.fps as number)?.toFixed(1)} A/V offset ${x.av === null ? '-' : (x.av as number).toFixed(1) + 'ms'} audio ${JSON.stringify(x.audio)}`)
+          console.log(`[${step.print}] frame ${x.frame} playing ${x.playing} fps ${(x.fps as number)?.toFixed(1)} A/V offset ${x.av === null ? '-' : (x.av as number).toFixed(1) + 'ms'} audio ${JSON.stringify(x.audio)} busy seam ${!!x.seamBusy} sound ${!!x.audioBusy} body ${!!x.bodyBusy} ${x.audioMsg ?? ""}`)
         } else if (step.raf) {
           // Number of drawn frames (requestAnimationFrame) in 1 second (to check that the screen is being redrawn)
           let n = 0

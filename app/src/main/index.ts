@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type MenuItemConstruc
 import { dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { constants, setPriority, tmpdir } from 'node:os'
 import { JA_MENU } from '../renderer/src/i18n/ja-menu'
 
 // In automated tests, use a temporary folder as the user data so the real history and settings are not polluted.
@@ -93,9 +93,17 @@ ipcMain.handle('app:cacheDir', async () => {
   await mkdir(dir, { recursive: true })
   return dir
 })
-ipcMain.handle('ffmpeg:run', async (_e, args: string[]) => {
+// background: work built ahead of time (the tidied audio). It runs at idle priority so that playback keeps the CPU
+ipcMain.handle('ffmpeg:run', async (_e, args: string[], opts?: { background?: boolean }) => {
   return await new Promise<{ code: number; log: string }>((resolve) => {
     const p = spawn(ffmpegPath(), args, { windowsHide: true })
+    if (opts?.background && p.pid !== undefined) {
+      try {
+        setPriority(p.pid, constants.priority.PRIORITY_LOW)
+      } catch {
+        /* runs at normal priority */
+      }
+    }
     let log = ''
     p.stderr.on('data', (d) => {
       log = (log + d.toString()).slice(-8000)

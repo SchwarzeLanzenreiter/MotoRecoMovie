@@ -644,7 +644,7 @@ export function App(): React.JSX.Element {
           }
           const a = await buildFxAudio(s, fx, (frac, msg) => {
             if (audioJob.current === job) setAudioStatus({ busy: true, frac, msg })
-          }, job.signal)
+          }, job.signal, () => !player.current?.isPlaying)
           if (audioJob.current !== job) {
             await a.file.close()
             return
