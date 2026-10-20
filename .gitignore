@@ -9,13 +9,8 @@ app/build/THIRD-PARTY-NOTICES.txt
 app/src/renderer/public/models/*.onnx
 app/resources/ffmpeg/
 
-# デバッグに使った動画・音声・描いた画像（個人の走行の映像を含む）
-testdata/seam/*.insv
-testdata/seam/*.insv.json
-testdata/seam/*.png
-testdata/seam/out/
-testdata/seam/out_prev/
-testdata/audio/
+# デバッグに使った場面集・動画・音声（個人の走行の映像を含む。手元だけに置く）
+testdata/
 
 # Python の試作の環境と出力
 proto/.venv/

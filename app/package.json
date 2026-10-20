@@ -13,7 +13,7 @@
     "notices": "tsx tools/notices.ts",
     "fetch-assets": "tsx tools/fetch-assets.ts"
   },
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "devDependencies": {
     "@types/node": "^26.6.5",
@@ -74,5 +74,6 @@
         "to": "THIRD-PARTY-NOTICES.txt"
       }
     ]
-  }
+  },
+  "author": "SchwarzeLanzenreiter"
 }

@@ -33,9 +33,10 @@ npm run dev
 | `app/` | アプリ（`src/main` Electron の本体、`src/preload`、`src/renderer` 画面と処理）、`test/`、`tools/` |
 | `docs/` | 仕組みと調べた結果 |
 | `proto/` | Python の試作（.insv の読み込み・レンズ・同期・リーン角の融合） |
-| `testdata/seam/` | つなぎ目の問題が出た場面の一覧（`cases.json`）。動画は個人の走行の映像なのでリポジトリに入れていない |
 
 ## ライセンス
+
+このアプリのソースコードは MIT License（[LICENSE](LICENSE)）。
 
 ほかの人が作ったソフトウェアとデータ（ffmpeg、AI のモデル、npm のパッケージ、Electron など）のライセンスは、
 `npm run notices` で作る `app/build/THIRD-PARTY-NOTICES.txt`（配布物ではアプリと同じフォルダ、アプリのメニューの「ヘルプ › ライセンス情報…」）にまとめている。
