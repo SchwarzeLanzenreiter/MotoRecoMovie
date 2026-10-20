@@ -10,7 +10,7 @@ import { mergeDirector, type DirectorSettings } from './director'
 import { mergeIncident, type IncidentSettings } from './incident'
 import { DEFAULT_AUDIO_FX, type AudioFx } from '../core/audiofx'
 import { t } from '../i18n'
-import { newId, newViewLayer, viewAt, type Border, type ExportSettings, type Keyframe, type Layer, type OverlayLayer, type Project, type Rect, type StabSettings, type ViewLayer, type WidgetKind } from './project'
+import { newId, newViewLayer, REMOVED_WIDGETS, viewAt, type Border, type ExportSettings, type Keyframe, type Layer, type OverlayLayer, type Project, type Rect, type StabSettings, type ViewLayer, type WidgetKind } from './project'
 
 export const SETTINGS_EXT = '.motorecomovie-settings.json'
 /** ファイルを作ったアプリ。前の名前（Insta360 Reframe）のときのファイルも読む */
@@ -134,10 +134,12 @@ export function applySettings(p: Project, s: SettingsFile, sameName: (a: string,
   s.layers.forEach((x, i) => {
     if (x.type === 'view' && !match.get(i) && !x.role) match.set(i, take((l) => !l.role))
   })
-  const layers: Layer[] = s.layers.map((x, i): Layer => {
+  const layers: Layer[] = s.layers.flatMap((x, i): Layer[] => {
+    // 削除した重ね表示（メーター一式・速度計〜外気温）は入れない
+    if (x.type === 'overlay' && REMOVED_WIDGETS.includes(x.widget as string)) return []
     if (x.type === 'overlay') {
       const o: OverlayLayer = { id: newId(), type: 'overlay', name: x.name, rect: { ...x.rect }, visible: x.visible, widget: x.widget, props: structuredClone(x.props ?? {}) }
-      return o
+      return [o]
     }
     const old = match.get(i)
     // 向きが動いている先のレイヤーはキーフレームを残す。そうでなければファイルの向きにする
@@ -156,7 +158,7 @@ export function applySettings(p: Project, s: SettingsFile, sameName: (a: string,
       ...(x.signAhead !== undefined && { signAhead: x.signAhead }),
       ...(x.role && { role: x.role })
     }
-    return v
+    return [v]
   })
   // 視点レイヤーが 1 つも無い設定ファイルなら、今の視点レイヤーを残す（映像が出なくならないように）
   const hasView = layers.some((l) => l.type === 'view')

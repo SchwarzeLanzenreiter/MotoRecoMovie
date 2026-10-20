@@ -137,7 +137,7 @@ function DirectorSection(p: Props): React.JSX.Element {
   const set = <K extends keyof DirectorSettings>(k: K, v: Partial<DirectorSettings[K]>): void =>
     p.onUpdateDirector({ ...d, [k]: typeof v === 'object' ? { ...(d[k] as object), ...v } : v })
   const [range, setRange] = useState<'export' | 'all'>('export')
-  const Rule = ({ k, label }: { k: 'corner' | 'brake' | 'accel' | 'cruise' | 'stop'; label: string }): React.JSX.Element => (
+  const Rule = ({ k, label }: { k: 'corner' | 'cruise' | 'stop'; label: string }): React.JSX.Element => (
     <label className="rule">
       <input type="checkbox" checked={d[k].on} disabled={!p.hasRiding} onChange={(e) => set(k, { on: e.target.checked })} /> {label}
     </label>
@@ -151,8 +151,6 @@ function DirectorSection(p: Props): React.JSX.Element {
       {p.ridingFromImu && <div className="note status">{t('車両ログが無いので、動画の動き（ジャイロと加速度）から推定した走行状態を使います。ログがあるときより精度は落ちます。')}</div>}
       <div className="rules">
         <Rule k="corner" label={t('コーナー進入の演出')} />
-        <Rule k="brake" label={t('減速で前方の下へ寄る')} />
-        <Rule k="accel" label={t('加速で前方をズーム')} />
         <Rule k="cruise" label={t('長い巡航で左右の景色')} />
         <Rule k="stop" label={t('停止で広角の景色')} />
       </div>
@@ -175,7 +173,6 @@ function DirectorSection(p: Props): React.JSX.Element {
       </div>
       <Slider name={t('②〜④の間隔')} value={d.corner.special.every} min={1} max={8} step={1} unit={t('本')} disabled={!d.corner.on} onChange={(x) => set('corner', { special: { ...d.corner.special, every: x } })} />
       <Slider name={t('②〜④の対象')} value={d.corner.special.minDur} min={1} max={8} step={0.5} unit="s" disabled={!d.corner.on} onChange={(x) => set('corner', { special: { ...d.corner.special, minDur: x } })} />
-      <Slider name={t('ズームの量')} value={-d.accel.fovDelta} min={0} max={40} step={1} unit="°" disabled={!d.accel.on} onChange={(x) => set('accel', { fovDelta: -x })} />
       <Slider name={t('景色の間隔')} value={d.cruise.interval} min={8} max={60} step={1} unit="s" disabled={!d.cruise.on} onChange={(x) => set('cruise', { interval: x })} />
       <div className="rules">
         <label className="rule">

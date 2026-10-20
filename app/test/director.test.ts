@@ -27,11 +27,12 @@ const marker: Marker = { id: 'm', t: 40, yaw: -100, pitch: -5, fov: 90, hold: 3 
 const { keyframes } = generateKeyframes([{ t: 0, yaw: 0, pitch: 0, fov: 110, leanRatio: 1 }], r, [marker], S, 0, 60)
 const at = (t: number) => viewAt(keyframes, t)
 assert.equal(at(5).yaw, 0) // 巡航（最初の景色は interval/2=10 秒後なので、10 秒未満の巡航には入らない）
-assert.equal(at(12).pitch, 8) // 減速: 少し下を向く
-assert.equal(at(12).fov, 98)
+// 減速・加速では切り替えない（前方のまま。2026-10-20 に削除）
+assert.equal(at(12).pitch, 0)
+assert.equal(at(12).fov, 110)
 assert.equal(at(18).yaw, 18) // 右コーナー: 最大リーン 30° × 0.6
-assert.equal(at(21.5).yaw, 0) // 加速: 自分は映さず前方をズームイン
-assert.equal(at(21.5).fov, 95)
+assert.equal(at(21.5).yaw, 0)
+assert.equal(at(21.5).fov, 110)
 assert.equal(at(41).yaw, -100) // 注目ポイント
 assert.equal(at(35).yaw, 75) // 長い巡航（23秒〜）: 23+10=33 秒から右の景色
 assert.equal(at(55).yaw, -75) // 次の景色（53秒〜）は左右交互で左
@@ -43,10 +44,12 @@ assert.ok(mid > 0 && mid < 18, `切り替え途中のはず: ${mid}`)
 const existing = [{ t: 0, yaw: 0, pitch: 0, fov: 110, leanRatio: 1 }, { t: 50, yaw: 90, pitch: 0, fov: 110, leanRatio: 1 }]
 const part = generateKeyframes(existing, r, [], S, 10, 30).keyframes
 assert.ok(part.some((k) => k.t === 50 && k.yaw === 90))
-assert.equal(viewAt(part, 12).pitch, 8)
+assert.equal(viewAt(part, 18).yaw, 18)
 // 短いショットは捨てる
-const short = resolveShots(makeShots({ ...r, segments: [{ state: 'brake', start: 1, end: 2.1 }] }, [], { ...S, brake: { ...S.brake, minDur: 0 } }, 0, 10), S, 0, 10)
-assert.ok(short.every((x) => x.shot.kind !== 'brake'), '1.1秒の減速は捨てる')
+const short = resolveShots(makeShots({ ...r, segments: [{ state: 'stop', start: 1, end: 2.1 }] }, [], { ...S, stop: { ...S.stop, minDur: 0 } }, 0, 10), S, 0, 10)
+assert.ok(short.every((x) => x.shot.kind !== 'stop'), '1.1秒の停止は捨てる')
+// 以前の設定（減速・加速）が保存されていても読める
+assert.ok(!('brake' in mergeDirector({ brake: { on: true }, accel: { on: true } } as never)))
 // ---- コーナー進入の3パターン: 長いコーナー2本ごとに ② ライダー と ③ 真横 を交互に ----
 const corners: RidingTrack['segments'] = []
 const pk2 = new Float32Array(n)
@@ -98,8 +101,8 @@ assert.deepEqual([8, 20].map((t) => viewAt(g5, t).yaw), [-90, 90]) // ④ だけ
   const short: RidingTrack = { ...r, peakLean: pk2, segments: [{ state: 'corner', start: 5, end: 7 }] }
   const gc = generateKeyframes([], short, [], S, 0, 20, [], V).keyframes
   assert.deepEqual(viewAt(gc, 6.5), { yaw: 20, pitch: -5, fov: 120, leanRatio: 0.5 }, 'コーナー入口')
-  // 減速・加速は前方を元にする
-  assert.equal(viewAt(generateKeyframes([], r, [], S, 0, 60, [], V).keyframes, 12).fov, 100 + S.brake.fovDelta)
+  // 減速の間も前方のまま
+  assert.equal(viewAt(generateKeyframes([], r, [], S, 0, 60, [], V).keyframes, 12).fov, 100)
   // キーフレームの印（タイムラインの色分け）: 前方・コーナー入口・側方・後方
   const tags = new Set(g.map((k) => k.tag))
   assert.ok(tags.has('front') && tags.has('side') && tags.has('rear'), [...tags].join(','))

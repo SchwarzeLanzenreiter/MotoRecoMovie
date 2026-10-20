@@ -25,7 +25,7 @@ export interface Marker {
  * 向き（yaw）は車体の正面を 0°、右を正とした角度
  */
 export interface ShotViews {
-  /** 前方（基本の視点）。減速・加速・停止・巡航の景色は、これを元に少し変える */
+  /** 前方（基本の視点）。停止・巡航の景色は、これを元に少し変える */
   front: View
   /**
    * コーナー入口（① 内側を少し向く）: 前方の向きから、リーン角 × gain（最大 max°）だけ内側を向く。
@@ -92,9 +92,6 @@ export interface DirectorSettings {
     /** side = ③ 真横・内側、sideOut = ④ 真横・外側（視点は ShotViews） */
     special: { rider: boolean; side: boolean; sideOut: boolean; every: number; minDur: number; maxDur: number }
   }
-  brake: { on: boolean; minDur: number; pitch: number; fovDelta: number }
-  /** 加速: 前方を少しズームイン（画角を fovDelta だけ狭める） */
-  accel: { on: boolean; minDur: number; maxDur: number; fovDelta: number }
   cruise: { on: boolean; interval: number; duration: number; yaw: number; fov: number }
   stop: { on: boolean; minDur: number; pitch: number; fov: number }
   /**
@@ -115,8 +112,6 @@ export const DEFAULT_DIRECTOR: DirectorSettings = {
   transition: 0.8,
   minShot: 1.2,
   corner: { on: true, special: { rider: true, side: true, sideOut: true, every: 2, minDur: 2.5, maxDur: 5 } },
-  brake: { on: true, minDur: 1.0, pitch: 8, fovDelta: -12 },
-  accel: { on: true, minDur: 1.5, maxDur: 6, fovDelta: -15 },
   cruise: { on: true, interval: 20, duration: 4, yaw: 75, fov: 100 },
   stop: { on: true, minDur: 3, pitch: -12, fov: 130 },
   overtake: { on: false, yaw: 0, pitch: 40, fov: 80, minSpeed: 40 }
@@ -127,8 +122,9 @@ export function mergeDirector(saved: Partial<DirectorSettings> | undefined): Dir
   const d = structuredClone(DEFAULT_DIRECTOR)
   if (!saved) return d
   // 以前は視点（基本の視点・コーナーの内側への量・真横とライダーの画角）もここに持っていた。今はアプリの設定（ShotViews）なので捨てる
+  // 減速（前方の下へ寄る）・加速（前方をズーム）の切り替えは削除した（2026-10-20）。保存されていても捨てる
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { base: _base, ...rest } = saved as Partial<DirectorSettings> & { base?: unknown }
+  const { base: _base, brake: _brake, accel: _accel, ...rest } = saved as Partial<DirectorSettings> & { base?: unknown; brake?: unknown; accel?: unknown }
   const sp = { ...saved.corner?.special } as Record<string, unknown>
   delete sp.riderFov
   delete sp.sideFov
@@ -139,8 +135,6 @@ export function mergeDirector(saved: Partial<DirectorSettings> | undefined): Dir
       on: saved.corner?.on ?? d.corner.on,
       special: { ...d.corner.special, ...(sp as Partial<DirectorSettings['corner']['special']>) }
     },
-    brake: { ...d.brake, ...saved.brake },
-    accel: { on: saved.accel?.on ?? d.accel.on, minDur: d.accel.minDur, maxDur: d.accel.maxDur, fovDelta: saved.accel?.fovDelta ?? d.accel.fovDelta },
     cruise: { ...d.cruise, ...saved.cruise },
     stop: { ...d.stop, ...saved.stop },
     overtake: { ...d.overtake, ...saved.overtake }
@@ -148,15 +142,13 @@ export function mergeDirector(saved: Partial<DirectorSettings> | undefined): Dir
 }
 
 /** ショットの種類と優先度（大きいほど優先） */
-export const SHOT_PRIORITY = { overtake: 7, marker: 6, brake: 5, accel: 4, cornerRider: 3, cornerSide: 3, cornerSideOut: 3, corner: 3, stop: 2, cruise: 1, base: 0 } as const
+export const SHOT_PRIORITY = { overtake: 7, marker: 6, cornerRider: 3, cornerSide: 3, cornerSideOut: 3, corner: 3, stop: 2, cruise: 1, base: 0 } as const
 export type ShotKind = keyof typeof SHOT_PRIORITY
 
 /** ショットの種類 → キーフレームの印（前方・コーナー入口・側方・後方・追い越し。注目ポイントは手で置いたものと同じ扱い） */
 export const SHOT_TAG: Record<ShotKind, Keyframe['tag']> = {
   overtake: 'overtake',
   marker: undefined,
-  brake: 'front',
-  accel: 'front',
   stop: 'front',
   base: 'front',
   corner: 'corner',
@@ -169,8 +161,6 @@ export const SHOT_TAG: Record<ShotKind, Keyframe['tag']> = {
 export const SHOT_NAMES: Record<ShotKind, string> = {
   overtake: '追い越し', // i18n-ignore
   marker: '注目ポイント', // i18n-ignore
-  brake: '減速', // i18n-ignore
-  accel: '加速（前方ズーム）', // i18n-ignore
   corner: 'コーナー①内側', // i18n-ignore
   cornerRider: 'コーナー②ライダー', // i18n-ignore
   cornerSide: 'コーナー③真横（内側）', // i18n-ignore
@@ -264,19 +254,6 @@ export function makeShots(
       if (Math.abs(cv.yaw - B.yaw) >= 3 || differs) shots.push({ kind: 'corner', start: x.start, end: x.end, view: cv })
     }
   }
-  if (s.brake.on) {
-    for (const x of seg('brake')) {
-      if (x.end - x.start < s.brake.minDur) continue
-      shots.push({ kind: 'brake', start: x.start, end: x.end, view: { ...B, pitch: B.pitch + s.brake.pitch, fov: B.fov + s.brake.fovDelta } })
-    }
-  }
-  if (s.accel.on) {
-    for (const x of seg('accel')) {
-      if (x.end - x.start < s.accel.minDur) continue
-      // 自分は映さず、前方の景色を少しズームイン
-      shots.push({ kind: 'accel', start: x.start, end: Math.min(x.end, x.start + s.accel.maxDur), view: { ...B, fov: B.fov + s.accel.fovDelta } })
-    }
-  }
   if (s.stop.on) {
     for (const x of seg('stop')) {
       if (x.end - x.start < s.stop.minDur) continue
@@ -323,7 +300,7 @@ export function resolveShots(shots: Shot[], s: DirectorSettings, t0: number, t1:
   for (let pass = 0; pass < 3; pass++) {
     const out: typeof runs = []
     for (const r of runs) {
-      // 一瞬だけ前方に戻る（例: 特別ショットの後に 0.3 秒だけ前方を挟んで減速へ）のもちらつきなので、前方も対象にする
+      // 一瞬だけ前方に戻る（例: 特別ショットの後に 0.3 秒だけ前方を挟んで次のショットへ）のもちらつきなので、前方も対象にする
       const short = r.end - r.start < s.minShot && r.shot.kind !== 'marker'
       const prev = out[out.length - 1]
       if (short && prev) prev.end = r.end

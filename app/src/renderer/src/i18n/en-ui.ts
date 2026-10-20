@@ -5,7 +5,7 @@ export const EN_UI: Record<string, string> = {
   'コーナー入口': 'Corner entry',
   '側方': 'Side',
   '後方': 'Rear',
-  '基本の視点です。減速・加速・停止・巡航の景色は、これを元に少し変えます。': 'The basic view. Braking, acceleration, stops and cruise scenery are small changes from it.',
+  '基本の視点です。停止・巡航の景色は、これを元に少し変えます。': 'The basic view. Stop and cruise scenery are small changes from it.',
   'コーナーに入るとき、前方の向きからリーン角 × 内側への量だけ内側を向きます（最大の角度まで）。': 'When entering a corner, the view turns inward from the front direction by lean angle × inward amount (up to the maximum angle).',
   '長いコーナーで挟む真横の視点です。コーナーの内側（③）と外側（④）へ、この角度だけ横を向きます。': 'Side view inserted in long corners. It turns this far toward the inside (③) or outside (④) of the corner.',
   '長いコーナーで挟む、自分を映す視点です。': 'View of yourself inserted in long corners.',

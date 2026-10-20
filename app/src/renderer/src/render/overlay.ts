@@ -3,7 +3,6 @@ import { CHANNELS, sampleAll, sampleChannel, type ChannelKey, type Telemetry } f
 import { STATES, weightsAt } from '../core/riding'
 import type { OverlayLayer, Rect, WidgetKind } from '../engine/project'
 import type { PixelRect } from './gl-reframe'
-import { DEFAULT_METER_OPTS, drawDashboard, drawSingleMeter, type MeterKind, type MeterOpts } from './meters'
 import { drawCompass, drawElevation, drawMap } from './gps'
 import { DEFAULT_CHRONO, drawChrono, type ChronoOpts } from './chrono'
 import { DEFAULT_CYBER, drawCyber, type CyberOpts } from './cyber'
@@ -69,25 +68,8 @@ const readout: Widget = (g, r, f) => {
   })
 }
 
-const opts = (props: Record<string, unknown>): MeterOpts => ({ ...DEFAULT_METER_OPTS, ...(props as Partial<MeterOpts>) })
-
-/** 走行状態の重みから、個別メーターの強調の強さを決める（例: コーナリング中はリーン計が光る） */
+/** 走行状態の重みの並び（STATES の順）の番号 */
 const W = Object.fromEntries(STATES.map((s, i) => [s, i])) as Record<(typeof STATES)[number], number>
-const emphasis: Record<MeterKind, (w: number[]) => number> = {
-  speed: (w) => 0.4 * (w[W.accel] + w[W.brake]),
-  gear: (w) => w[W.accel],
-  rpm: (w) => w[W.accel],
-  lean: (w) => w[W.corner],
-  gforce: (w) => w[W.accel] + w[W.brake],
-  temp: (w) => w[W.stop]
-}
-
-const single =
-  (kind: MeterKind): Widget =>
-  (g, r, f, props) => {
-    if (!f.telemetry) return noLog(g, r, f.lang)
-    drawSingleMeter(g, kind, r, f.values, opts(props), f.peakLean, emphasis[kind](f.weights))
-  }
 
 function noLog(g: Ctx, r: PixelRect, lang: Lang): void {
   g.fillStyle = 'rgba(10, 12, 16, 0.55)'
@@ -98,11 +80,6 @@ function noLog(g: Ctx, r: PixelRect, lang: Lang): void {
   g.textBaseline = 'middle'
   g.fillText(tr(lang, '車両ログなし'), r.x + r.w / 2, r.y + r.h / 2)
   g.textAlign = 'left'
-}
-
-const dashboard: Widget = (g, r, f, props) => {
-  if (!f.telemetry) return noLog(g, r, f.lang)
-  drawDashboard(g, r, f.values, opts(props), f.weights, f.peakLean)
 }
 
 const chrono: Widget = (g, r, f, props) => {
@@ -246,26 +223,12 @@ const WIDGETS: Record<WidgetKind, Widget> = {
   map: (g, r, f, props) => drawMap(g, r, f.telemetry, f.t, props, f.lang),
   elevation: (g, r, f, props) => drawElevation(g, r, f.telemetry, f.t, props, f.lang),
   compass: (g, r, f, props) => drawCompass(g, r, f.telemetry, f.t, props, f.lang),
-  dashboard,
-  speed: single('speed'),
-  gear: single('gear'),
-  rpm: single('rpm'),
-  lean: single('lean'),
-  gforce: single('gforce'),
-  temp: single('temp'),
   readout
 }
 
 export const WIDGET_NAMES: Record<WidgetKind, string> = {
   chrono: 'クロノグラフ風メーター', // i18n-ignore
   cyber: 'サイバー風メーター', // i18n-ignore
-  dashboard: 'メーター一式（走行状態で切り替え）', // i18n-ignore
-  speed: '速度計', // i18n-ignore
-  rpm: '回転計', // i18n-ignore
-  gear: 'ギア', // i18n-ignore
-  lean: 'リーンアングル', // i18n-ignore
-  gforce: '前後G', // i18n-ignore
-  temp: '外気温', // i18n-ignore
   map: '地図', // i18n-ignore
   elevation: '標高プロファイル', // i18n-ignore
   compass: '方位帯', // i18n-ignore
@@ -278,8 +241,8 @@ export type PropDef =
   | { key: string; label: string; type: 'number'; min: number; max: number; step: number; unit?: string; default: number }
 
 const RPM_PROPS: PropDef[] = [
-  { key: 'rpmMax', label: '回転計の上限', type: 'number', min: 4000, max: 16000, step: 500, unit: 'rpm', default: DEFAULT_METER_OPTS.rpmMax }, // i18n-ignore
-  { key: 'rpmRed', label: 'レッドゾーン', type: 'number', min: 3000, max: 16000, step: 250, unit: 'rpm', default: DEFAULT_METER_OPTS.rpmRed } // i18n-ignore
+  { key: 'rpmMax', label: '回転計の上限', type: 'number', min: 4000, max: 16000, step: 500, unit: 'rpm', default: 9000 }, // i18n-ignore
+  { key: 'rpmRed', label: 'レッドゾーン', type: 'number', min: 3000, max: 16000, step: 250, unit: 'rpm', default: 8000 } // i18n-ignore
 ]
 
 export const WIDGET_PROPS: Partial<Record<WidgetKind, PropDef[]>> = {
@@ -313,8 +276,6 @@ export const WIDGET_PROPS: Partial<Record<WidgetKind, PropDef[]>> = {
     { key: 'brakeMax', label: 'ブレーキ圧の上限', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_CYBER.brakeMax }, // i18n-ignore
     { key: 'leanMax', label: 'リーンの目盛り', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_CYBER.leanMax } // i18n-ignore
   ],
-  dashboard: RPM_PROPS,
-  rpm: RPM_PROPS,
   map: [
     {
       key: 'mode',
@@ -356,24 +317,6 @@ export function defaultWidgetRect(w: WidgetKind, aspect: number): Rect {
     case 'chrono':
     case 'cyber': // サイバー風もクロノグラフ風と同じ丸い配置
       return box(tall ? 0.5 : 0.84, tall ? 0.78 : 0.72, 0.42, 0.42)
-    case 'dashboard': {
-      // メーター一式の縦横比（100:34）を保ち、下端から少し離して置く
-      const w = tall ? 0.94 : 0.6
-      const h = (w * aspect * 34) / 100
-      return { x: (1 - w) / 2, y: 1 - h - 0.02, w, h }
-    }
-    case 'speed':
-      return box(0.5, 0.86, 0.3, 0.19)
-    case 'gear':
-      return box(0.68, 0.86, 0.12, 0.15)
-    case 'rpm':
-      return box(0.5, 0.7, 0.45, 0.12)
-    case 'lean':
-      return box(0.16, 0.8, 0.32, 0.28)
-    case 'gforce':
-      return box(0.9, 0.75, 0.1, 0.3)
-    case 'temp':
-      return box(0.9, 0.08, 0.16, 0.065)
     case 'map':
       return box(0.88, 0.2, 0.3, 0.3)
     case 'elevation':

@@ -97,7 +97,10 @@ export interface ViewLayer extends LayerBase {
   role?: 'incident'
 }
 
-export type WidgetKind = 'chrono' | 'cyber' | 'dashboard' | 'speed' | 'gear' | 'rpm' | 'lean' | 'gforce' | 'temp' | 'map' | 'elevation' | 'compass' | 'readout'
+export type WidgetKind = 'chrono' | 'cyber' | 'map' | 'elevation' | 'compass' | 'readout'
+
+/** 削除した重ね表示（メーター一式・速度計・回転計・ギア・リーンアングル・前後 G・外気温）。保存されていたら読み込むときに外す */
+export const REMOVED_WIDGETS = ['dashboard', 'speed', 'gear', 'rpm', 'lean', 'gforce', 'temp']
 
 /** テレメトリーなどを重ねて表示するレイヤー */
 export interface OverlayLayer extends LayerBase {
@@ -197,6 +200,8 @@ export function migrateProject(raw: Record<string, unknown>, insvPath: string): 
   delete (p as Record<string, unknown>).commentary
   delete (p as Record<string, unknown>).commentaryLang
   p.layers = p.layers.filter((l) => !(l.type === 'overlay' && (l.widget as string) === 'caption'))
+  // 削除した重ね表示（メーター一式・速度計〜外気温）のレイヤーは外す
+  p.layers = p.layers.filter((l) => !(l.type === 'overlay' && REMOVED_WIDGETS.includes(l.widget as string)))
   p.incident = mergeIncident(p.incident)
   p.audioFx = { ...DEFAULT_AUDIO_FX, ...p.audioFx }
   if (p.audioFx.lowpassHz === OLD_DEFAULT_LOWPASS_HZ) p.audioFx.lowpassHz = DEFAULT_AUDIO_FX.lowpassHz
