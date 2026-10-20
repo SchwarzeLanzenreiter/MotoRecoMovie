@@ -22,29 +22,44 @@ How to use it and how it works is described in [docs/app.md](docs/app.md).
 
 ## Installation
 
-There is no ready-made download yet, so you build the app on your own PC (once, about 20–30 minutes).
+### Download (recommended)
+
+1. Open the [Releases page](https://github.com/SchwarzeLanzenreiter/MotoRecoMovie/releases/latest)
+2. Under "Assets", download one of these (420–490 MB)
+   - **Install it**: open `MotoRecoMovie-Setup-<version>.exe` to start the installer. When it finishes, "MotoRecoMovie" appears on the desktop and in the Start menu
+   - **Use it without installing**: right-click `MotoRecoMovie-<version>-win-x64.zip`, choose "Extract All", and open `MotoRecoMovie.exe` inside. You can move the whole folder anywhere you like
+
+It runs on Windows 10 / 11 (64-bit) and takes about 850 MB once installed.
+The integrated graphics of an ordinary PC works, but export and the AI processing are faster with a better GPU.
+
+The first time you open it, Windows may show "Windows protected your PC" (the app is not signed with a publisher certificate).
+In that case, click "More info" and then "Run anyway".
+
+### Build it yourself
+
+You can also build the app from source on your own PC (once, about 20–30 minutes).
 If you follow the steps below, no programming knowledge is needed.
 
-### What you need
+#### What you need
 
 - Windows 10 / 11 (64-bit)
 - About 4 GB of free disk space (including files used while building; the finished app is about 850 MB)
 - An internet connection (about 1 GB of downloads)
 - A GPU. The integrated graphics of an ordinary PC works, but export and the AI processing are faster with a better GPU
 
-### 1. Install Node.js
+#### 1. Install Node.js
 
 1. Open [https://nodejs.org/](https://nodejs.org/) and download the installer marked "LTS" (for Windows)
 2. Open the downloaded file and click "Next" through the installer (the default settings are fine)
 
-### 2. Download this app's files
+#### 2. Download this app's files
 
 1. Click the green "Code" button at the top of this page and choose "Download ZIP"
 2. Right-click the downloaded ZIP, choose "Extract All", and extract it to a place that is easy to find (for example `C:\MotoRecoMovie`)
 
 (If you use Git, `git clone https://github.com/SchwarzeLanzenreiter/MotoRecoMovie.git` works too.)
 
-### 3. Build the app
+#### 3. Build the app
 
 1. Open the `app` folder inside the extracted folder
 2. Click the address bar at the top of File Explorer (where the folder path is shown), type `cmd` and press Enter. A black window (Command Prompt) opens
@@ -70,7 +85,7 @@ If you follow the steps below, no programming knowledge is needed.
 
    Warnings in red may appear along the way; that is fine as long as it runs to the end. If it stops, copy the text it printed and let us know in Issues.
 
-### 4. Open the app
+#### 4. Open the app
 
 The `app\dist` folder now contains two things. Use whichever you like.
 
@@ -89,8 +104,8 @@ In that case, click "More info" and then "Run anyway".
 
 ### Updating to a new version
 
-Download again from this page (or `git pull` if you use Git) and repeat step 3.
-`npm run fetch-assets` does not download files that are already there.
+- **If you downloaded it**: download the new version from the Releases page and run the installer (for the zip, replace the extracted folder)
+- **If you built it yourself**: download again from this page (or `git pull` if you use Git) and repeat "3. Build the app". `npm run fetch-assets` does not download files that are already there
 
 ## For developers
 
