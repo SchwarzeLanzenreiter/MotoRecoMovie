@@ -1,35 +1,35 @@
-// 空中の標識が今いる場所から見えるか（見通し）の判定。
+// Determining whether a floating sign in the air is visible (line of sight) from the current position.
 //
-// 地形のデータは持っていないので、走ってきた・これから走る道路（融合した位置と標高）だけで判断する:
-//   1. 視線の通り道: 自分から標識への視線（地図の上の線分）が、その間の道路から大きく離れていれば、
-//      視線は道路の外（峠なら山の斜面や森）を横切っている → 見えないとする（くねくねした峠で、山の向こうの標識が見えてしまうのを防ぐ）
-//   2. 峠の頂上: 視線の下にある道路が視線より高ければ、道路の盛り上がりに隠れている → 見えないとする
-// どちらも急に消えたり出たりしないよう、はみ出しの量に応じて 0〜1 で薄くする。
+// There is no terrain data, so it is decided only from the roads ridden so far and about to be ridden (fused position and altitude):
+//   1. Sight path: if the line of sight from the bike to the sign (a segment on the map) strays far from the road in between,
+//      the line crosses outside the road (on a pass, a mountain slope or forest) → treat it as not visible (prevents signs beyond a mountain from showing on a winding pass)
+//   2. Pass crest: if the road under the line of sight is higher than the line, it is hidden by the rise of the road → treat it as not visible
+// Neither flips on or off suddenly: fade between 0 and 1 according to the amount of the excess.
 import type { Telemetry } from './telemetry'
 
-/** 道路の点列（ROAD_STEP m ごと） */
+/** Road points (every ROAD_STEP m) */
 export interface RoadTrack {
-  t: Float64Array // 動画時刻 [s]
-  x: Float64Array // 東 [m]
-  y: Float64Array // 北 [m]
-  alt: Float64Array // 標高 [m]（路面のおおよその高さ）
+  t: Float64Array // video time [s]
+  x: Float64Array // east [m]
+  y: Float64Array // north [m]
+  alt: Float64Array // altitude [m] (approximate road surface height)
 }
 
 const ROAD_STEP = 2
 
 export const SIGHT = {
-  /** 視線が道路からこれだけ離れるまでは見える [m] */
+  /** Visible until the line of sight strays this far from the road [m] */
   corridorNear: 10,
-  /** これだけ離れると見えない [m]（その間は薄くする） */
+  /** Not visible beyond this distance [m] (fades in between) */
   corridorFar: 25,
-  /** 視線の下の道路が視線よりこれだけ高くなるまでは見える [m]（GPS の標高の誤差を見込む） */
+  /** Visible until the road under the line of sight rises this much above it [m] (allows for GPS altitude error) */
   crestNear: 2,
   crestFar: 6,
-  /** 視線の点の間隔 [m] */
+  /** Spacing of points along the line of sight [m] */
   step: 5
 }
 
-/** 融合した位置（nav）と標高から、道路の点列を作る */
+/** Builds the road point list from the fused position (nav) and altitude */
 export function roadTrack(tel: Telemetry): RoadTrack | null {
   const nav = tel.nav
   if (!nav) return null
@@ -56,7 +56,7 @@ export function roadTrack(tel: Telemetry): RoadTrack | null {
   return { t: Float64Array.from(t), x: Float64Array.from(x), y: Float64Array.from(y), alt: Float64Array.from(a) }
 }
 
-/** 時刻 t 以下で最も新しい点の番号 */
+/** Index of the latest point at or before time t */
 function indexAt(road: RoadTrack, t: number): number {
   let lo = 0
   let hi = road.t.length - 1
@@ -71,8 +71,8 @@ function indexAt(road: RoadTrack, t: number): number {
 }
 
 /**
- * 時刻 tNow の位置 eye（目の高さ）から、時刻 tSign に通る地点に立つ標識 target（見たい部分の高さ）が見えるか。
- * 1 = 見える、0 = 見えない（その間は薄く）
+ * Whether the sign target (height of the part to see), standing at the point passed at time tSign, is visible from position eye (eye height) at time tNow.
+ * 1 = visible, 0 = not visible (faded in between)
  */
 export function sightVisibility(
   road: RoadTrack,
@@ -87,10 +87,10 @@ export function sightVisibility(
   const L = Math.sqrt(L2)
   if (L < SIGHT.corridorNear * 1.5) return 1
   const i0 = indexAt(road, tNow)
-  // 標識の少し先までの道路（標識は進入地点の手前に立つ。コーナーの中の道路も視線の近くにある）
+  // Road a little beyond the sign (the sign stands before the entry point; the road inside the corner is also near the line of sight)
   const i1 = Math.min(road.t.length - 1, indexAt(road, tSign) + Math.ceil(30 / ROAD_STEP))
   if (i1 - i0 < 2) return 1
-  // 1. 視線の通り道: 視線の各点から、最も近い道路の点までの距離の最大
+  // 1. Sight path: the maximum, over points on the line of sight, of the distance to the nearest road point
   let worst = 0
   const m = Math.max(2, Math.ceil(L / SIGHT.step))
   for (let k = 1; k < m; k++) {
@@ -108,7 +108,7 @@ export function sightVisibility(
   }
   const aCorridor = clamp01((SIGHT.corridorFar - worst) / (SIGHT.corridorFar - SIGHT.corridorNear))
   if (aCorridor === 0) return 0
-  // 2. 峠の頂上: 視線の真下付近の道路が、視線より高いか
+  // 2. Pass crest: whether the road right under the line of sight is higher than the line
   let excess = -Infinity
   for (let j = i0; j <= i1; j++) {
     const al = road.alt[j]

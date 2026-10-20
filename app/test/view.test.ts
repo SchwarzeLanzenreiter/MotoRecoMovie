@@ -1,5 +1,5 @@
-// リーン中に横を向いたとき、視線が地面側へ下がらないこと（水平基準のヨー）を実データで確認する。
-// 実行: npx tsx test/view.test.ts <insv> <csv>
+// Checks on real data that the line of sight does not drop toward the ground when looking sideways while leaning (horizon-referenced yaw).
+// Run: npx tsx test/view.test.ts <insv> <csv>
 import assert from 'node:assert/strict'
 import { open } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
@@ -25,21 +25,21 @@ const stab = newProject('x').stab
 const mm = new MotionModel(tr.meta, integrate(imu), fixedMount(mount), ft, lean, stab)
 const i = 1400 * 50
 const L = mm.leanAt(i)!
-// リグ座標の「真上」= 車体の上方向を前後軸まわりに -L 回したもの（validate_tilt.py と同じ）
+// The rig-coordinates "straight up" = the vehicle's up direction rotated by -L about the longitudinal axis (same as validate_tilt.py)
 const fwd = [mount[2], mount[5], mount[8]]
 const upB = [-mount[1], -mount[4], -mount[7]]
 const up = qRotate(qAxisAngle(fwd, (-L * Math.PI) / 180), upB)
 const deg = (r: number): number => (r * 180) / Math.PI
 const measure = (yaw: number, ratio: number): { elev: number; tilt: number } => {
-  const V = mm.frame(i, { yaw, pitch: 0, fov: 100, leanRatio: ratio }).view // 列 = 右・下・前（リグ座標）
+  const V = mm.frame(i, { yaw, pitch: 0, fov: 100, leanRatio: ratio }).view // columns = right, down, forward (rig coordinates)
   const f = matVec(V, [0, 0, 1])
   const rgt = matVec(V, [1, 0, 0])
   const dn = matVec(V, [0, 1, 0])
   const dot = (a: number[], b: number[]): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
   return { elev: deg(Math.asin(dot(f, up))), tilt: deg(Math.atan2(dot(up, rgt), -dot(up, dn))) }
 }
-console.log(`t=1400s リーン ${L.toFixed(1)}°`)
-// 車体に固定したカメラ（スタビライズなし）の画面の傾き: 傾きを残す 100% は、前でも後ろでもこれと同じ向きに傾く
+console.log(`t=1400s lean ${L.toFixed(1)}°`)
+// Screen tilt of a camera fixed to the vehicle (no stabilization): keep lean 100% tilts in the same direction as this, facing front or back
 const rigid = new MotionModel(tr.meta, integrate(imu), fixedMount(mount), ft, lean, { ...stab, enabled: false })
 const rigidTilt = (yaw: number): number => {
   const V = rigid.frame(i, { yaw, pitch: 0, fov: 100, leanRatio: 1 }).view
@@ -51,20 +51,20 @@ const rigidTilt = (yaw: number): number => {
 for (const ratio of [1, 0]) {
   for (const yaw of [0, 30, 60, 90, 180]) {
     const m = measure(yaw, ratio)
-    console.log(`  傾きを残す ${ratio * 100}%  ヨー ${String(yaw).padStart(3)}°: 視線の仰角 ${m.elev.toFixed(1).padStart(6)}°  画面の傾き ${m.tilt.toFixed(1).padStart(6)}°`)
-    // 横を向いても視線は水平のまま（車体の上下動の分だけ多少ずれる）
-    assert.ok(Math.abs(m.elev) < 6, `ヨー ${yaw}° で視線が上下に ${m.elev.toFixed(1)}° ずれている`)
-    // 画面の傾きは「残す割合 × cos(ヨー) × リーン角」。真横では水平、後ろ向きは前向きと逆向き
-    // （後ろを向いた視線は車体の前後軸と逆向きなので、車体に固定したカメラでも逆向きに傾いて見える）
+    console.log(`  keep lean ${ratio * 100}%  yaw ${String(yaw).padStart(3)}°: gaze elevation ${m.elev.toFixed(1).padStart(6)}°  screen tilt ${m.tilt.toFixed(1).padStart(6)}°`)
+    // The line of sight stays level even when looking sideways (it deviates slightly by the vertical movement of the vehicle)
+    assert.ok(Math.abs(m.elev) < 6, `at yaw ${yaw}° the line of sight is off vertically by ${m.elev.toFixed(1)}°`)
+    // Screen tilt is "keep ratio × cos(yaw) × lean angle". Level when facing directly sideways, and opposite when facing back versus forward
+    // (a line of sight facing back is opposite to the vehicle's longitudinal axis, so even a camera fixed to the vehicle looks tilted the other way)
     const expect = -ratio * Math.cos((yaw * Math.PI) / 180) * L
-    assert.ok(Math.abs(m.tilt - expect) < 4, `ヨー ${yaw}° の傾き ${m.tilt.toFixed(1)}°（期待 ${expect.toFixed(1)}°）`)
+    assert.ok(Math.abs(m.tilt - expect) < 4, `tilt at yaw ${yaw}°: ${m.tilt.toFixed(1)}° (expected ${expect.toFixed(1)}°)`)
   }
 }
 for (const yaw of [0, 180]) {
   const k = measure(yaw, 1).tilt
   const r = rigidTilt(yaw)
-  console.log(`  ヨー ${yaw}°: 傾きを残す 100% ${k.toFixed(1)}°、車体に固定したカメラ ${r.toFixed(1)}°`)
-  assert.ok(Math.sign(k) === Math.sign(r) && Math.abs(k - r) < 8, `ヨー ${yaw}° で車体に固定したカメラと傾きの向きが違う`)
+  console.log(`  yaw ${yaw}°: keep lean 100% ${k.toFixed(1)}°, camera fixed to the vehicle ${r.toFixed(1)}°`)
+  assert.ok(Math.sign(k) === Math.sign(r) && Math.abs(k - r) < 8, `at yaw ${yaw}° the tilt direction differs from the camera fixed to the vehicle`)
 }
 console.log('view.test: OK')
 await fh.close()

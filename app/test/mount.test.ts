@@ -1,11 +1,11 @@
-// 取り付け姿勢の推定（core/motion.ts の estimateMount）: 前後の向きを「曲がる側へ倒れる」関係で決めるので、
-// レンズを後ろや横へ向けて付けても前方が分かることを、合成した IMU で確かめる。
-// 実行: npx tsx test/mount.test.ts
+// Mount orientation estimation (estimateMount in core/motion.ts): the forward direction is decided from the relation "leaning toward the side of the turn",
+// so the test checks with a synthetic IMU that forward is found even when the lenses are mounted facing back or sideways.
+// Run: npx tsx test/mount.test.ts
 import assert from 'node:assert/strict'
 import { estimateMount, IMU_TO_RIG } from '../src/renderer/src/core/motion'
 import type { Imu } from '../src/renderer/src/core/insv'
 
-/** リグ座標の前・上を与えて、左右へ交互に曲がる走行の IMU（1kHz、10 分）を作る */
+/** Builds the IMU (1 kHz, 10 min) of a ride that turns alternately left and right, given the forward and up directions in rig coordinates */
 function ride(fwd: number[], up: number[], seed = 1): Imu {
   const right = [fwd[1] * up[2] - fwd[2] * up[1], fwd[2] * up[0] - fwd[0] * up[2], fwd[0] * up[1] - fwd[1] * up[0]]
   const n = 600_000
@@ -17,15 +17,15 @@ function ride(fwd: number[], up: number[], seed = 1): Imu {
   for (let i = 0; i < n; i++) {
     const t = i / 1000
     ts[i] = t * 1e6
-    // 20 秒周期で右・左へ曲がる。ヨー角速度は上から見て反時計回りが正（右へ曲がる間は負）、
-    // リーン角はヨーと逆向き（右へ曲がる間は右へ倒れる = 前方の軸まわりに正）
+    // Turns right and left with a 20 s period. The yaw rate is positive counterclockwise seen from above (negative while turning right),
+    // the lean angle is opposite to yaw (leaning right while turning right = positive about the forward axis)
     const w = 2 * Math.PI / 20
     const yaw = -20 * Math.sin(w * t)
-    const rollRate = 30 * w * Math.cos(w * t) // リーン角 30·sin(wt) の微分 [deg/s]
-    const pitch = 3 * rnd() // サスペンションなどの細かい揺れ
+    const rollRate = 30 * w * Math.cos(w * t) // derivative of the lean angle 30·sin(wt) [deg/s]
+    const pitch = 3 * rnd() // small vibrations such as from the suspension
     const g = [0, 1, 2].map((k) => yaw * up[k] + rollRate * fwd[k] + pitch * right[k])
     const a = up
-    // リグ座標 → IMU 座標（IMU_TO_RIG の転置）
+    // rig coordinates -> IMU coordinates (transpose of IMU_TO_RIG)
     for (let k = 0; k < 3; k++) {
       gyro[i * 3 + k] = IMU_TO_RIG[0 * 3 + k] * g[0] + IMU_TO_RIG[1 * 3 + k] * g[1] + IMU_TO_RIG[2 * 3 + k] * g[2]
       acc[i * 3 + k] = IMU_TO_RIG[0 * 3 + k] * a[0] + IMU_TO_RIG[1 * 3 + k] * a[1] + IMU_TO_RIG[2 * 3 + k] * a[2]
@@ -36,33 +36,33 @@ function ride(fwd: number[], up: number[], seed = 1): Imu {
 const fwdOf = (R: Float64Array): number[] => [R[2], R[5], R[8]]
 const close = (a: number[], b: number[]): boolean => a.every((v, k) => Math.abs(v - b[k]) < 0.05)
 
-// レンズ1（リグの -z）が前: 前の決め方でも今の決め方でも前
+// Lens 1 (rig -z) faces forward: forward with both the old and the current method
 {
   const m = estimateMount(ride([0, 0, -1], [0, -1, 0]))
-  assert.ok(close(fwdOf(m.R), [0, 0, -1]), `前向き: ${fwdOf(m.R).map((v) => v.toFixed(2))}`)
+  assert.ok(close(fwdOf(m.R), [0, 0, -1]), `facing forward: ${fwdOf(m.R).map((v) => v.toFixed(2))}`)
   assert.equal(m.by, 'lean')
   assert.ok(m.coupling < -0.5)
   assert.equal(m.flippedFromLens, false)
 }
-// レンズ1 が後ろ（トップケースの後ろから前を撮る付け方）: 前の決め方ではレンズの向き（後ろ）を前にしていた
+// Lens 1 faces back (mounted behind the top case, filming forward): the old method took the lens direction (back) as forward
 {
   const m = estimateMount(ride([0, 0, 1], [0, -1, 0]))
-  assert.ok(close(fwdOf(m.R), [0, 0, 1]), `後ろ向き: ${fwdOf(m.R).map((v) => v.toFixed(2))}`)
+  assert.ok(close(fwdOf(m.R), [0, 0, 1]), `facing back: ${fwdOf(m.R).map((v) => v.toFixed(2))}`)
   assert.equal(m.flippedFromLens, true)
 }
-// レンズが斜め後ろ・本体が横倒し（上 = リグの x 寄り）
+// Lens facing diagonally back, body lying on its side (up = toward rig x)
 {
   const f = [0.6, 0, 0.8]
   const m = estimateMount(ride(f, [0.8, 0, -0.6]))
-  assert.ok(close(fwdOf(m.R), f), `斜め: ${fwdOf(m.R).map((v) => v.toFixed(2))}`)
+  assert.ok(close(fwdOf(m.R), f), `diagonal: ${fwdOf(m.R).map((v) => v.toFixed(2))}`)
 }
 console.log('mount.test: OK')
 
-// ---- 取り付け姿勢の時間変化（core/mount.ts）: 走行中にカメラが前後の軸まわりに 60° 回っていっても、時刻ごとの前・上が分かる ----
+// ---- Mount orientation over time (core/mount.ts): even if the camera rotates 60° about the forward axis while riding, forward and up are found per time ----
 {
   const { estimateMountTrack, mountFwdAt, mountUpAt } = await import('../src/renderer/src/core/mount')
-  // 10 分かけて、カメラが車体の前後軸まわりに 0 → 60° 回る（リグ座標では、車体の上と右が回っていく）。
-  // 前方はリグの -z（レンズ1 の向き）
+  // Over 10 minutes, the camera rotates from 0 to 60° about the vehicle's longitudinal axis (in rig coordinates, the vehicle's up and right rotate).
+  // Forward is rig -z (the lens 1 direction)
   const n = 600_000
   const ts = new Float64Array(n)
   const acc = new Float32Array(n * 3)
@@ -72,7 +72,7 @@ console.log('mount.test: OK')
   const fwd = [0, 0, -1]
   const upAt = (t: number): number[] => {
     const a = ((60 * t) / 600) * (Math.PI / 180)
-    return [Math.sin(a), -Math.cos(a), 0] // t = 0 で上 = リグの −y
+    return [Math.sin(a), -Math.cos(a), 0] // up = rig −y at t = 0
   }
   for (let i = 0; i < n; i++) {
     const t = i / 1000
@@ -81,7 +81,7 @@ console.log('mount.test: OK')
     const right = [fwd[1] * up[2] - fwd[2] * up[1], fwd[2] * up[0] - fwd[0] * up[2], fwd[0] * up[1] - fwd[1] * up[0]]
     const w = (2 * Math.PI) / 20
     const yaw = -20 * Math.sin(w * t)
-    const rollRate = 30 * w * Math.cos(w * t) + 0.1 // + カメラが回っていく分（0.1°/s）
+    const rollRate = 30 * w * Math.cos(w * t) + 0.1 // + the part from the camera rotating (0.1°/s)
     const pitch = 3 * rnd()
     const g = [0, 1, 2].map((k) => yaw * up[k] + rollRate * fwd[k] + pitch * right[k])
     for (let k = 0; k < 3; k++) {
@@ -90,15 +90,15 @@ console.log('mount.test: OK')
     }
   }
   const tr = estimateMountTrack({ ts, acc, gyro })
-  assert.equal(tr.fixed, false, '時間で変わる取り付け姿勢')
+  assert.equal(tr.fixed, false, 'mount orientation that varies over time')
   for (const t of [60, 300, 540]) {
     const u = mountUpAt(tr, t * 1e6)
     const f = mountFwdAt(tr, t * 1e6)
     const eu = (Math.acos(Math.min(1, u[0] * upAt(t)[0] + u[1] * upAt(t)[1] + u[2] * upAt(t)[2])) * 180) / Math.PI
     const ef = (Math.acos(Math.min(1, -f[2])) * 180) / Math.PI
-    assert.ok(eu < 3 && ef < 3, `${t} 秒: 上のずれ ${eu.toFixed(1)}° 前のずれ ${ef.toFixed(1)}°`)
+    assert.ok(eu < 3 && ef < 3, `${t} s: up error ${eu.toFixed(1)}° forward error ${ef.toFixed(1)}°`)
   }
-  // 動かない取り付けなら 1 つの姿勢
+  // A fixed mount gives a single orientation
   assert.equal(estimateMountTrack(ride([0, 0, -1], [0, -1, 0])).fixed, true)
 }
-console.log('mount.test（時間変化）: OK')
+console.log('mount.test (time variation): OK')

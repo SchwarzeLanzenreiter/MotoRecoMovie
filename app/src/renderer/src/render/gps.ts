@@ -1,5 +1,5 @@
-// GPS の表示: 地図・標高プロファイル・方位帯。
-// ルートの形（5Hz に間引いた点列と Path2D）はテレメトリーごとに1回だけ作ってキャッシュする。
+// GPS display: map, elevation profile, heading band.
+// The route shape (a point list thinned to 5Hz, and a Path2D) is built once per telemetry and cached.
 import { sampleChannel, type Telemetry } from '../core/telemetry'
 import { COLORS, type Ctx } from './meters'
 import { getLang, tr, type Lang } from '../i18n'
@@ -8,13 +8,13 @@ const NUM = "Bahnschrift, 'Segoe UI', sans-serif"
 const JP = "'Yu Gothic UI', 'Meiryo UI', sans-serif"
 
 interface Route {
-  t: Float32Array // 動画時刻 [s]
-  x: Float32Array // 東 [m]
-  y: Float32Array // 北 [m]
-  d: Float32Array // 走行距離 [km]
-  alt: Float32Array // 標高 [m]（無ければ NaN）
+  t: Float32Array // video time [s]
+  x: Float32Array // east [m]
+  y: Float32Array // north [m]
+  d: Float32Array // distance traveled [km]
+  alt: Float32Array // elevation [m] (NaN if absent)
   n: number
-  /** 地図の座標（x = 東、y = 北）のままの経路。NaN の区間で切れる */
+  /** Route in map coordinates (x = east, y = north), broken at NaN sections */
   path: Path2D
   minX: number
   maxX: number
@@ -26,7 +26,7 @@ interface Route {
 }
 
 const cache = new WeakMap<Telemetry, Route | null>()
-const STEP = 20 // 100Hz → 5Hz
+const STEP = 20 // 100Hz -> 5Hz
 
 export function getRoute(tel: Telemetry): Route | null {
   if (cache.has(tel)) return cache.get(tel)!
@@ -106,11 +106,11 @@ function message(g: Ctx, r: Box, text: string): void {
   g.textAlign = 'left'
 }
 
-// ---- 地図 ----
+// ---- Map ----
 
 export interface MapProps {
-  mode: 'local' | 'route' // local = 現在地のまわりを進行方向を上に / route = ルート全体を北を上に
-  rangeM: number // local のとき、中心から縁までの距離 [m]
+  mode: 'local' | 'route' // local = around the current position with the heading up / route = whole route with north up
+  rangeM: number // for local, distance from the center to the edge [m]
   shape: 'circle' | 'rect'
 }
 
@@ -119,7 +119,7 @@ export const DEFAULT_MAP: MapProps = { mode: 'local', rangeM: 600, shape: 'circl
 export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: Partial<MapProps>, lang: Lang = getLang()): void {
   const p = { ...DEFAULT_MAP, ...props }
   const route = tel ? getRoute(tel) : null
-  if (!tel || !route) return message(g, r, tr(lang, 'GPS データなし'))
+  if (!tel || !route) return message(g, r, tr(lang, 'No GPS data'))
   const px = sampleChannel(tel, 'gpsX', t)
   const py = sampleChannel(tel, 'gpsY', t)
   const head = sampleChannel(tel, 'heading', t) ?? 0
@@ -127,27 +127,27 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   const cy = r.y + r.h / 2
   const R = Math.min(r.w, r.h) / 2
   g.save()
-  // 背景と切り抜き
+  // Background and clipping
   g.beginPath()
   if (p.shape === 'circle') g.arc(cx, cy, R, 0, Math.PI * 2)
   else g.roundRect(r.x, r.y, r.w, r.h, R * 0.08)
   g.fillStyle = 'rgba(12, 14, 18, 0.6)'
   g.fill()
   g.clip()
-  // ワールド（東・北 [m]）→ 画面 の変換
+  // World (east/north [m]) -> screen transform
   let s: number
   let h: number
   let ox: number
   let oy: number
   if (p.mode === 'local' && px !== null && py !== null) {
     s = (R * 0.92) / p.rangeM
-    h = (head * Math.PI) / 180 // 進行方向が上になるよう回す
+    h = (head * Math.PI) / 180 // rotate so the heading is up
     ox = px
     oy = py
   } else {
     const bw = Math.max(route.maxX - route.minX, 1)
     const bh = Math.max(route.maxY - route.minY, 1)
-    // 円: ルートの外接矩形の対角線が円に収まる / 矩形: 縦横それぞれに収まる
+    // Circle: the diagonal of the route's bounding rectangle fits in the circle / rectangle: fits in each of width and height
     s = p.shape === 'circle' ? (R * 1.8) / Math.hypot(bw, bh) : Math.min((r.w * 0.88) / bw, (r.h * 0.88) / bh)
     h = 0
     ox = (route.minX + route.maxX) / 2
@@ -160,12 +160,12 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
     const dy = y - oy
     return [cx + s * (cos * dx - sin * dy), cy - s * (sin * dx + cos * dy)]
   }
-  // ルート全体（暗め）: Path2D をそのまま変換して描く
+  // Whole route (dim): transform the Path2D as is and draw it
   g.save()
   g.setTransform(
     ...((): [number, number, number, number, number, number] => {
       const base = g.getTransform()
-      // base · M（M: ワールド → 画面）
+      // base · M (M: world -> screen)
       const a = s * cos
       const b = -s * sin
       const c = -s * sin
@@ -181,7 +181,7 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   g.lineWidth = (R * 0.035) / s
   g.stroke(route.path)
   g.restore()
-  // 走った区間（明るく）
+  // Traveled section (bright)
   const k1 = Math.min(route.n - 1, Math.floor(t * 5))
   g.strokeStyle = COLORS.lean
   g.lineWidth = R * 0.045
@@ -189,7 +189,7 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   g.lineCap = 'round'
   g.beginPath()
   let pen = false
-  // 局所表示では画面の外の点は描かなくてよいが、点の数は数千なのでそのまま描く
+  // In local view, points off screen need not be drawn, but there are only a few thousand points, so draw them all
   for (let k = 0; k <= k1; k++) {
     if (Number.isNaN(route.x[k])) {
       pen = false
@@ -202,10 +202,10 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   }
   if (px !== null && py !== null && pen) g.lineTo(...toScreen(px, py))
   g.stroke()
-  // 現在地の矢印（進行方向を向く）
+  // Arrow at the current position (pointing in the heading)
   if (px !== null && py !== null) {
     const [sx, sy] = toScreen(px, py)
-    const ang = (head * Math.PI) / 180 - h // 画面上での向き（上 = 0、時計回り）
+    const ang = (head * Math.PI) / 180 - h // direction on screen (up = 0, clockwise)
     g.save()
     g.translate(sx, sy)
     g.rotate(ang)
@@ -223,7 +223,7 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
     g.restore()
   }
   g.restore()
-  // 縁取りと北の印
+  // Outline and north marker
   g.save()
   g.beginPath()
   if (p.shape === 'circle') g.arc(cx, cy, R - 1, 0, Math.PI * 2)
@@ -231,7 +231,7 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   g.strokeStyle = 'rgba(255,255,255,0.35)'
   g.lineWidth = Math.max(1, R * 0.015)
   g.stroke()
-  // 北の方向（画面上）= ワールドの (0, 1) を回したもの
+  // Direction of north (on screen) = the world (0, 1) rotated
   const nx = -Math.sin(h)
   const ny = -Math.cos(h)
   const nr = p.shape === 'circle' ? R * 0.84 : Math.min(r.w, r.h) * 0.42
@@ -240,7 +240,7 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   g.textAlign = 'center'
   g.textBaseline = 'middle'
   g.fillText('N', cx + nx * nr, cy + ny * nr)
-  // 縮尺（local のとき）
+  // Scale (for local)
   if (p.mode === 'local') {
     g.fillStyle = 'rgba(255,255,255,0.6)'
     g.font = `600 ${(R * 0.1).toFixed(1)}px ${NUM}`
@@ -249,10 +249,10 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   g.restore()
 }
 
-// ---- 標高プロファイル ----
+// ---- Elevation profile ----
 
 export interface ElevationProps {
-  windowKm: number // 0 = ルート全体、それ以外は現在地を中心にこの幅
+  windowKm: number // 0 = whole route, otherwise this width centered on the current position
 }
 
 export const DEFAULT_ELEVATION: ElevationProps = { windowKm: 0 }
@@ -260,7 +260,7 @@ export const DEFAULT_ELEVATION: ElevationProps = { windowKm: 0 }
 export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: Partial<ElevationProps>, lang: Lang = getLang()): void {
   const p = { ...DEFAULT_ELEVATION, ...props }
   const route = tel ? getRoute(tel) : null
-  if (!tel || !route || !Number.isFinite(route.altMin)) return message(g, r, tr(lang, '標高データなし'))
+  if (!tel || !route || !Number.isFinite(route.altMin)) return message(g, r, tr(lang, 'No elevation data'))
   const curD = sampleChannel(tel, 'distance', t)
   const curA = sampleChannel(tel, 'alt', t)
   const grade = sampleChannel(tel, 'grade', t)
@@ -271,7 +271,7 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
     d1 = curD + p.windowKm / 2
   }
   const pad = Math.min(r.w, r.h) * 0.08
-  const head = r.h * 0.3 // 上部の数値の帯
+  const head = r.h * 0.3 // band for the numbers at the top
   const gx = r.x + pad
   const gw = r.w - pad * 2
   const gy = r.y + head
@@ -289,7 +289,7 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
   g.beginPath()
   g.rect(gx, gy, gw, gh)
   g.clip()
-  // 塗り（全体）と線（走った区間を明るく）
+  // Fill (whole) and line (traveled section brightened)
   const k1 = Math.min(route.n - 1, Math.floor(t * 5))
   const area = (from: number, to: number): Path2D => {
     const path = new Path2D()
@@ -324,7 +324,7 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
   g.fillStyle = grad
   g.fill(area(0, k1))
   g.restore()
-  // 現在地
+  // Current position
   if (curD !== null && curA !== null) {
     const sx = X(curD)
     const sy = Y(curA)
@@ -342,7 +342,7 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
     g.fill()
     g.shadowBlur = 0
   }
-  // 数値
+  // Numbers
   const fs = head * 0.62
   g.textBaseline = 'middle'
   g.textAlign = 'left'
@@ -365,18 +365,18 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
   g.restore()
 }
 
-// ---- 方位帯 ----
+// ---- Heading band ----
 
 const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 
 export function drawCompass(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: { spanDeg?: number }, lang: Lang = getLang()): void {
   const head = tel ? sampleChannel(tel, 'heading', t) : null
-  if (head === null) return message(g, r, tr(lang, '方位データなし'))
-  const span = props.spanDeg ?? 120 // 帯に見える角度の幅
+  if (head === null) return message(g, r, tr(lang, 'No heading data'))
+  const span = props.spanDeg ?? 120 // angular width visible in the band
   const cx = r.x + r.w / 2
   const pxPerDeg = r.w / span
   g.save()
-  // 両端を薄くしたパネル
+  // Panel with faded edges
   const grad = g.createLinearGradient(r.x, 0, r.x + r.w, 0)
   grad.addColorStop(0, 'rgba(12,14,18,0)')
   grad.addColorStop(0.15, 'rgba(12,14,18,0.6)')
@@ -415,7 +415,7 @@ export function drawCompass(g: Ctx, r: Box, tel: Telemetry | null, t: number, pr
     }
   }
   g.globalAlpha = 1
-  // 中央の印と数値
+  // Center marker and number
   g.fillStyle = COLORS.rpm
   g.beginPath()
   g.moveTo(cx, base + r.h * 0.02)

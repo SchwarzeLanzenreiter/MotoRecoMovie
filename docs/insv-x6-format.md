@@ -1,100 +1,100 @@
-# Insta360 X6 `.insv` 構造メモ
+# Insta360 X6 `.insv` structure notes
 
-サンプル: `E:\R1200GSA\Movie\2026\0919宗谷丘陵\VID_20260919_140847_00_006.insv`（34.5GB / 25分18秒 / FW v1.1.7）
+Sample: `E:\R1200GSA\Movie\2026\0919宗谷丘陵\VID_20260919_140847_00_006.insv` (34.5GB / 25 min 18 s / FW v1.1.7) <!-- i18n-ignore -->
 
-## 映像・音声（MP4コンテナ）
+## Video and audio (MP4 container)
 
-| stream | 内容 |
+| stream | contents |
 |---|---|
-| 0 | HEVC Main10, 3840×3840, 50fps, ~90Mbps — **レンズ1**の円周魚眼 |
-| 1 | HEVC Main10, 3840×3840, 50fps, ~90Mbps — **レンズ0**の円周魚眼 |
+| 0 | HEVC Main10, 3840×3840, 50fps, ~90Mbps: circular fisheye of **lens 1** |
+| 1 | HEVC Main10, 3840×3840, 50fps, ~90Mbps: circular fisheye of **lens 0** |
 | 2 | AAC 48kHz stereo |
 
-1ファイルに両レンズが入っている（旧機種のような `_10_` ファイルはない）。
-トラックはレンズの**逆順**に並んでいる（X5の `DUAL_STREAM_TRACK_REVERSE` と同じ）。継ぎ目の誤差を比べて確認した。
-`LRV_*.lrv` は 2048×1024 / 25fps で、両レンズの魚眼を左右に縮めて並べたプレビュー（**ステッチ済みではない**）。
+One file holds both lenses (there is no `_10_` file as on older models).
+The tracks are in **reverse** lens order (same as X5's `DUAL_STREAM_TRACK_REVERSE`). Confirmed by comparing the seam error.
+`LRV_*.lrv` is 2048×1024 / 25fps: a preview with the two fisheye images shrunk and placed side by side (**not stitched**).
 
-## 末尾トレーラー
+## Trailer at the end of the file
 
-ファイル末尾72バイト: `padding[32] | u32 trailer_size | u32 version(=3) | magic "8db42d694ccc418790edff439fe026bf"`
+Last 72 bytes of the file: `padding[32] | u32 trailer_size | u32 version(=3) | magic "8db42d694ccc418790edff439fe026bf"`
 
-トレーラーの先頭 = `file_size - trailer_size`。
-各レコードは `data[size] | u8 format | u8 id | u32 size`（ヘッダが後ろに付く）の形式。
-末尾直前のレコード（id=0、590バイト）が**目次**になっている。10バイトのエントリ `u16 id | u32 size | u32 offset`（offsetはトレーラー先頭からの位置）が並ぶ。
+Trailer start = `file_size - trailer_size`.
+Each record has the form `data[size] | u8 format | u8 id | u32 size` (the header follows the data).
+The record just before the end (id=0, 590 bytes) is the **table of contents**: a list of 10-byte entries `u16 id | u32 size | u32 offset` (offset is the position from the trailer start).
 
-| id | size | 内容 |
+| id | size | contents |
 |---|---|---|
-| 0x101 | 1.5KB | メタデータ（protobuf）。下記参照 |
-| 0x2 | 1.2MB | サムネイル |
-| 0x3 | 30MB | **IMU**: 20B/サンプル、約1kHz |
-| 0x4 | 16B×フレーム数 | レンズ0のフレーム時刻と露出時間（`u64 ts_us + f64 秒`）。フレームの間隔にはこれを使い、最初のフレームを field 24 に置く（下の「フレームの時刻とジャイロの時間軸」） |
-| 0xc | 16B×フレーム数 | レンズ1の同上（0x4より約40us遅い） |
-| 0x34 / 0x36 | 607584B | `u64 + f64` の16B×37974件（約2フレームに1件）。内容は未解析 |
-| 0x9, 0xb, 0x16, 0x1b, 0x1c, 0x1d | — | 未解析 |
+| 0x101 | 1.5KB | Metadata (protobuf). See below |
+| 0x2 | 1.2MB | Thumbnail |
+| 0x3 | 30MB | **IMU**: 20B/sample, about 1kHz |
+| 0x4 | 16B×frame count | Frame times and exposure times of lens 0 (`u64 ts_us + f64 seconds`). Use this for the frame intervals and put the first frame at field 24 (see "Frame times and the gyro time axis" below) |
+| 0xc | 16B×frame count | Same for lens 1 (about 40us later than 0x4) |
+| 0x34 / 0x36 | 607584B | 37974 entries of `u64 + f64`, 16B each (about one per 2 frames). Contents not analyzed |
+| 0x9, 0xb, 0x16, 0x1b, 0x1c, 0x1d | — | Not analyzed |
 
-### IMU（id 0x3）
+### IMU (id 0x3)
 
-`u64 timestamp_us | u16×6` — 値はオフセットバイナリ（`v - 0x8000`）。
+`u64 timestamp_us | u16×6`. Values are offset binary (`v - 0x8000`).
 
-- 並びは `acc x,y,z, gyro x,y,z`（静止時のaccのノルムは約1024で、1gに相当）
-- レンジ: protobufのfield 65 = `{acc: 32g, gyro: 2000dps}` → acc 1024 LSB/g、gyro 16.384 LSB/dps
-- タイムスタンプはフレーム時刻（0x4）と同じ時間軸。映像との突き合わせでずれは±5ms以内だった
-- サンプルの間隔は X6 で 1.000ms（999.9Hz）、X5 では平均 1.004ms（996Hz）。サンプル数で時間を数えず、タイムスタンプを使う
-- **IMU→リグ座標**（リグ: +x右, +y下, +z=レンズ0の光軸）: `rig = M·imu`、`M = [[0,0,-1],[1,0,0],[0,-1,0]]`（`rig_x=-imu_z, rig_y=imu_x, rig_z=-imu_y`）。フレーム間回転（SIFT＋基本行列）とジャイロ積分をProcrustes法で突き合わせて求めた
-- バイクの車両ログ（0919.csv）とは**6.45秒**ずれていて、25分間ドリフトはない
+- Order is `acc x,y,z, gyro x,y,z` (at rest the acc norm is about 1024, equal to 1g)
+- Range: protobuf field 65 = `{acc: 32g, gyro: 2000dps}` → acc 1024 LSB/g, gyro 16.384 LSB/dps
+- Timestamps are on the same time axis as the frame times (0x4). Matching against the video, the offset was within ±5ms
+- Sample spacing is 1.000ms (999.9Hz) on the X6 and 1.004ms on average (996Hz) on the X5. Don't count time by the number of samples; use the timestamps
+- **IMU → rig coordinates** (rig: +x right, +y down, +z = optical axis of lens 0): `rig = M·imu`, `M = [[0,0,-1],[1,0,0],[0,-1,0]]` (`rig_x=-imu_z, rig_y=imu_x, rig_z=-imu_y`). Found by matching the frame-to-frame rotation (SIFT + essential matrix) against the integrated gyro with the Procrustes method
+- Offset of **6.45 seconds** from the bike's vehicle log (0919.csv), with no drift over the 25 minutes
 
-#### フレームの時刻とジャイロの時間軸
+#### Frame times and the gyro time axis
 
-ジャイロの時刻に合うのは metadata の field 24（先頭フレームの時刻）。0x4 の時刻は、X6 の普通の動画では field 24 と同じだが、そうでない動画がある:
+What matches the gyro time is metadata field 24 (time of the first frame). In ordinary X6 videos the 0x4 time is the same as field 24, but some videos differ:
 
-| 動画 | field 24 − 0x4 の先頭 |
+| video | field 24 − start of 0x4 |
 |---|---|
-| X6（手元の 6 本） | 0 |
-| X5（手元の 13 本のうち 11 本） | +767.5ms |
+| X6 (my 6 files) | 0 |
+| X5 (11 of my 13 files) | +767.5ms |
 | X5 2026-07-20 | +166.8ms |
-| 分割された 2 本目以降（X6 0906_002 / 1011_004、X5 0815_014 / 016） | +7.4〜18.7 秒 |
+| 2nd and later files of a split recording (X6 0906_002 / 1011_004, X5 0815_014 / 016) | +7.4 to 18.7 s |
 
-0x4 の時刻のままジャイロを引くと、その分だけ前の揺れで補正してしまい、スタビライズでかえって揺れる（X5 の 2026-08-13 の動画で、
-スタビライズなしの縦の揺れ 4.6px/フレーム → 0x4 のまま 5.0px、field 24 に合わせると 1.8px。分割の 2 本目以降も、field 24 に合わせたときだけ揺れが 0 近くになる）。
-そこで、フレームの時刻 = field 24 + (0x4 の時刻 − 0x4 の先頭)（`core/insv.ts` の `gyroFrameTimes`）。動画時刻もこれから求めるので、
-以前の版で保存したプロジェクトの時刻（キーフレームなど）は、開いたときにこの差の分ずらす（`Project.timeBase`、`engine/project.ts` の `shiftProjectTimes`）
+If the gyro is looked up with the 0x4 times as they are, the correction uses motion from that much earlier and stabilization makes the shake worse
+(on the X5 2026-08-13 video, the vertical shake without stabilization is 4.6px/frame; with 0x4 as is it is 5.0px, and aligned to field 24 it is 1.8px. For the 2nd and later files of a split recording too, the shake drops to near 0 only when aligned to field 24).
+So the frame time = field 24 + (0x4 time − start of 0x4) (`gyroFrameTimes` in `core/insv.ts`). The video time is also derived from this,
+so times saved in projects from earlier versions (keyframes etc.) are shifted by this difference when the project is opened (`Project.timeBase`, `shiftProjectTimes` in `engine/project.ts`).
 
-### メタデータ protobuf（id 0x101）主要フィールド
+### Main fields of the metadata protobuf (id 0x101)
 
-| field | 値 | 意味 |
+| field | value | meaning |
 |---|---|---|
-| 1 | BXEA3ABFHGCF4R | シリアル |
-| 2 | Insta360 X6 | 機種 |
+| 1 | BXEA3ABFHGCF4R | Serial number |
+| 2 | Insta360 X6 | Model |
 | 3 | v1.1.7 | FW |
-| 19 / 44 | 3840×3840 | ストリームの解像度 |
+| 19 / 44 | 3840×3840 | Stream resolution |
 | 20 | 50 | fps |
-| 24 | 432945272 | 先頭フレームのts(us)（ジャイロの時間軸。X6 の普通の動画では0x4の先頭と一致、X5 などは違う） |
-| 25 | 15.36 | **ローリングシャッターの読み出し時間**(ms)。正の値 = 上→下 |
-| 28 / 29 | 1.1 / true | **gyro_timestamp**(ms)。フレーム時刻→ジャイロ時間軸の補正量 |
-| 131 | 4 | stream_type = `DUAL_STREAM_TRACK_REVERSE`（トラックがレンズの逆順） |
-| 27 | 7744/7744/7680/7680 | センサー側の解像度 |
-| 36 | 1789794528825 | 撮影開始（epoch ms） |
-| 40 | 75947 | フレーム数 |
-| 65 | {32, 2000} | accレンジ(g), gyroレンジ(dps) |
-| 111/112 | `2_2.455430_7218.140_...` | **レンズキャリブレーション文字列**（下記） |
-| 213 | quat×2 | レンズ（またはIMU）の姿勢？ |
+| 24 | 432945272 | ts (us) of the first frame (the gyro time axis. In ordinary X6 videos it equals the start of 0x4; X5 etc. differ) |
+| 25 | 15.36 | **Rolling shutter readout time** (ms). Positive = top to bottom |
+| 28 / 29 | 1.1 / true | **gyro_timestamp** (ms). Correction from frame time to the gyro time axis |
+| 131 | 4 | stream_type = `DUAL_STREAM_TRACK_REVERSE` (tracks are in reverse lens order) |
+| 27 | 7744/7744/7680/7680 | Sensor-side resolution |
+| 36 | 1789794528825 | Recording start (epoch ms) |
+| 40 | 75947 | Frame count |
+| 65 | {32, 2000} | acc range (g), gyro range (dps) |
+| 111/112 | `2_2.455430_7218.140_...` | **Lens calibration string** (see below) |
+| 213 | quat×2 | Orientation of the lens (or the IMU)? |
 
-### キャリブレーション文字列（field 111）= offset **V6**
+### Calibration string (field 111) = offset **V6**
 
-telemetry-parser（`src/insta360/rig.rs`）と video-types クレート（`MeiDistortion::RadtanPro`）の定義に従う。
+Follows the definitions in telemetry-parser (`src/insta360/rig.rs`) and the video-types crate (`MeiDistortion::RadtanPro`).
 
-`<レンズ数>_<レンズ0: 27値>_<レンズ1: 27値>_<packed tail>`
+`<lens count>_<lens 0: 27 values>_<lens 1: 27 values>_<packed tail>`
 
-- packed tail `394240 = 0x60400` = `(version 6 << 16) | (X=4 << 8)`。X=5 ならレンズ0の画像が左右反転（このファイルは4なので反転なし）
-- 1レンズ27値: `xi, fx, fy, cx, cy, yaw, pitch, roll(度), tx, ty, tz(m), d0..d12, 全体幅, 高さ, lens_type`
-- キャリブ空間は2レンズを左右に並べた 15488×7744。レンズ1の cx から 7744 を引く。映像へは `3840/7744` の一様スケール
+- packed tail `394240 = 0x60400` = `(version 6 << 16) | (X=4 << 8)`. If X=5, the lens 0 image is mirrored left-right (this file has 4, so no mirroring)
+- 27 values per lens: `xi, fx, fy, cx, cy, yaw, pitch, roll (degrees), tx, ty, tz (m), d0..d12, overall width, height, lens_type`
+- The calibration space is 15488×7744 with the two lenses side by side. Subtract 7744 from cx of lens 1. A uniform scale of `3840/7744` maps it to the video
 
-投影（リグ座標の光線 → 画素）:
+Projection (ray in rig coordinates → pixel):
 
 ```
 R_cam_from_rig = V(ypr_i, i) · V([0,0,90], 0)ᵀ
 V(ypr, i) = Ry(pitch+90°)·Rz(yaw)·Rx(roll) [· Rz(180°) if i==0]   # world→camera
-c = 正規化(R_cam_from_rig · ray)
+c = normalize(R_cam_from_rig · ray)
 mx = cx_/(cz+xi), my = cy_/(cz+xi), r² = mx²+my²
 R  = 1 + d0r² + d1r⁴ + d2r⁶ + d3r⁸ + d4r¹⁰
 xd = mx·R + (r²+2mx²)(d5+d7r²) + 2mx·my(d6+d8r²) + d9r²  + d11r⁴
@@ -102,120 +102,121 @@ yd = my·R + (r²+2my²)(d6+d8r²) + 2mx·my(d5+d7r²) + d10r² + d12r⁴
 u = (fx·xd + cx)·scale,  v = (fy·yd + cy)·scale
 ```
 
-継ぎ目は光軸からの角度の差で ±3°（幅6°）の線形クロスフェード（Studioの既定値）。
+The seam is a linear crossfade of ±3° (6° wide) in the difference of the angle from the optical axis (Studio's default).
 
-### 継ぎ目の合わせ込み（キャリブレーションの補正、`core/seamfit.ts`）
+### Seam fitting (calibration correction, `core/seamfit.ts`)
 
-- キャリブレーションのままだと、横を向いたときにレンズ1の映像が **左右とも約 2° 前寄り**にずれる（1920 幅・画角 100° で 27〜37px、縦にも 6〜11px）
-- 止まっている時（876s）も 100km/h で走っている時（60s）も同じずれ → 撮影の時刻の差（ローリングシャッター・露光）ではない
-- 左右で対称 → レンズ1の回転では直らない（回転だけで合わせると片側が合い、反対側が悪化した）。ヨー・ピッチ・ロールの符号の解釈を変えても改善しない
-- レンズの位置（tx, ty, tz）はレンズ1が tz = −32.8mm（レンズ0の後ろ）。視差は 5m 先で 0.4°、1.5m 先の路面で 1.3° 程度で、遠景の 2° は説明できない
-- → **光軸からの角度の誤差**とみなし、レンズ1に「縁の角度の補正」θ' = θ + δ·(θ/90°)³（中心はほぼそのまま、縁ほど効く）と小さな回転を加える
-- 推定: 動画の 10〜90% の 5 か所のキーフレームで、重なり帯（レンズ0の光軸から 86〜94°・全周）の明るさ（平均と広がりをそろえた絶対差）が最小になる δ と回転を Nelder–Mead 法で探す
-- このファイルの結果: **δ = 1.94°**、回転 0.1〜0.3°（Python のプロトタイプと TypeScript で同じ）。重なり帯の差は約 3 割減り、横を向いたときのずれは 27〜37px → 1〜10px（遠景・中景はほぼ 0、残りは近い路面の視差）
+- With the calibration as is, the lens 1 image is shifted **about 2° forward on both left and right** when looking sideways (27 to 37px at 1920 width and 100° FOV, and 6 to 11px vertically)
+- The same shift while stopped (876s) and while riding at 100km/h (60s) → not due to a capture-time difference (rolling shutter, exposure)
+- Symmetric left and right → a rotation of lens 1 does not fix it (fitting with rotation alone fixed one side and made the other worse). Changing how the signs of yaw, pitch and roll are interpreted doesn't help either
+- Lens position (tx, ty, tz): lens 1 is at tz = −32.8mm (behind lens 0). The parallax is 0.4° at 5m and about 1.3° on the road surface 1.5m ahead, which cannot explain the 2° at distance
+- → Treated as an **error in the angle from the optical axis**: lens 1 gets an "edge angle correction" θ' = θ + δ·(θ/90°)³ (the center stays nearly unchanged, the edge is affected more) plus a small rotation
+- Estimation: at 5 keyframes between 10% and 90% of the video, search with the Nelder–Mead method for the δ and rotation that minimize the brightness difference in the overlap band (86 to 94° from the optical axis of lens 0, all the way around), measured as an absolute difference after matching mean and spread
+- Result for this file: **δ = 1.94°**, rotation 0.1 to 0.3° (the same in the Python prototype and TypeScript). The difference in the overlap band drops by about 30%, and the shift when looking sideways goes from 27 to 37px down to 1 to 10px (nearly 0 for far and mid-range scenery; the rest is parallax of the nearby road surface)
 
-### 動的なつなぎ合わせ（近い物の視差、`render/seamdepth.ts`・シェーダーの PROBE_FS）
+### Dynamic stitching (parallax of near objects, `render/seamdepth.ts` and PROBE_FS in the shader)
 
-- キャリブレーションの tx, ty, tz はレンズ0のカメラ座標で、**投影の中心はその符号を反転した位置**として扱う（レンズ1の投影の中心はレンズ0の光軸方向に 32.8mm 前）。前玉の配置とは逆に見えるが、魚眼レンズの投影の中心は前玉の位置とは限らない。符号は実データで確かめた: 3:22 の橋の欄干は、この向きでだけ近い距離にすると一致し、逆の向きではどの距離でも悪化する
-- 2 つのレンズの位置の差による視差は、距離 D で約 1.9°/D[m]（1m で 1.9°、2.6m で 0.7°）
-- 継ぎ目の付近の景色を、方位（継ぎ目に沿った位置）ごとに決めた距離の球面上にあるとみなし、各レンズの位置から見た向きで投影する（補正は継ぎ目の付近だけ: 継ぎ目から ±7° は全部、±15° で 0。以前は ±40° まで弱めながらかけていたため、前を向いた画面の左下の路肩の草など継ぎ目から離れた所まで、フレームごとに変わる距離で伸び縮みして不自然に動いて見えた）
-- 距離はフレームごとに GPU で探す: 方位 256 分割 × 距離 10 候補（無限遠〜45cm）の各組で、重なり帯（86.5〜93.5°）の 128 点の明るさの相関を求め、相関が最も高い距離を選ぶ。模様のない所は隣と前のフレームに任せ、隣どうし・前のフレームと急に変わらないようにし、同じくらいなら遠い方を選ぶ
-- **水平より下の方位は、地面までの距離を目安にする**: 重力の向き（車体の姿勢からリーンを戻した水平な向き、`MotionModel.downInRig`）から、
-  継ぎ目の各方位の見下ろす角 e を求め、地面までの距離 = カメラの高さ（1.5m とみなす）÷ sin e をその方位の候補に加える。
-  - 地面より遠い候補は強く嫌う（地面より遠くは見えない。坂や高さの誤差を見込み、地面の距離の 1.25 倍までは許す）
-  - 地面より近い候補（自車・ライダー・すぐ横の壁など）は、一致度がはっきり良いときだけ選ぶ
-  - 路面（アスファルト）はレンズの縁で細かい模様がぼけ、どの距離でも相関が悪い（不一致 0.3〜0.6）。そのばらつきで距離を選ぶと、
-    継ぎ目に沿ってビンごとに距離が 0.5m〜∞ と飛び、白線がギザギザに折れる。地面が見える方位では、いちばん良い候補の不一致が 0.2 未満のときだけ相関を使い、
-    それ以外は地面の距離にする
-  - 普通の付け方（レンズが前後）では継ぎ目は左右の真横を縦に通り、路面にかかるのは足元だけ。カメラを横倒しに付けて（本体の上面を前へ・レンズが空と地面）
-    継ぎ目が前方の路面を斜めに横切るときに効く（2026-08-30 知床峠の 1:07.74 のセンターライン）
-- **どの距離でも一致が悪いビンは、一致度の差を当てにしない**: いちばん良い候補の不一致が 0.1 以下なら一致度をそのまま使い、0.35 以上なら使わない（間は直線で弱める。
-  使わない分は隣と前のフレームに任せ、同じくらいなら遠い方）。明るい空との境目や模様の弱いコンクリートでは、どの距離でも不一致が 0.4〜0.7 なのに
-  いちばん近い候補（45cm）だけがたまたま 0.24〜0.38 になることがあり、そのビンだけ 0.5m を選んでいた。はっきり写っている物は 0.2 未満
-  （0919 の欄干 0.05〜0.18、自車 0.01〜0.06）なので、これらは今までどおり選ばれる。地面が見える方位の「0.2 未満のときだけ相関を使う」はこれとは別に残す
-- **継ぎ目から離れた所では、継ぎ目に沿ってぼかした距離を使う**: 2 つのレンズを混ぜる帯（継ぎ目から ±3°）ではビンごとの距離をそのまま使い（位置合わせに要る）、
-  ±7° までにガウスでぼかした距離（σ = 3 ビン ≈ 4°）へ移り、±15° で補正 0 になる。片方のレンズだけが見える所では位置合わせは要らず、ビンごとの距離の差は
-  そのまま景色のゆがみになる。補正は ±7° まで弱めないので、1 ビン（1.4°）だけ近い距離だと、そこを横切るまっすぐな線がそのビンの幅で 2〜4° 引っ張られ、小さな三角の段差になる
-  - 2026-08-30 知床峠の 3:04.66（自車を映す向き）: トンネルの壁と下の段の境目に三角の段差が出ていた。原因はビン 143（継ぎ目から 8°）が、上の「たまたまの一致」で 0.5m を選んでいたこと。
-    一致度の弱め方で消え、その後の橋の欄干（1m 先の横木が継ぎ目に沿って走る）で横木が折れていたのも、ぼかしでなだらかになった。
-    継ぎ目の帯の中で近い横木が継ぎ目に沿って走るときに少しずれるのは残る（方位ごとに 1 つの距離では、横木と後ろの木を同時に合わせられない）
-- **補正の基準点は、混ぜる割合に合わせて 2 つのレンズの位置の間で動かす**: 景色の点 = 向き × 距離 として、各レンズはその点を自分の位置から見た向きで描く。
-  基準点（「見ている目」）は、レンズ0 の重み w0 で混ぜた位置 mix(レンズ1, レンズ0, w0) に置く。レンズ0 だけで描く所（w0 = 1）はレンズ0 の位置から見たままなので、
-  距離がいくつでもゆがまない。補正がかかるのは 2 つのレンズを混ぜる帯の中だけで、そこではもう片方のレンズを合わせ込む
-  - 以前は基準点を 2 つのレンズの真ん中に固定し、両方のレンズに半分ずつ逆向きに補正していた。片方のレンズだけが写る継ぎ目の付近（±7〜15°）まで、方位ごとに違う距離で引っ張られ、
-    2026-10-11 知床の 8:00.76（カメラをトップケースの後ろに付けた動画）では、トップケースの縁が留め具の所で段違いになり、左右の反射板の高さがずれていた
-    （隣のビンの距離の逆数が約 2/m 違い、約 30px のずれ）。レンズ1 ではケースはカメラの台に隠れていて、もともとレンズ0 だけで描く所。Insta360 Studio ではきれいにつながっていた
-  - 直した後: ケースの縁と反射板はまっすぐつながる。左右の帯の高さが少し違って見えるのは遠近（ケースの角度）で、Studio でも同じ。ほかの場面（`testdata/seam`）は変わらない
-    （1011-plate のケースの横の草が少しにじむ程度）。つなぎ目の位置をずらす範囲を ±16° に広げても見た目は変わらないので ±8° のまま
-- 距離は連続したフレームでは少しずつ変える（新しい値へ 1 フレームに 15% ずつ、50fps で約 0.3 秒）
-- 再生・書き出しでは前のフレームで投げた探索の結果を 1 フレーム遅れで受け取る（GPU を待たない）。追加の時間は 1 フレーム約 1.3ms
-- 継ぎ目のクロスフェードは幅 12°（S 字）。2 つのレンズは細部のくっきりさが少し違う（レンズ0の方がややぼやける）ので、6° だと切り替わる線が見える。18° だと近い物が二重に見え始める
-- **像が合わない方位は、つなぎ目の位置をずらして狭く切り替える**（`render/seamdepth.ts` の `chooseSeamCut`、シェーダーの CUT_FS）
-  - 2026-10-11 知床の 1:35.20（カメラをトップケースの後ろに付けた動画）: 0.3〜0.7m のナンバープレートとトップケースが継ぎ目の真上にあり、ナンバープレートが二重に透けていた。
-    その方位の不一致はどの距離でも 0.39〜0.70。片方のレンズ（レンズ1）にだけカメラの台が写り、プレートとトップケース・後ろの路面で距離も違うので、方位ごとに 1 つの距離では合わせられない。
-    距離を 0.17〜∞ m に固定して描いても二重は消えない。ローリングシャッターの補正を切っても同じ（プレートはカメラと一緒に動くので、補正の影響ではない）
-  - GPU で、方位のビン × つなぎ目の位置の候補（幾何学的な継ぎ目からレンズ0の側へ −8〜+8°、2° おき）ごとに、今の距離で位置を合わせた両レンズの明るさの差
-    （ビンの中の平均の差を除いた絶対値の平均。継ぎ目に沿った 16 点 × 0.8° おきの 3 列）を求める。どちらかのレンズの写る範囲（光軸から 100°）を超える位置は使わない
-  - 「像が合わない度合い」= 選んだ距離での不一致（0.2〜0.4 で 0→1）× 継ぎ目の位置での像の差（0.12〜0.3 で 0→1）。模様の無い方位（空）は 0（明るさの違いが線になって見えるので）。
-    物の端まで効くよう、隣の 2 ビンへ広げてからぼかす
-  - 合わない方位ほど切り替えの幅を狭め（最も合わないとき 1/4 = 3°）、つなぎ目の位置を像の差の小さい所へ。位置はビンの並びに沿った最短経路（像の差 + ずらす量 + 隣との差）で選び、
-    方位に沿ってなめらかにする（隣との差を嫌う重みが小さいと、つなぎ目がジグザグに折れてトップケースの縁に段差が出た）。合う方位は幾何学的な継ぎ目・幅 12° のまま
-  - **両方のレンズで模様の無い所は、平均の明るさの差も像の差に足す**（露出の違い程度の 0.04 までは許す）。平均を除いた差だけだと、模様の無い面どうしは明るさが違っても「合う」
-    - 2026-10-11 知床の 8:00.76: つなぎ目がトップケースの下の縁（レンズ0 は灰色のケース、レンズ1 は黒いカメラの台）へ寄り、細い切り替えの帯に台の黒い縁が出て、
-      ナンバープレートがケースに透けたように見えた。明るさの差を見ると、つなぎ目はプレートの下の路面側（レンズ0 がプレートまで描く）へ移る
-    - 模様のある所（3 列 48 点の、平均からの差の平均が 0.005〜0.012 で 1→0）では見ない。物の縁では位置の少しのずれでも平均が変わり、
-      常に見ると 1:35.20 でつなぎ目がナンバープレートの上の縁から外れてプレートの中を通り、数字の端がにじんだ
-  - **像の差と合わない度合いは時間でならす**（1 フレームに 3%、50fps で約 0.7 秒）。つなぎ目の上の近い物（トップケース・ナンバープレート・カメラの台）はカメラと一緒に動くので、
-    良い位置はほとんど変わらない。フレームごとの像の差は後ろへ流れる路面で揺れ、離れた候補（−5° と +3° など）の間で選び直していた
-    （2026-10-11 知床の 1:35 前後の 2 秒で、ケースの付近のビンの位置の変化の合計 62〜90° → ならすと 0.4〜12°）。出力の位置だけをならしても、候補の間を行き来する途中で物を横切る
-  - **隣のビンへ位置を変えるときは、その間の位置の像の差も数える**（つなぎ目の線はその間を斜めに横切る）。差の小さい位置が物の上（+2〜+4°）と下（−8〜−6°）に分かれていると、
-    その間で乗り換える所でナンバープレートを横切り、プレートの数字が欠けていた。乗り換えの費用に入れると、どちらか一方を通る
-    - 2026-10-11 知床の 0:00（駐車場。ケースが 0.5〜1m と近く、レンズ1 の真ん中をカメラの台がふさぐ）: ケースの左下が欠けて路面になり、プレートの一部が消えていたのが直った。
-      Insta360 Studio でも、この動画は AI スティッチング以外の方法では違和感がある（2 つのレンズで見えている物そのものが違うので、つなぎ目の位置を選ぶだけでは限界がある）
-  - 連続したフレームでは、位置と幅を新しい値へ 1 フレームに 25% ずつ近づける
+- The calibration's tx, ty, tz are in lens 0's camera coordinates, and the **projection center is treated as the position with that sign reversed** (the projection center of lens 1 is 32.8mm ahead along the optical axis of lens 0). This looks opposite to the placement of the front elements, but the projection center of a fisheye lens is not necessarily at the front element. The sign was confirmed on real data: the bridge railing at 3:22 matches at a near distance only in this direction, and gets worse at every distance in the opposite direction
+- The parallax from the difference in the two lens positions is about 1.9°/D[m] at distance D (1.9° at 1m, 0.7° at 2.6m)
+- The scenery near the seam is assumed to lie on a sphere whose distance is decided per azimuth (position along the seam), and is projected in the direction seen from each lens position (the correction applies only near the seam: in full within ±7° of the seam, 0 at ±15°. Previously it was applied while fading out to ±40°, so even places far from the seam, such as the roadside grass at the lower left of a forward-facing view, stretched and shrank with a distance that changed from frame to frame and looked unnaturally in motion)
+- The distance is searched per frame on the GPU: for each combination of 256 azimuth divisions × 10 distance candidates (infinity to 45cm), the correlation of brightness at 128 points in the overlap band (86.5 to 93.5°) is computed, and the distance with the highest correlation is chosen. Places without texture are left to the neighbors and the previous frame; the distance is kept from changing abruptly between neighbors and from the previous frame, and the farther one is chosen when they are about equal
+- **For azimuths below the horizon, the distance to the ground is used as a guide**: from the direction of gravity (the horizontal direction obtained by removing the lean from the body attitude, `MotionModel.downInRig`),
+  find the downward angle e of each azimuth on the seam, and add the ground distance = camera height (assumed 1.5m) ÷ sin e to the candidates for that azimuth.
+  - Candidates farther than the ground are strongly penalized (nothing beyond the ground is visible. Allowing for slopes and height error, up to 1.25 times the ground distance is permitted)
+  - Candidates nearer than the ground (own bike, rider, a wall right beside, etc.) are chosen only when the match is clearly good
+  - On the road surface (asphalt) the fine texture is blurred at the lens edge and the correlation is poor at every distance (mismatch 0.3 to 0.6). Choosing the distance from that scatter
+    makes the distance jump between 0.5m and ∞ from bin to bin along the seam, and white lines get zigzag kinks. For azimuths where the ground is visible, the correlation is used only when the mismatch of the best candidate is below 0.2;
+    otherwise the ground distance is used
+  - With a normal mount (lenses front and back) the seam runs vertically through the exact left and right sides and only crosses the road at one's feet.
+    This matters when the camera is mounted sideways (top of the body facing forward, lenses toward the sky and the ground)
+    and the seam crosses the road ahead diagonally (the center line at 1:07.74 of Shiretoko Pass, 2026-08-30)
+- **Don't rely on the match score for bins that match badly at every distance**: if the mismatch of the best candidate is 0.1 or less the match score is used as is, and if it is 0.35 or more it is not used (linear fade in between.
+  What isn't used is left to the neighbors and the previous frame, and the farther one is chosen when they are about equal). At the border with a bright sky or on weakly textured concrete, the mismatch is 0.4 to 0.7 at every distance, yet
+  only the nearest candidate (45cm) happens to come out at 0.24 to 0.38, so that bin alone used to pick 0.5m. Things that are clearly visible are below 0.2
+  (0919 bridge railing 0.05 to 0.18, own bike 0.01 to 0.06), so they are still chosen as before. The "use the correlation only when below 0.2" rule for azimuths where the ground is visible stays separately from this
+- **Away from the seam, use a distance blurred along the seam**: in the band where the two lenses are blended (±3° from the seam) the per-bin distance is used as is (needed for alignment),
+  then it moves to a Gaussian-blurred distance (σ = 3 bins ≈ 4°) up to ±7°, and the correction reaches 0 at ±15°. Where only one lens is visible no alignment is needed, and differences in per-bin distance
+  turn directly into distortion of the scenery. The correction isn't weakened until ±7°, so if a single bin (1.4°) has a near distance, a straight line crossing it is pulled by 2 to 4° over the width of that bin and becomes a small triangular step
+  - 3:04.66 of Shiretoko Pass 2026-08-30 (facing toward the own bike): a triangular step appeared at the border between the tunnel wall and the lower ledge. The cause was bin 143 (8° from the seam) choosing 0.5m through the "accidental match" above.
+    It disappeared with the weakening of the match score, and the kinked crossbar in the bridge railing that followed (a crossbar 1m away running along the seam) was also smoothed by the blurring.
+    A slight offset remains when a near crossbar runs along the seam inside the seam band (with one distance per azimuth, the crossbar and the trees behind it can't be aligned at the same time)
+- **The reference point of the correction moves between the two lens positions according to the blend ratio**: with a scenery point = direction × distance, each lens draws that point in the direction seen from its own position.
+  The reference point (the "viewing eye") is placed at the position mix(lens 1, lens 0, w0) blended with lens 0's weight w0. Where only lens 0 draws (w0 = 1) it is seen exactly from lens 0's position,
+  so it is not distorted whatever the distance. The correction applies only inside the band where the two lenses are blended, and there the other lens is fitted to it
+  - Previously the reference point was fixed at the midpoint of the two lenses, with half the correction applied to each lens in opposite directions. Near the seam where only one lens is visible (±7 to 15°) it was pulled by distances that differ per azimuth,
+    and in 8:00.76 of Shiretoko 2026-10-11 (a video with the camera mounted behind the top case), the edge of the top case had a step at the fastener and the left and right reflectors were at different heights
+    (the reciprocal of the distance of adjacent bins differed by about 2/m, a shift of about 30px). In lens 1 the case is hidden by the camera mount, so it is a place drawn only by lens 0. In Insta360 Studio it was connected cleanly
+  - After the fix: the case edge and the reflectors connect straight. The left and right bands looking slightly different in height is perspective (the angle of the case) and is the same in Studio. Other scenes (`testdata/seam`) are unchanged
+    (only a slight bleed of the grass beside the case in 1011-plate). Widening the range over which the seam position is shifted to ±16° makes no visible difference, so it stays at ±8°
+- The distance changes gradually over consecutive frames (toward the new value by 15% per frame, about 0.3 seconds at 50fps)
+- In playback and export, the result of the search issued in the previous frame is received one frame late (no waiting for the GPU). The added time is about 1.3ms per frame
+- The seam crossfade is 12° wide (S-shaped). The two lenses differ slightly in sharpness of detail (lens 0 is a little blurrier), so at 6° the switching line is visible. At 18° near objects start to look doubled
+- **For azimuths where the images don't match, shift the seam position and switch over a narrow width** (`chooseSeamCut` in `render/seamdepth.ts`, CUT_FS in the shader)
+  - 1:35.20 of Shiretoko 2026-10-11 (a video with the camera mounted behind the top case): the license plate and top case at 0.3 to 0.7m sat right on the seam, and the license plate showed through twice.
+    The mismatch at that azimuth is 0.39 to 0.70 at every distance. The camera mount appears in only one lens (lens 1), and the distances of the plate, the top case and the road behind differ, so one distance per azimuth can't align them.
+    Drawing with the distance fixed to 0.17 to ∞ m doesn't remove the doubling. It's the same with the rolling shutter correction turned off (the plate moves together with the camera, so it isn't an effect of the correction)
+  - On the GPU, for each combination of azimuth bin × seam position candidate (from the geometric seam toward the lens 0 side, −8 to +8°, every 2°), compute the brightness difference between the two lenses aligned at the current distance
+    (mean absolute value after removing the mean difference within the bin: 3 columns of 16 points along the seam × 0.8° spacing). Positions beyond the range either lens can see (100° from the optical axis) are not used
+  - "Mismatch degree" = mismatch at the chosen distance (0.2 to 0.4 maps to 0→1) × image difference at the seam position (0.12 to 0.3 maps to 0→1). Azimuths without texture (sky) get 0 (because a brightness difference would show as a line).
+    It is widened to the 2 adjacent bins and then blurred so that it reaches the edges of objects
+  - The worse an azimuth matches, the narrower the switching width (1/4 = 3° at the worst), and the seam position moves to where the image difference is small. The position is chosen as the shortest path along the bin sequence (image difference + shift amount + difference from the neighbor)
+    and smoothed along the azimuth (with a small weight against differences from neighbors, the seam kinked in a zigzag and left a step at the edge of the top case). Matching azimuths keep the geometric seam and the 12° width
+  - **Where neither lens has texture, the mean brightness difference is also added to the image difference** (differences up to 0.04, about an exposure difference, are tolerated). With only the difference after removing the mean, two textureless surfaces "match" even if their brightness differs
+    - 8:00.76 of Shiretoko 2026-10-11: the seam moved toward the lower edge of the top case (lens 0 sees the gray case, lens 1 the black camera mount), the black edge of the mount appeared in the narrow switching band,
+      and the license plate looked as if it were seen through the case. Looking at the brightness difference, the seam moves to the road side below the plate (lens 0 draws up to the plate)
+    - Not looked at where there is texture (the mean difference over 3 columns × 48 points from the mean is 0.005 to 0.012, mapped 1→0). At the edge of an object the mean changes even with a slight position shift,
+      and looking at it always made the seam leave the upper edge of the license plate at 1:35.20 and run through the plate, smearing the edges of the digits
+  - **The image difference and the mismatch degree are smoothed over time** (3% per frame, about 0.7 seconds at 50fps). Near objects on the seam (top case, license plate, camera mount) move together with the camera, so the good position barely changes.
+    The per-frame image difference fluctuated on the road streaming backward and re-chose between distant candidates (such as −5° and +3°)
+    (in the 2 seconds around 1:35 of Shiretoko 2026-10-11, the total change in bin positions near the case was 62 to 90° → 0.4 to 12° after smoothing). Smoothing only the output position still crosses the object while going back and forth between candidates
+  - **When moving the position to an adjacent bin, count the image difference of the positions in between too** (the seam line crosses between them diagonally). When positions with a small difference are split above the object (+2 to +4°) and below it (−8 to −6°),
+    the transfer between them crossed the license plate and left digits of the plate missing. With it included in the transfer cost, the path goes through one side or the other
+    - 0:00 of Shiretoko 2026-10-11 (parking lot. The case is close, at 0.5 to 1m, and the camera mount blocks the middle of lens 1): the lower left of the case was missing and became road surface, and part of the plate disappeared; this was fixed.
+      In Insta360 Studio too, this video looks off with anything other than AI stitching (what the two lenses see is itself different, so choosing the seam position alone has limits)
+  - Over consecutive frames, the position and width approach the new values by 25% per frame
 
-### 自車の継ぎ目の型（AI、試験的。`core/bodymap.ts`・`engine/bodymap.ts`・`engine/bodymap.worker.ts`）
+### Seam template for the own bike (AI, experimental. `core/bodymap.ts`, `engine/bodymap.ts`, `engine/bodymap.worker.ts`)
 
-カメラをトップケースの後ろに付けると、トップケース・ナンバープレート・カメラの台が継ぎ目の真上に来る。0.3〜1m と近く、
-レンズ1 ではカメラの台がケースをふさぐので、2 つのレンズの像はどの距離でも合わない。フレームごとにつなぎ目の位置を選ぶ処理
-（上の「像が合わない方位は、つなぎ目の位置をずらして狭く切り替える」）では、ケースの角やプレートの一部が欠けたり、走行中に選び直してパラパラ動いたりする。
-Insta360 Studio でも、この動画は AI スティッチング以外の方法（オプティカルフローなど）では違和感がある。
+When the camera is mounted behind the top case, the top case, license plate and camera mount sit right on the seam. They are close, at 0.3 to 1m,
+and in lens 1 the camera mount blocks the case, so the images of the two lenses don't match at any distance. In the per-frame seam position selection
+(above, "For azimuths where the images don't match, shift the seam position and switch over a narrow width"), corners of the case and parts of the plate go missing, and re-selection while riding makes them flicker.
+In Insta360 Studio too, this video looks off with anything other than AI stitching (optical flow etc.).
 
-これらはカメラと一緒に動くので、レンズの画像の中では止まっている。そこで動画を 30 秒の区間に分け、区間ごとに 1 回だけ:
+These move together with the camera, so they are stationary within the lens images. So the video is divided into 30-second sections, and once per section:
 
-1. 継ぎ目の付近を帯の画像にする: 列 = 方位 φ（2400 列、0.15°）、行 = レンズ0 の光軸からの角度 θ（68.4〜111.6°、288 行）。
-   区間のキーフレーム（5 秒おき、最大 9 枚）を両レンズとも帯にして、中央値をとる（型）
-2. 時間で変わらない所 = 自車の部分: 模様のある所は各フレームと型の局所的な相関（7×7）の中央値が 0.5〜0.8 で 0→1、模様の無い所は明るさのばらつきが 0.015 未満。
-   明るさのばらつきだけで決めると、日の当たり方で明るさの変わるアルミのケースを「変わる」とし、ケースの大部分が外れた。
-   カメラの台の揺れでケースの縁が 1 画素ほど動くので、明るさを少しぼかしてから比べる
-3. 2 つのレンズが両方写す重なり（θ 79〜101°）を縦に引き伸ばして NeuFlow v2（432×768）に入れ、レンズ0 → レンズ1 と逆向きのフローを求める（WebGPU で 1 枚 0.2〜0.4 秒、CPU では 5 秒）。
-   前向きと逆向きが 2px 以内で一致する所だけ使い、それ以外はずらさない。重なり全体ではなく、両方のレンズが写る範囲だけを入れる
-   （帯全体を入れると、それぞれのレンズの写る範囲の外の黒い所どうしを合わせてしまい、フローが壊れた）
-4. つなぎ目の行を列ごとに決める: 型の像の差（レンズ1 をずらして重ねた差、縦 7 行・横 3 列の平均）× 3 + 90° からの角度 × 0.04/° + 合わせられない自車の部分をレンズ1 で描く行数 × 0.01、
-   隣の列との行の差 × 0.2/行 の最短経路。どちらの側もそれぞれのレンズで描く（どちらのレンズが正しいかは決めない）
-   - 「暗い側をふさぐ物とみなす」「模様の多い側を正しいとみなす」は、反射板を 2 重にしたり、ケースの黒い縁を消したりしたのでやめた
-   - 隣の列との差を安くすると、つなぎ目が U 字に曲がって、視差でずれたもう一方のレンズの反射板やタイヤが写り込んだ
-5. レンズ1 を読む位置のずれ = 信頼できるフロー。つなぎ目から 40 行（6°）で 0 へ弱める（2° で弱めると反射板のような直線がつなぎ目のすぐ先で折れた）
-6. 穴（つなぎ目のこちら側を描くレンズが写す範囲の外で、もう一方も外）は、AI の画像の補完（LaMa、または MI-GAN）で型を埋める。
-   トップケースの後ろの台ではレンズ1 の台はいつもレンズ0 の側にあり、穴は出ない。「暗く・変わらず・模様が無い所を穴にする」も試したが、ケースの黒い縁やライダーの黒いズボンまで消したのでやめた
+1. Make a band image of the area near the seam: columns = azimuth φ (2400 columns, 0.15°), rows = angle θ from the optical axis of lens 0 (68.4 to 111.6°, 288 rows).
+   Make bands of both lenses at the section's keyframes (every 5 seconds, up to 9) and take the median (the template)
+2. Parts that don't change over time = the own-bike parts: where there is texture, the median of the local correlation (7×7) between each frame and the template maps 0.5 to 0.8 to 0→1; where there is no texture, the brightness spread is below 0.015.
+   Deciding by brightness spread alone treated the aluminum case, whose brightness changes with the sunlight, as "changing" and dropped most of the case.
+   The case edge moves by about 1 pixel with the shake of the camera mount, so the brightness is blurred slightly before comparing
+3. Stretch the overlap that both lenses see (θ 79 to 101°) vertically and feed it to NeuFlow v2 (432×768), and compute flows in both directions, lens 0 → lens 1 and the reverse (0.2 to 0.4 seconds per image with WebGPU, 5 seconds on CPU).
+   Use only where forward and backward agree within 2px; elsewhere don't shift. Feed only the range both lenses see, not the whole overlap
+   (feeding the whole band made it match the black areas outside each lens's visible range, which broke the flow)
+4. Decide the seam row for each column: the shortest path of [image difference of the template (difference with lens 1 shifted and overlaid, average over 7 rows × 3 columns) × 3 + angle from 90° × 0.04/° + number of rows of unalignable own-bike parts drawn by lens 1 × 0.01],
+   plus the row difference from the neighboring column × 0.2/row. Each side is drawn by its own lens (no decision on which lens is correct)
+   - "Treat the dark side as the occluding object" and "treat the side with more texture as correct" were dropped because they doubled the reflector or erased the black edge of the case
+   - Making the difference from the neighboring column cheap made the seam bend into a U shape and showed the other lens's reflector and tire, shifted by parallax
+5. Shift of the position to read from lens 1 = the reliable flow. Fade to 0 within 40 rows (6°) of the seam (fading within 2° made straight lines such as the reflector kink just beyond the seam)
+6. Holes (outside the range seen by the lens drawing this side of the seam, and the other is outside too) are filled in the template with AI inpainting (LaMa, or MI-GAN).
+   With the mount behind the top case, lens 1's mount is always on the lens 0 side and no holes appear. "Treat dark, unchanging, textureless places as holes" was also tried, but dropped because it erased even the case's black edge and the rider's black trousers
 
-描画では、自車の部分はこの型のつなぎ目とずれで、そのときの映像を貼る（明るさや影はそのときのまま）。それ以外は、これまでのフレームごとの処理。
-区間の真ん中どうしの間は 2 つの型を直線で混ぜる（カメラの台がゆっくり回る動画で、つなぎ目が区間の境で急に変わらないように）。
-型は動画の横の `.motorecomovie-body.bin`（gzip。自車の部分の列だけ）に保存する。
+When drawing, the own-bike parts use this template's seam and shift to paste the current video (brightness and shadows as they are at the time). Everything else uses the per-frame processing as before.
+Between the centers of sections, the two templates are blended linearly (so the seam doesn't change abruptly at section boundaries in videos where the camera mount rotates slowly).
+The template is saved to `.motorecomovie-body.bin` next to the video (gzip; only the columns of the own-bike parts).
 
-結果（`testdata/seam` の「自車の継ぎ目の型あり / なし」）:
+Results ("with / without the own-bike seam template" in `testdata/seam`):
 
-| 場面 | 型あり |
+| scene | with template |
 |---|---|
-| 1011 知床 0:00（駐車場、ケースまで数十 cm） | ケースの左下が欠けない・反射板がまっすぐ。ナンバープレートが少しゆがむ |
-| 1011 知床 1:35（走行中） | ケースの縁はつながる。左の反射板の左端とケースの左下が少しにじむ |
-| 1011 知床 8:00.76 | 型なしとほぼ同じ |
-| 1011 知床 1:53（パニア） | 左の反射板の左端が少しにじむ |
-| 0919・0830 | 変わらない |
+| 1011 Shiretoko 0:00 (parking lot, case a few tens of cm away) | The lower left of the case is not missing and the reflector is straight. The license plate is slightly distorted |
+| 1011 Shiretoko 1:35 (riding) | The case edge connects. The left end of the left reflector and the lower left of the case bleed slightly |
+| 1011 Shiretoko 8:00.76 | Nearly the same as without the template |
+| 1011 Shiretoko 1:53 (pannier) | The left end of the left reflector bleeds slightly |
+| 0919, 0830 | Unchanged |
 
-走行中のパラパラ（つなぎ目の位置の選び直し）は、型なしでも像の差を時間でならして収まったので、良くなる所と悪くなる所がある型は既定でオフ（スタビライズ欄の「自車の継ぎ目を AI で合わせる（試験的）」）。
+The flicker while riding (re-selection of the seam position) also settled without the template once the image difference was smoothed over time, so the template, which improves some places and worsens others, is off by default (the "Align the body seam with AI (experimental)" checkbox in the Stabilization section).
 
-Insta360 Studio の AI スティッチングのモデル（`data/models` の `.ins` / `.insnx`、MNN と DirectML で動かす）は暗号化されていて中身は読めない
-（`self_stick_det_320x160` という名前から、カメラの台・自撮り棒を見つけて消すモデルがあるらしい）。Insta360 のものなので使わない。
-  - 結果: ナンバープレートは 1 枚にくっきり写り、つなぎ目はプレートを避けて路面を通る。書き出した動画でもちらつきは無い。トップケースの左端に、ときどき小さなかすれが残る。
-    0919 の橋の欄干・0830 のセンターライン・0830 のトンネルの壁の縁は、変わらない（`testdata/seam`）
+The models of Insta360 Studio's AI stitching (`.ins` / `.insnx` in `data/models`, run with MNN and DirectML) are encrypted and can't be read
+(the name `self_stick_det_320x160` suggests there is a model that finds and removes the camera mount and selfie stick). They belong to Insta360, so they are not used.
+  - Result: the license plate appears crisp as a single image, and the seam avoids the plate and runs over the road. No flicker in the exported video either. A small smear sometimes remains at the left end of the top case.
+    The bridge railing in 0919, the center line in 0830 and the edge of the tunnel wall in 0830 are unchanged (`testdata/seam`)

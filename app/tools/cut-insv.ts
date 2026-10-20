@@ -1,14 +1,14 @@
-// .insv を短く切り出す（デバッグ用のテストデータを作る）。アプリでそのまま開ける .insv になる。
+// Cuts a short piece out of an .insv (to make test data for debugging). The result is an .insv that the app can open as is.
 //
-//   映像・音声（MP4）: ffmpeg で再エンコードせずに写す（-c copy。始まりは直前のキーフレーム）
-//   トレーラー: アプリが使うレコードだけを、切り出した範囲に合わせて作り直す
-//     0x101 メタデータ（先頭フレームの時刻 field 24・フレーム数 field 40 を書き換え、ほかはそのまま）
-//     0x3   IMU（範囲の前後 IMU_MARGIN 秒を含める）
-//     0x4 / 0xc 各レンズのフレーム時刻（切り出したフレームの分）
-//   時刻（us）は元の動画の時間軸のまま。切り出した動画の 0 秒 = 元の動画の startUsed 秒
+//   Video and audio (MP4): copied by ffmpeg without re-encoding (-c copy; the start is the preceding keyframe)
+//   Trailer: only the records the app uses are rebuilt to match the cut range
+//     0x101 metadata (rewrites the first-frame time, field 24, and the frame count, field 40; the rest is kept as is)
+//     0x3   IMU (includes IMU_MARGIN seconds before and after the range)
+//     0x4 / 0xc frame times of each lens (for the cut frames)
+//   Times (us) stay on the time axis of the original video. 0 s of the cut video = startUsed seconds of the original
 //
-// 実行: npx tsx tools/cut-insv.ts <元の .insv> <開始 [s]> <長さ [s]> <出力 .insv>
-//   出力の横に <出力>.json（元の動画・切り出した範囲）を書く
+// Run: npx tsx tools/cut-insv.ts <source .insv> <start [s]> <duration [s]> <output .insv>
+//   Writes <output>.json (the source video and the cut range) next to the output
 import { open, writeFile, appendFile, copyFile, unlink, stat } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { InsvTrailer } from '../src/renderer/src/core/insv'
@@ -33,7 +33,7 @@ async function reader(path: string): Promise<{ r: FileReader; close: () => Promi
   }
 }
 
-/** protobuf の varint */
+/** protobuf varint */
 function varint(n: number): number[] {
   const out: number[] = []
   let v = n
@@ -45,7 +45,7 @@ function varint(n: number): number[] {
   return out
 }
 
-/** 最上位の field の値（varint）だけを置き換え、ほかのバイトはそのまま写す */
+/** Replaces only the values (varint) of top-level fields; all other bytes are copied as is */
 function patchProtobuf(b: Uint8Array, patch: Map<number, number>): Uint8Array {
   const out: number[] = []
   let i = 0
@@ -75,13 +75,13 @@ function patchProtobuf(b: Uint8Array, patch: Map<number, number>): Uint8Array {
     else if (wt === 2) {
       const n = readVarint()
       i += n
-    } else throw new Error(`未対応の wire type ${wt}`)
+    } else throw new Error(`Unsupported wire type ${wt}`)
     for (let j = start; j < i; j++) out.push(b[j])
   }
   return new Uint8Array(out)
 }
 
-/** 切り出した映像の 1 本目の映像トラックが、元のどのフレームから始まるか（サンプルの大きさの並びで照合） */
+/** Which frame of the original the first video track of the cut video starts from (matched by the sequence of sample sizes) */
 function findStart(src: Track, clip: Track, guess: number): number {
   const N = Math.min(12, clip.sizes.length)
   for (let d = 0; d < 400; d++) {
@@ -92,7 +92,7 @@ function findStart(src: Track, clip: Track, guess: number): number {
       if (ok) return j
     }
   }
-  throw new Error('切り出した映像の先頭フレームが元の動画に見つかりません')
+  throw new Error('The first frame of the cut video was not found in the original video')
 }
 
 export async function cutInsv(srcPath: string, startSec: number, durSec: number, outPath: string): Promise<{ startFrame: number; frames: number; startSec: number }> {
@@ -100,15 +100,15 @@ export async function cutInsv(srcPath: string, startSec: number, durSec: number,
   const tr = await InsvTrailer.open(src.r)
   const tracks = await demux(src.r)
   const vids = tracks.filter((t) => t.kind === 'video')
-  const ft0 = await tr.gyroFrameTimes(0) // ジャイロの時間軸（X5・分割の 2 本目以降は、記録の時刻がずれている）
+  const ft0 = await tr.gyroFrameTimes(0) // gyro time axis (on the X5 and on second and later split files, the recorded times are offset)
   const first = tr.meta.firstFrameUs
-  // 開始フレーム（2 本の映像トラックの両方でキーフレームの所まで戻る）
+  // start frame (go back to a keyframe on both video tracks)
   let i0 = 0
   while (i0 < ft0.length - 1 && (ft0[i0] - first) / 1e6 < startSec) i0++
   let k0 = keyframeBefore(vids[0], i0)
   while (k0 > 0 && !vids.every((v) => v.keyframes[k0])) k0 = keyframeBefore(vids[0], k0 - 1)
   const tSeek = vids[0].cts[k0] / vids[0].timescale
-  // 映像・音声を写す
+  // copy the video and audio
   const tmp = outPath + '.part.mp4'
   execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-ss', tSeek.toFixed(6), '-i', srcPath, '-t', String(durSec + (startSec - (ft0[k0] - first) / 1e6)), '-map', '0:v', '-map', '0:a?', '-c', 'copy', '-avoid_negative_ts', 'make_zero', tmp])
   const clip = await reader(tmp)
@@ -116,9 +116,9 @@ export async function cutInsv(srcPath: string, startSec: number, durSec: number,
   await clip.close()
   const j0 = findStart(vids[0], ct[0], k0)
   const j1 = findStart(vids[1], ct[1], k0)
-  if (j0 !== j1) throw new Error(`2 本の映像トラックの先頭がそろっていません（${j0} と ${j1}）`)
+  if (j0 !== j1) throw new Error(`The starts of the two video tracks do not match (${j0} and ${j1})`)
   const n = Math.min(ct[0].sizes.length, ct[1].sizes.length)
-  // トレーラーを作る
+  // build the trailer
   const imuRaw = await tr.record(0x3)
   const dvI = new DataView(imuRaw.buffer, imuRaw.byteOffset, imuRaw.byteLength)
   const tA = ft0[j0] - IMU_MARGIN * 1e6
@@ -176,13 +176,13 @@ export async function cutInsv(srcPath: string, startSec: number, durSec: number,
   return { startFrame: j0, frames: n, startSec: used }
 }
 
-// コマンドラインから
+// from the command line
 if (process.argv[1]?.replace(/\\/g, '/').endsWith('tools/cut-insv.ts')) {
   const [srcPath, s, d, out] = process.argv.slice(2)
   if (!out) {
-    console.log('使い方: npx tsx tools/cut-insv.ts <元の .insv> <開始 [s]> <長さ [s]> <出力 .insv>')
+    console.log('Usage: npx tsx tools/cut-insv.ts <source .insv> <start [s]> <duration [s]> <output .insv>')
     process.exit(1)
   }
   const r = await cutInsv(srcPath, Number(s), Number(d), out)
-  console.log(`切り出しました: 元の ${r.startSec.toFixed(2)} 秒（フレーム ${r.startFrame}）から ${r.frames} フレーム → ${out}`)
+  console.log(`Cut: ${r.frames} frames from ${r.startSec.toFixed(2)} s of the source (frame ${r.startFrame}) -> ${out}`)
 }

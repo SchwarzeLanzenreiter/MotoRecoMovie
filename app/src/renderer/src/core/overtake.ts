@@ -1,58 +1,58 @@
-// 追い越しの判定: 車線をまたいだ区間（core/lanes.ts）のうち、その間に追い越す側の真横を車が通ったもの（core/vehicles.ts）。
+// Overtake detection: among the sections where the bike crossed the lane (core/lanes.ts), those during which a car passed directly beside the overtaking side (core/vehicles.ts).
 //
-//   ・左側通行（センターラインが右 = 自分の車線）では右の車線へ出て追い越すので、追い越される車は左の真横を通る。
-//     右側通行ではその逆。対向車は反対側を通るので数えない
-//   ・自分のバイクの車体（後ろ向きの画像に映る）は除く: 画像の下の縁で切れるほど近いもの、後ろ半分のオートバイ、
-//     近すぎて大きく見えるもの、同じ向きに何度も見えるもの
-//   ・止まっている車を、センターラインをまたいで避けた場合も追い越しとみなす
+//   - In left-hand traffic (center line on the right = own lane) you pull out into the right lane to overtake, so the overtaken car passes directly on the left.
+//     In right-hand traffic it is the reverse. Oncoming cars pass on the opposite side, so they are not counted
+//   - Exclude the own bike's body (seen in the rear-facing image): anything so close it is cut off by the bottom edge of the image, motorcycles in the rear half,
+//     anything so close it looks too large, and anything seen many times in the same direction
+//   - Avoiding a stopped car by crossing the center line is also counted as an overtake
 import type { LaneCrossing } from './lanes'
 import type { VehicleSighting } from './vehicles'
 
-/** COCO のオートバイのクラス */
+/** COCO class for motorcycle */
 const MOTORCYCLE = 3
 
 /**
- * 判定の版。判定の方法を変えたら上げる（プロジェクトに残した結果が古い版なら、次の自動生成のときに調べ直す）。
- * 2: 路面の広がりだけで決める区間に、はっきりした偏りを求めるようにした（道路脇の駐車場の舗装で誤っていた）
+ * Version of the detection. Bump it when the method changes (if a result saved in a project is from an older version, it is re-examined on the next auto-generation).
+ * 2: for sections decided only by road-surface spread, require a clear bias (it was wrong on the pavement of a parking lot beside the road)
  */
 export const OVERTAKE_SCAN_VERSION = 2
 
 export interface Overtake {
-  /** 自分の車線にいた最後の時刻 [s]（この後、車線をまたぎ始める） */
+  /** Last time [s] in the own lane (after this, it starts crossing the lane) */
   start: number
-  /** 自分の車線に戻ったのを確かめた時刻 [s] */
+  /** Time [s] at which the return to the own lane was confirmed */
   end: number
 }
 
 export const OVERTAKE = {
-  /** 真横とみなす方位の範囲 [deg]（追い越す側。斜め前は追い越す前の車も入るので除く） */
+  /** Range of bearings [deg] regarded as directly beside (the overtaking side; diagonally ahead is excluded because it also includes cars before they are overtaken) */
   sideMin: 60,
   sideMax: 150,
   /**
-   * これより大きく見えるものは自分の車体とみなす [deg]（見かけの高さ）。
-   * 真横 2〜3m を通る車は 35° ほど。自分のバイクの一部は 0.5〜1m の近さで 40〜90° に映る
+   * Anything that looks larger than this is regarded as the own bike's body [deg] (apparent height).
+   * A car passing 2-3 m directly beside is about 35°. Parts of the own bike appear at 40-90° at a distance of 0.5-1 m
    */
   maxSize: 42,
   /**
-   * 後ろ半分（方位がこれより後ろ）に見えるオートバイは自分のバイクとみなす [deg]。
-   * 自分のバイクは一部だけ映ると小さく見え、毎回は検出されないので、大きさや見える回数では除ききれない
+   * A motorcycle seen in the rear half (bearing further back than this) is regarded as the own bike [deg].
+   * Parts of the own bike look small when only partly visible and are not detected every time, so size and number of sightings cannot exclude them all
    */
   ownBikeAz: 100,
   /**
-   * 枠の下端がこれより下（画像の下の縁 45° で切れている）のものは、すぐ近くの自分の車体とみなす [deg]。
-   * 自分のバイクの一部は乗用車と判定されることもあるので、クラスでは除ききれない。真横 2〜3m を通る車の下端は 10〜20°
+   * Anything whose box bottom is lower than this (cut off by the bottom edge of the image at 45°) is regarded as the own body right nearby [deg].
+   * Parts of the own bike may be classified as a passenger car, so classes cannot exclude them all. The bottom edge of a car passing 2-3 m beside is at 10-20°
    */
   maxLow: 40,
-  /** 下の縁で切れた検出が 2 回以上出た向き（自分の車体の向き、ownBin° ごと）では、下端がこれ以上のものも除く [deg] */
+  /** In directions where detections cut off by the bottom edge appeared 2 or more times (the own body's direction, per ownBin°), anything with a bottom edge at or beyond this is also excluded [deg] */
   ownBin: 10,
   ownLow: 25,
-  /** 車線をまたいだ区間の前後に、車を探す余裕 [s] */
+  /** Margin [s] before and after a lane-crossing section in which to search for cars */
   margin: 1,
   minScore: 0.5,
   /**
-   * 同じ向きに何度も見える物は自分の車体とみなす: 調べた時刻のこの割合以上（かつ staticMin 回以上）。方位のまとめ幅 [deg]。
-   * 大きく映るもの（見かけの高さの中央値が staticBigSize° 以上）は、この割合が staticShareBig でも自分の車体とみなす
-   * （追い越す車は 1 回の追い越しで 1〜2 回しか真横に映らない）
+   * Anything seen many times in the same direction is regarded as the own body: at least this share of the examined times (and at least staticMin times). Bearing bin width [deg].
+   * Large objects (median apparent height of staticBigSize° or more) are regarded as the own body even if the share is only staticShareBig
+   * (an overtaking car appears directly beside only 1-2 times per overtake)
    */
   staticShare: 0.4,
   staticShareBig: 0.12,
@@ -61,7 +61,7 @@ export const OVERTAKE = {
   staticBin: 15
 }
 
-/** 調べた時刻の数に対して、同じ向きにいつも見えるもの（自分の車体）の方位のビン */
+/** Bearing bin of what is always seen in the same direction relative to the number of examined times (the own body) */
 function staticBins(sightings: VehicleSighting[], times: number): Set<number> {
   const seen = new Map<number, { ts: Set<number>; sizes: number[] }>()
   for (const s of sightings) {
@@ -80,9 +80,9 @@ function staticBins(sightings: VehicleSighting[], times: number): Set<number> {
 }
 
 /**
- * 車線をまたいだ区間から、追い越しを選ぶ。
- * @param own 自分の車線でのセンターラインの側（左側通行 = +1）。追い越される車は反対の側（-own）の真横を通る
- * @param scannedTimes 車を探した時刻の数（自分の車体を見分けるのに使う）
+ * Selects overtakes from the lane-crossing sections.
+ * @param own Side of the center line in the own lane (left-hand traffic = +1). The overtaken car passes directly beside the opposite side (-own)
+ * @param scannedTimes Number of times cars were searched for (used to identify the own body)
  */
 export function findOvertakes(
   crossings: LaneCrossing[],
@@ -93,7 +93,7 @@ export function findOvertakes(
 ): Overtake[] {
   const fixed = staticBins(sightings, scannedTimes)
   const passSide = -own
-  // 自分の車体の向き: 下の縁で切れた（すぐ近くの）検出が 2 回以上出た向きと、その両隣
+  // Direction of the own body: directions where detections cut off by the bottom edge (right nearby) appeared 2 or more times, plus both neighbors
   const cut = new Map<number, number>()
   for (const s of sightings) if (s.low >= OVERTAKE.maxLow) cut.set(Math.round(s.az / OVERTAKE.ownBin), (cut.get(Math.round(s.az / OVERTAKE.ownBin)) ?? 0) + 1)
   const ownBins = new Set<number>()

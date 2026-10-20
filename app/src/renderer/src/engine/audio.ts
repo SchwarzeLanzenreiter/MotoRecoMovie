@@ -1,12 +1,12 @@
-// プレビューの音声再生。.insv の AAC を WebCodecs でデコードし、WebAudio で先読みしながら鳴らす。
-// 再生中はこの音声の時計（AudioContext）を基準に映像を合わせる。
+// Audio playback for the preview. Decodes the AAC of the .insv with WebCodecs and plays it with WebAudio, scheduling ahead.
+// During playback the video is synchronized to this audio clock (AudioContext).
 import type { FileReader, Track } from '../core/mp4'
 import { Dynamics, type AudioFx } from '../core/audiofx'
 
-// これだけ先まで常にスケジュールしておく。高い音を切る・音圧を抑える（Dynamics）はデコードした音にかけるので、
-// 設定を変えるとこの時間のうちに聞こえ方が変わる（以前は 1.0 秒）
+// Always keep this much scheduled ahead. Cutting high sounds and reducing loudness (Dynamics) are applied to the decoded audio,
+// so changing the settings changes how it sounds within this time (it used to be 1.0 s)
 const AHEAD_SEC = 0.5
-const START_DELAY = 0.08 // 再生開始までの余裕（最初のデコードが間に合うように）
+const START_DELAY = 0.08 // margin before playback starts (so the first decode is in time)
 
 export class AudioPlayer {
   private ctx: AudioContext | null = null
@@ -14,21 +14,21 @@ export class AudioPlayer {
   private dec: AudioDecoder | null = null
   private sources = new Set<AudioBufferSourceNode>()
   private timer = 0
-  private gen = 0 // 開始ごとに増やし、古い出力を捨てる
+  private gen = 0 // incremented at each start to discard stale output
   private fromSec = 0
-  private ctxStart = 0 // fromSec が鳴る AudioContext の時刻
+  private ctxStart = 0 // AudioContext time at which fromSec plays
   private nextSample = 0
-  private scheduledUntil = 0 // メディア時刻 [s]
+  private scheduledUntil = 0 // media time [s]
   private running = false
   private pumping = false
   private muted = false
   stats = { buffers: 0, errors: 0, lastRms: 0 }
-  /** 高い音を切る・音圧を抑える（null = かけない） */
+  /** Cut high sounds / reduce loudness (null = not applied) */
   private fx: AudioFx | null = null
   private dyn: Dynamics | null = null
 
   /**
-   * @param inGain 音の元の大きさの倍率（裏で作った整えた音声は core/audiofx.ts の FX_BUILD_GAIN 倍で保存してあるので、その逆数）
+   * @param inGain multiplier for the original loudness (the tidied audio built in the background is stored at FX_BUILD_GAIN times in core/audiofx.ts, so this is its inverse)
    */
   constructor(
     private f: FileReader,
@@ -36,7 +36,7 @@ export class AudioPlayer {
     private inGain = 1
   ) {}
 
-  /** 高い音を切る・音圧を抑える設定（null = かけない）。次にデコードした音から効く */
+  /** Settings for cutting high sounds / reducing loudness (null = not applied). Takes effect from the next decoded audio */
   setFx(fx: AudioFx | null): void {
     this.fx = fx
     if (!fx) this.dyn = null
@@ -56,7 +56,7 @@ export class AudioPlayer {
     return this.track.cts[i] / this.track.timescale
   }
 
-  /** メディア時刻 sec の位置にある AAC フレーム（直前） */
+  /** The AAC frame at media time sec (the one just before) */
   private sampleAt(sec: number): number {
     const t = sec * this.track.timescale
     let lo = 0
@@ -69,7 +69,7 @@ export class AudioPlayer {
     return lo
   }
 
-  /** メディア時刻 sec から再生を始める */
+  /** Start playback from media time sec */
   async start(sec: number): Promise<void> {
     this.stop()
     if (!this.ctx) {
@@ -82,9 +82,9 @@ export class AudioPlayer {
     const gen = ++this.gen
     this.fromSec = sec
     this.ctxStart = this.ctx.currentTime + START_DELAY
-    // AAC は前のフレームと重ね合わせて復元するので、2フレーム前から流し込む
+    // AAC is reconstructed by overlapping with the previous frame, so feed from 2 frames earlier
     this.nextSample = Math.max(0, this.sampleAt(sec) - 2)
-    // 状態（ローパス・音圧の包絡）は始めからやり直す（流し込み用の 2 フレームで落ち着く）
+    // Restart the state (lowpass, loudness envelope) from the beginning (the 2 lead-in frames let it settle)
     this.dyn = this.fx ? new Dynamics(this.track.sampleRate, this.fx, this.track.channels, this.inGain) : null
     this.scheduledUntil = sec
     this.running = true
@@ -100,12 +100,12 @@ export class AudioPlayer {
   }
 
   private async pumpDecode(gen: number): Promise<void> {
-    // タイマーと重なって並行に走ると投入順が入れ替わるので排他する
+    // Serialize, since running in parallel with the timer would reorder the feeding
     if (this.pumping) return
     this.pumping = true
     try {
       const t = this.track
-      // 「投入済みサンプルの時刻」が再生位置より AHEAD_SEC 先になるまで流し込む
+      // Feed until the "time of fed samples" is AHEAD_SEC ahead of the playback position
       while (this.running && gen === this.gen && this.nextSample < t.sizes.length) {
         const pos = this.position() ?? this.fromSec
         if (this.sampleTime(this.nextSample) > pos + AHEAD_SEC) break
@@ -141,10 +141,10 @@ export class AudioPlayer {
       this.stats.lastRms = Math.sqrt(sum / (n / 8))
       const ts = d.timestamp / 1e6
       const dur = n / d.sampleRate
-      if (ts + dur <= this.fromSec) return // 開始位置より前（流し込み用）
+      if (ts + dur <= this.fromSec) return // before the start position (lead-in)
       let when = this.ctxStart + (ts - this.fromSec)
       let offset = 0
-      // 開始位置をまたぐフレーム、または間に合わなかったフレームは途中から鳴らす
+      // Frames that straddle the start position, or that were late, are played from partway through
       const earliest = Math.max(ctx.currentTime, this.ctxStart)
       if (when < earliest) {
         offset = earliest - when
@@ -164,7 +164,7 @@ export class AudioPlayer {
     }
   }
 
-  /** 今聞こえているメディア時刻 [s]。再生していなければ null */
+  /** Media time currently being heard [s]. null if not playing */
   position(): number | null {
     if (!this.running || !this.ctx) return null
     const heard = this.ctx.currentTime - (this.ctx.outputLatency || 0)
@@ -180,7 +180,7 @@ export class AudioPlayer {
       try {
         s.stop()
       } catch {
-        /* 未開始のものは無視 */
+        /* ignore ones not started yet */
       }
     }
     this.sources.clear()

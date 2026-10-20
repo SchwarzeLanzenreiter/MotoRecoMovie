@@ -1,7 +1,7 @@
-// 空中の標識の投影に使うカメラの向き（cameraInMap）を実データで確認する。
-//   1. 以前の方法（融合した方位・勾配 + 理想の視点）と、ゆっくりした成分が一致すること（座標の取り方が正しい）
-//   2. 以前の方法は映像に対して細かく揺れていた（標識がプルプル動く原因）こと。新しい方法は映像と同じ回転なので揺れない
-// 実行: npx tsx test/signview.test.ts <insv> <csv>
+// Checks on real data the camera orientation used to project floating signs (cameraInMap).
+//   1. The slow component matches the earlier method (fused heading and slope + ideal view), i.e. the coordinate convention is correct
+//   2. The earlier method jittered finely relative to the video (the cause of signs trembling). The new method uses the same rotation as the video, so it does not jitter
+// Run: npx tsx test/signview.test.ts <insv> <csv>
 import assert from 'node:assert/strict'
 import { open } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
@@ -34,12 +34,12 @@ const ft = await tr.gyroFrameTimes(0)
 const mm = new MotionModel(tr.meta, integrate(imu), fixedMount(mount), ft, lean, newProject('x').stab)
 let t0 = performance.now()
 mm.setNav({ rate: tel.rate, heading: nav.heading, grade: tel.channels.grade ?? null })
-console.log(`地図への回転の計算 ${(performance.now() - t0).toFixed(0)}ms`)
+console.log(`computing the rotation to the map ${(performance.now() - t0).toFixed(0)}ms`)
 
 const d2r = Math.PI / 180
 const view = { yaw: 0, pitch: 0, fov: 110, leanRatio: 1 }
-const pxPerDeg = 960 / Math.tan(55 * d2r) * d2r // 幅 1920px・画角 110° の画面中央で 1° あたりの画素数
-// 以前の方法: 方位 h・勾配の水平な車体 · Rz(割合·L)（ヨー・ピッチ 0）
+const pxPerDeg = 960 / Math.tan(55 * d2r) * d2r // pixels per 1° at the center of a screen 1920 px wide with a 110° FOV
+// Earlier method: a level body with heading h and slope · Rz(ratio·L) (yaw and pitch 0)
 const oldCam = (i: number): Mat3 => {
   const tv = mm.videoTime(i)
   const k = Math.min(tel.n - 1, Math.round(tv * tel.rate))
@@ -49,7 +49,7 @@ const oldCam = (i: number): Mat3 => {
   return qToMat(qMul(qMul(qFromRotvec(0, nav.heading[k] * d2r, 0), qFromRotvec(th, 0, 0)), qFromRotvec(0, 0, view.leanRatio * L)))
 }
 
-// 走行中の 2 区間（各 60 秒・全フレーム）で、新旧の向きの差をカメラ座標の回転ベクトル（ピッチ・ヨー・ロール）で見る
+// In 2 sections while riding (60 s each, all frames), look at the difference between the new and old orientation as a rotation vector in camera coordinates (pitch, yaw, roll)
 for (const start of [600, 1400]) {
   const fps = tr.meta.fps
   const i0 = Math.round(start * fps)
@@ -62,7 +62,7 @@ for (const start of [600, 1400]) {
     d.push(rv.map((x) => x / d2r))
   }
   const mean = [0, 1, 2].map((c) => d.reduce((s, x) => s + x[c], 0) / n)
-  // 細かい揺れ: 0.5 秒の移動平均からのずれ
+  // Fine jitter: deviation from the 0.5 s moving average
   const w = Math.round(fps / 4)
   const jit = [0, 1, 2].map((c) => {
     let s = 0
@@ -75,11 +75,11 @@ for (const start of [600, 1400]) {
     }
     return Math.sqrt(s / cnt)
   })
-  const names = ['ピッチ', 'ヨー', 'ロール']
-  console.log(`t=${start}〜${start + 60}s  新旧の差の平均 ${mean.map((x, c) => `${names[c]} ${x.toFixed(2)}°`).join('  ')}`)
-  console.log(`  以前の方法の映像に対する細かい揺れ（RMS）${jit.map((x, c) => `${names[c]} ${x.toFixed(2)}°`).join('  ')}  = 画面中央で 縦 ${(jit[0] * pxPerDeg).toFixed(1)}px・横 ${(jit[1] * pxPerDeg).toFixed(1)}px（1920 幅）`)
-  // 座標の取り方が合っていれば、平均の差は数度以内（方位・勾配・リーンの推定の差だけ）
-  for (let c = 0; c < 3; c++) assert.ok(Math.abs(mean[c]) < 4, `${names[c]} の平均の差 ${mean[c].toFixed(2)}° が大きい`)
+  const names = ['pitch', 'yaw', 'roll']
+  console.log(`t=${start}-${start + 60}s  mean old/new difference ${mean.map((x, c) => `${names[c]} ${x.toFixed(2)}°`).join('  ')}`)
+  console.log(`  fine jitter of the earlier method relative to the video (RMS) ${jit.map((x, c) => `${names[c]} ${x.toFixed(2)}°`).join('  ')}  = at screen center: vertical ${(jit[0] * pxPerDeg).toFixed(1)}px, horizontal ${(jit[1] * pxPerDeg).toFixed(1)}px (1920 wide)`)
+  // If the coordinate convention is right, the mean difference is within a few degrees (only the estimation differences of heading, slope and lean)
+  for (let c = 0; c < 3; c++) assert.ok(Math.abs(mean[c]) < 4, `${names[c]} mean difference ${mean[c].toFixed(2)}° is large`)
 }
 console.log('signview.test: OK')
 await fh.close()

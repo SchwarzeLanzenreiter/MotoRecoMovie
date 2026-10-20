@@ -1,6 +1,6 @@
-// 重ね表示の描画で共通に使う型と色（クロノグラフ風・サイバー風のメーター、地図、浮遊標識）。
-// 以前はここに個別のメーター（速度計・回転計・ギア・リーンアングル・前後 G・外気温）と、それらを走行状態で並べ替える
-// 「メーター一式」もあったが、クロノグラフ風・サイバー風に任せて削除した（2026-10-20）
+// Types and colors shared by the overlay drawing code (chronograph-style and cyber-style meters, map, floating signs).
+// This file used to hold the individual meters (speedometer, tachometer, gear, lean angle, front/back G, outside air temperature) and a
+// "meter set" that rearranged them by riding state; both were removed in favor of the chronograph and cyber styles (2026-10-20)
 import type { ChannelKey } from '../core/telemetry'
 
 export type Ctx = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D

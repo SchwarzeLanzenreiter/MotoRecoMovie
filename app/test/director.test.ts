@@ -1,10 +1,10 @@
-// 画角の自動切り替えの確認。実行: npx tsx test/director.test.ts [<insv> <csv>]
+// Check of auto camera. Run: npx tsx test/director.test.ts [<insv> <csv>]
 import assert from 'node:assert/strict'
 import { DEFAULT_DIRECTOR, DEFAULT_SHOT_VIEWS, mergeDirector, mergeShotViews, generateKeyframes, resolveShots, makeShots, shotPreviewView, SHOT_NAMES, type Marker } from '../src/renderer/src/engine/director'
 import { viewAt } from '../src/renderer/src/engine/project'
 import type { RidingTrack } from '../src/renderer/src/core/riding'
 
-// ---- 合成データ: 0-10 巡航, 10-14 減速, 14-20 右コーナー(最大30°), 20-23 加速, 23-60 巡航 ----
+// ---- Synthetic data: 0-10 cruise, 10-14 decelerate, 14-20 right corner (max 30°), 20-23 accelerate, 23-60 cruise ----
 const rate = 100
 const n = 60 * rate
 const peak = new Float32Array(n)
@@ -26,31 +26,31 @@ const S = DEFAULT_DIRECTOR
 const marker: Marker = { id: 'm', t: 40, yaw: -100, pitch: -5, fov: 90, hold: 3 }
 const { keyframes } = generateKeyframes([{ t: 0, yaw: 0, pitch: 0, fov: 110, leanRatio: 1 }], r, [marker], S, 0, 60)
 const at = (t: number) => viewAt(keyframes, t)
-assert.equal(at(5).yaw, 0) // 巡航（最初の景色は interval/2=10 秒後なので、10 秒未満の巡航には入らない）
-// 減速・加速では切り替えない（前方のまま。2026-10-20 に削除）
+assert.equal(at(5).yaw, 0) // cruise (the first scenery shot comes after interval/2 = 10 s, so cruises shorter than 10 s do not get one)
+// No switching while decelerating/accelerating (stays forward; removed on 2026-10-20)
 assert.equal(at(12).pitch, 0)
 assert.equal(at(12).fov, 110)
-assert.equal(at(18).yaw, 18) // 右コーナー: 最大リーン 30° × 0.6
+assert.equal(at(18).yaw, 18) // right corner: max lean 30° × 0.6
 assert.equal(at(21.5).yaw, 0)
 assert.equal(at(21.5).fov, 110)
-assert.equal(at(41).yaw, -100) // 注目ポイント
-assert.equal(at(35).yaw, 75) // 長い巡航（23秒〜）: 23+10=33 秒から右の景色
-assert.equal(at(55).yaw, -75) // 次の景色（53秒〜）は左右交互で左
-assert.equal(at(59).yaw, 0) // 景色が終わったら前方へ
-// 切り替えは 0.8 秒かけたパン（途中は中間の値）
+assert.equal(at(41).yaw, -100) // marker
+assert.equal(at(35).yaw, 75) // long cruise (from 23 s): scenery to the right from 23+10 = 33 s
+assert.equal(at(55).yaw, -75) // next scenery (from 53 s) alternates left/right, so left
+assert.equal(at(59).yaw, 0) // back to forward when the scenery ends
+// The switch is a 0.8 s pan (intermediate values midway)
 const mid = at(14.4).yaw
-assert.ok(mid > 0 && mid < 18, `切り替え途中のはず: ${mid}`)
-// 範囲指定: 範囲外のキーフレームは残る
+assert.ok(mid > 0 && mid < 18, `should be mid-switch: ${mid}`)
+// Range: keyframes outside the range are kept
 const existing = [{ t: 0, yaw: 0, pitch: 0, fov: 110, leanRatio: 1 }, { t: 50, yaw: 90, pitch: 0, fov: 110, leanRatio: 1 }]
 const part = generateKeyframes(existing, r, [], S, 10, 30).keyframes
 assert.ok(part.some((k) => k.t === 50 && k.yaw === 90))
 assert.equal(viewAt(part, 18).yaw, 18)
-// 短いショットは捨てる
+// Short shots are dropped
 const short = resolveShots(makeShots({ ...r, segments: [{ state: 'stop', start: 1, end: 2.1 }] }, [], { ...S, stop: { ...S.stop, minDur: 0 } }, 0, 10), S, 0, 10)
-assert.ok(short.every((x) => x.shot.kind !== 'stop'), '1.1秒の停止は捨てる')
-// 以前の設定（減速・加速）が保存されていても読める
+assert.ok(short.every((x) => x.shot.kind !== 'stop'), 'a 1.1 s stop is dropped')
+// Settings saved earlier (decelerate/accelerate) can still be read
 assert.ok(!('brake' in mergeDirector({ brake: { on: true }, accel: { on: true } } as never)))
-// ---- コーナー進入の3パターン: 長いコーナー2本ごとに ② ライダー と ③ 真横 を交互に ----
+// ---- Three corner-entry patterns: for every 2 long corners, alternate between ② rider and ③ side view ----
 const corners: RidingTrack['segments'] = []
 const pk2 = new Float32Array(n)
 const signs = [1, -1, 1, -1]
@@ -62,28 +62,28 @@ signs.forEach((sg, k) => {
 const r2: RidingTrack = { ...r, peakLean: pk2, segments: corners }
 const g2 = generateKeyframes([{ t: 0, yaw: 0, pitch: 0, fov: 110, leanRatio: 1 }], r2, [], S, 0, 60).keyframes
 const v2 = (t: number) => viewAt(g2, t)
-assert.equal(v2(8).yaw, 18) // 1本目（右）: ① 内側を少し
-assert.deepEqual([v2(20).yaw, v2(20).fov, v2(20).leanRatio], [180, 165, 0]) // 2本目: ② ライダー（水平固定・広角）
-// 以前の設定（視点もプロジェクトに持っていた）を読んでも、視点の項目は捨てて、ほかはそのまま
+assert.equal(v2(8).yaw, 18) // 1st (right): ① slightly inside
+assert.deepEqual([v2(20).yaw, v2(20).fov, v2(20).leanRatio], [180, 165, 0]) // 2nd: ② rider (horizon-locked, wide FOV)
+// Reading settings from before (the project also held the view), the view fields are dropped and the rest is kept as is
 {
   const old = { ...S, base: { yaw: 5, pitch: 0, fov: 100, leanRatio: 1 }, corner: { on: false, gain: 0.3, max: 20, special: { ...S.corner.special, every: 3, riderFov: 130, sideFov: 140 } } }
   const m = mergeDirector(old as unknown as typeof S) as unknown as Record<string, unknown> & typeof S
   assert.equal(m.base, undefined)
   assert.deepEqual(m.corner, { on: false, special: { ...S.corner.special, every: 3 } })
 }
-assert.equal(v2(32).yaw, 18) // 3本目（右）: ①
-assert.deepEqual([v2(44).yaw, v2(44).fov, v2(44).leanRatio], [-90, 165, 0]) // 4本目（左）: ③ 真横（内側 = 左・水平固定・広角）
-// 間隔を 1 にすると毎回特別ショット、② を切ると ③ だけ
+assert.equal(v2(32).yaw, 18) // 3rd (right): ①
+assert.deepEqual([v2(44).yaw, v2(44).fov, v2(44).leanRatio], [-90, 165, 0]) // 4th (left): ③ side view (inside = left, horizon-locked, wide FOV)
+// With the interval set to 1 every corner gets a special shot; turning ② off leaves only ③
 const g3 = generateKeyframes([], r2, [], { ...S, corner: { ...S.corner, special: { ...S.corner.special, every: 1, rider: false, sideOut: false } } }, 0, 60).keyframes
 assert.deepEqual([viewAt(g3, 8).yaw, viewAt(g3, 20).yaw], [90, -90])
-// ③ 内側 と ④ 外側 を交互に（右コーナーの外側 = 左 -90°、左コーナーの外側 = 右 +90°）
+// Alternate ③ inside and ④ outside (outside of a right corner = left -90°, outside of a left corner = right +90°)
 const g4 = generateKeyframes([], r2, [], { ...S, corner: { ...S.corner, special: { ...S.corner.special, every: 1, rider: false } } }, 0, 60).keyframes
-assert.deepEqual([8, 20, 32, 44].map((t) => viewAt(g4, t).yaw), [90, 90, 90, 90]) // 右③内=+90, 左④外=+90, 右③内=+90, 左④外=+90
+assert.deepEqual([8, 20, 32, 44].map((t) => viewAt(g4, t).yaw), [90, 90, 90, 90]) // right ③ inside = +90, left ④ outside = +90, right ③ inside = +90, left ④ outside = +90
 assert.deepEqual([8, 20].map((t) => viewAt(g4, t).leanRatio), [0, 0])
 const g5 = generateKeyframes([], r2, [], { ...S, corner: { ...S.corner, special: { ...S.corner.special, every: 1, rider: false, side: false } } }, 0, 60).keyframes
-assert.deepEqual([8, 20].map((t) => viewAt(g5, t).yaw), [-90, 90]) // ④ だけ: 右コーナーは左、左コーナーは右
+assert.deepEqual([8, 20].map((t) => viewAt(g5, t).yaw), [-90, 90]) // ④ only: left for a right corner, right for a left corner
 
-// ---- 視点の既定値（ShotViews）: 前方・コーナー入口・側方・後方を変えると、生成するキーフレームの視点が変わる ----
+// ---- Default views (ShotViews): changing forward / corner entry / side / rear changes the view of the generated keyframes ----
 {
   const V = structuredClone(DEFAULT_SHOT_VIEWS)
   V.front = { yaw: 0, pitch: 3, fov: 100, leanRatio: 0.8 }
@@ -93,41 +93,41 @@ assert.deepEqual([8, 20].map((t) => viewAt(g5, t).yaw), [-90, 90]) // ④ だけ
   const sp = { ...S, corner: { ...S.corner, special: { ...S.corner.special, every: 1, sideOut: false } } }
   const g = generateKeyframes([], r2, [], sp, 0, 60, [], V).keyframes
   const v = (t: number) => viewAt(g, t)
-  assert.deepEqual(v(2), { yaw: 0, pitch: 3, fov: 100, leanRatio: 0.8 }, '前方')
-  // 長いコーナーの毎回 ② → ③ → ② → ③（every: 1）
-  assert.deepEqual(v(8), { ...V.rear }, '1本目: 後方')
-  assert.deepEqual(v(20), { yaw: -70, pitch: 10, fov: 150, leanRatio: 0.2 }, '2本目（左）: 側方・内側 = 左')
-  // コーナー入口: 短いコーナー（特別ショットの対象外）で、リーン 30° × 100% → 最大 20°
+  assert.deepEqual(v(2), { yaw: 0, pitch: 3, fov: 100, leanRatio: 0.8 }, 'forward')
+  // For every long corner: ② -> ③ -> ② -> ③ (every: 1)
+  assert.deepEqual(v(8), { ...V.rear }, '1st: rear')
+  assert.deepEqual(v(20), { yaw: -70, pitch: 10, fov: 150, leanRatio: 0.2 }, '2nd (left): side, inside = left')
+  // Corner entry: a short corner (not eligible for special shots), lean 30° × 100% -> max 20°
   const short: RidingTrack = { ...r, peakLean: pk2, segments: [{ state: 'corner', start: 5, end: 7 }] }
   const gc = generateKeyframes([], short, [], S, 0, 20, [], V).keyframes
-  assert.deepEqual(viewAt(gc, 6.5), { yaw: 20, pitch: -5, fov: 120, leanRatio: 0.5 }, 'コーナー入口')
-  // 減速の間も前方のまま
+  assert.deepEqual(viewAt(gc, 6.5), { yaw: 20, pitch: -5, fov: 120, leanRatio: 0.5 }, 'corner entry')
+  // Stays forward during deceleration too
   assert.equal(viewAt(generateKeyframes([], r, [], S, 0, 60, [], V).keyframes, 12).fov, 100)
-  // キーフレームの印（タイムラインの色分け）: 前方・コーナー入口・側方・後方
+  // Keyframe marks (timeline color coding): forward, corner entry, side, rear
   const tags = new Set(g.map((k) => k.tag))
   assert.ok(tags.has('front') && tags.has('side') && tags.has('rear'), [...tags].join(','))
   assert.ok(gc.some((k) => k.tag === 'corner'))
   assert.ok(g.filter((k) => k.tag === 'rear').every((k) => k.yaw === 170))
-  // 注目ポイントの視点には印を付けない（手で置いたものと同じ色）
+  // No mark on the view of a marker (same color as one placed by hand)
   const gm = generateKeyframes([], null, [marker], S, 0, 60).keyframes
   assert.ok(gm.filter((k) => k.yaw === marker.yaw).every((k) => k.tag === undefined))
-  // プレビューの視点（例: リーン 30° の右コーナー）
+  // Preview view (e.g. a right corner with 30° lean)
   assert.deepEqual(shotPreviewView(V, 'corner'), { yaw: 20, pitch: -5, fov: 120, leanRatio: 0.5 })
   assert.equal(shotPreviewView(V, 'side').yaw, 70)
   assert.equal(shotPreviewView(V, 'side', 30, 'out').yaw, -70)
   assert.deepEqual(shotPreviewView(V, 'rear'), V.rear)
-  // 覚えていた値: 無い項目・数でない値は既定値で補う
+  // Remembered values: missing items and non-numeric values are filled with defaults
   assert.deepEqual(mergeShotViews(null), DEFAULT_SHOT_VIEWS)
   const m = mergeShotViews({ rear: { fov: 120, pitch: 'x' }, side: null })
   assert.equal(m.rear.fov, 120)
   assert.equal(m.rear.pitch, DEFAULT_SHOT_VIEWS.rear.pitch)
   assert.deepEqual(m.side, DEFAULT_SHOT_VIEWS.side)
-  // 既定値は以前の動き（基本の視点 110°、① 0.6・最大 35°、②③④ 165°・水平固定）と同じ
+  // The defaults match the earlier behavior (base view 110°, ① 0.6 / max 35°, ②③④ 165° / horizon-locked)
   assert.deepEqual(DEFAULT_SHOT_VIEWS.front, { yaw: 0, pitch: 0, fov: 110, leanRatio: 1 })
 }
-console.log('director（合成データ）: OK')
+console.log('director (synthetic data): OK')
 
-// ---- 実データ ----
+// ---- Real data ----
 const [insvPath, csvPath] = process.argv.slice(2)
 if (insvPath) {
   const { open } = await import('node:fs/promises')
@@ -151,13 +151,13 @@ if (insvPath) {
   const rt = detectRiding(tel)
   const t0 = performance.now()
   const g = generateKeyframes([{ t: 0, yaw: 0, pitch: 0, fov: 110, leanRatio: 1 }], rt, [], S, 0, dur)
-  console.log(`実データ: ${(performance.now() - t0).toFixed(0)}ms でキーフレーム ${g.keyframes.length} 個、ショット ${g.shots.length} 個（1分あたり ${((g.shots.length / dur) * 60).toFixed(1)} 回）`)
+  console.log(`real data: ${(performance.now() - t0).toFixed(0)}ms, keyframes ${g.keyframes.length}, shots ${g.shots.length} (per minute ${((g.shots.length / dur) * 60).toFixed(1)})`)
   const tot: Record<string, number> = {}
   g.shots.forEach((x, i) => {
     const end = g.shots[i + 1]?.start ?? dur
     tot[x.shot.kind] = (tot[x.shot.kind] ?? 0) + end - x.start
   })
-  console.log('ショットの内訳（秒）', Object.entries(tot).map(([k, v]) => `${SHOT_NAMES[k as keyof typeof SHOT_NAMES]} ${v.toFixed(0)}`).join(' / '))
+  console.log('shot breakdown (seconds)', Object.entries(tot).map(([k, v]) => `${SHOT_NAMES[k as keyof typeof SHOT_NAMES]} ${v.toFixed(0)}`).join(' / '))
   for (const x of g.shots.filter((x) => x.start > 1380 && x.start < 1415)) console.log(`  ${x.start.toFixed(1)}s ${SHOT_NAMES[x.shot.kind]} yaw ${x.shot.view.yaw.toFixed(0)} pitch ${x.shot.view.pitch} fov ${x.shot.view.fov}`)
   await fh.close()
 }

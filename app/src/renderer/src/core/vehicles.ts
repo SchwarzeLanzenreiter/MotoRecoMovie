@@ -1,14 +1,14 @@
-// 車の検出（YOLOX-Nano、COCO の 80 クラス）の前処理と後処理。推論そのものは engine/detector.ts（onnxruntime-web）。
+// Pre- and post-processing for car detection (YOLOX-Nano, 80 COCO classes). Inference itself is in engine/detector.ts (onnxruntime-web).
 //
-// モデル: Megvii-BaseDetection/YOLOX の yolox_nano.onnx（Apache-2.0）。入力 1×3×416×416（BGR・0〜255 のまま）、
-// 出力 1×3549×85（格子 8・16・32 画素ごとの候補: 中心のずれ 2・幅と高さの対数 2・物体らしさ 1・クラスの確からしさ 80）
+// Model: yolox_nano.onnx from Megvii-BaseDetection/YOLOX (Apache-2.0). Input 1×3×416×416 (BGR, kept at 0-255),
+// output 1×3549×85 (candidates per grid of 8, 16, 32 px: center offset 2, log of width and height 2, objectness 1, class confidence 80)
 
 export const DET_SIZE = 416
-/** 車として扱う COCO のクラス（車・オートバイ・バス・トラック） */
+/** COCO classes treated as vehicles (car, motorcycle, bus, truck) */
 export const VEHICLE_CLASSES: Record<number, string> = { 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck' }
 
 export interface Detection {
-  /** 枠の中心と大きさ [画素]（DET_SIZE × DET_SIZE の画像で） */
+  /** Box center and size [pixels] (in a DET_SIZE × DET_SIZE image) */
   x: number
   y: number
   w: number
@@ -17,7 +17,7 @@ export interface Detection {
   cls: number
 }
 
-/** RGBA（上の行から、DET_SIZE 四方）を、モデルの入力（BGR・チャンネルごと・0〜255）へ */
+/** RGBA (from the top row, DET_SIZE square) → model input (BGR, per channel, 0-255) */
 export function toModelInput(rgba: Uint8Array | Uint8ClampedArray, size = DET_SIZE): Float32Array {
   const n = size * size
   const out = new Float32Array(3 * n)
@@ -29,7 +29,7 @@ export function toModelInput(rgba: Uint8Array | Uint8ClampedArray, size = DET_SI
   return out
 }
 
-/** モデルの出力から車の枠を取り出す（格子を戻し、確からしさ scoreMin 以上、重なりを除く） */
+/** Extracts vehicle boxes from the model output (undoes the grid, confidence scoreMin or higher, removes overlaps) */
 export function decodeVehicles(out: Float32Array, size = DET_SIZE, scoreMin = 0.35, iouMax = 0.45): Detection[] {
   const cand: Detection[] = []
   let k = 0
@@ -54,7 +54,7 @@ export function decodeVehicles(out: Float32Array, size = DET_SIZE, scoreMin = 0.
       }
     }
   }
-  // 重なりの大きい枠は、確からしさの高い方だけ残す
+  // Of heavily overlapping boxes, keep only the one with higher confidence
   cand.sort((a, b) => b.score - a.score)
   const keep: Detection[] = []
   for (const d of cand) if (keep.every((e) => iou(d, e) < iouMax)) keep.push(d)
@@ -70,22 +70,22 @@ function iou(a: Detection, b: Detection): number {
   return inter / (a.w * a.h + b.w * b.h - inter + 1e-9)
 }
 
-/** 見えた車（車体から見た向き） */
+/** A vehicle that was seen (direction as seen from the bike body) */
 export interface VehicleSighting {
-  /** 動画時刻 [s] */
+  /** Video time [s] */
   t: number
-  /** 方位 [deg]（車体の前方 = 0、右 = +90、後ろ = ±180） */
+  /** Bearing [deg] (body front = 0, right = +90, rear = ±180) */
   az: number
-  /** 見かけの高さ [deg]（近いほど大きい） */
+  /** Apparent height [deg] (larger when closer) */
   size: number
   score: number
-  /** COCO のクラス（VEHICLE_CLASSES） */
+  /** COCO class (VEHICLE_CLASSES) */
   cls: number
-  /** 枠の下端の見下ろす角 [deg]（水平 = 0、下が正）。画像の下の縁で切れていれば、すぐ近くの物（自分の車体） */
+  /** Depression angle of the bottom edge of the box [deg] (horizon = 0, down positive). If cut off by the bottom edge of the image, it is something right nearby (the own body) */
   low: number
 }
 
-/** 画角 fov（正方形）・向き yaw の画像の枠を、車体から見た方位へ */
+/** Converts the box of an image with FOV fov (square) and direction yaw into a bearing as seen from the body */
 export function sightingFromBox(d: Detection, t: number, yaw: number, fov: number, size = DET_SIZE): VehicleSighting {
   const f = size / 2 / Math.tan((fov * Math.PI) / 360)
   const c = size / 2 - 0.5

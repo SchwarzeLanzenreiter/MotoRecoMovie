@@ -1,7 +1,7 @@
-// リポジトリに入れていない大きなファイル（AI のモデルと、同梱する LGPL 版の ffmpeg）を、出典から取ってくる。
-// 使い方（app フォルダで）: npm run fetch-assets   （すでにあって中身が合っているものは取り直さない）
-// モデルは SHA-256 で確かめる。ffmpeg は BtbN/FFmpeg-Builds の日付つきのリリースから取り、版の文字列で確かめる
-// （ビルドの zip は作り直されることがあるので）。出典とライセンスは src/renderer/public/models/NOTICE.md と tools/notices.ts を参照
+// Fetches the large files that are not in the repository (the AI models and the bundled LGPL build of ffmpeg) from their sources.
+// Usage (in the app folder): npm run fetch-assets   (files that already exist and match are not fetched again)
+// Models are verified by SHA-256. ffmpeg is fetched from a dated release of BtbN/FFmpeg-Builds and verified by its version string
+// (because the build zips are sometimes rebuilt). For sources and licenses see src/renderer/public/models/NOTICE.md and tools/notices.ts
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -36,11 +36,11 @@ const models = [
   }
 ]
 
-// ffmpeg 9.0（LGPL v3、shared）。版の文字列で確かめる
+// ffmpeg 9.0 (LGPL v3, shared). Verified by its version string
 const FF = {
   url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-19-13-06/ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-shared-9.0.zip',
   version: 'n9.0.2-28-g669f5ab083',
-  // 入れるもの（ffplay・ffprobe は入れない）
+  // What to keep (ffplay and ffprobe are not included)
   keep: (name: string): boolean => name === 'ffmpeg.exe' || name.toLowerCase().endsWith('.dll')
 }
 
@@ -56,15 +56,15 @@ mkdirSync(MODELS, { recursive: true })
 for (const m of models) {
   const to = join(MODELS, m.file)
   if (existsSync(to) && sha(to) === m.sha256) {
-    console.log(`${m.file}: あります`)
+    console.log(`${m.file}: already present`)
     continue
   }
-  console.log(`${m.file}: 取っています（${m.url}）`)
+  console.log(`${m.file}: downloading (${m.url})`)
   await download(m.url, to)
   const h = sha(to)
   if (h !== m.sha256) {
     rmSync(to)
-    throw new Error(`${m.file}: SHA-256 が合いません（${h}）`)
+    throw new Error(`${m.file}: SHA-256 mismatch (${h})`)
   }
 }
 
@@ -77,30 +77,30 @@ const ffVersion = (): string => {
   }
 }
 if (process.platform !== 'win32') {
-  console.log('ffmpeg: Windows 用のビルドだけを取ります（この OS では PATH の ffmpeg を使います）')
+  console.log('ffmpeg: only the Windows build is downloaded (on this OS, the ffmpeg on PATH is used)')
 } else if (existsSync(ffExe) && ffVersion().includes(FF.version)) {
-  console.log(`ffmpeg: あります（${ffVersion()}）`)
+  console.log(`ffmpeg: already present (${ffVersion()})`)
 } else {
-  console.log(`ffmpeg: 取っています（${FF.url}）`)
+  console.log(`ffmpeg: downloading (${FF.url})`)
   const work = join(tmpdir(), `motorecomovie-ffmpeg-${process.pid}`)
   mkdirSync(work, { recursive: true })
   try {
     const zip = join(work, 'ffmpeg.zip')
     await download(FF.url, zip)
     const zipSha = sha(zip)
-    // Windows 10 以降の tar（bsdtar）は zip を展開できる
+    // tar (bsdtar) on Windows 10 and later can extract zip files
     execFileSync('tar', ['-xf', zip, '-C', work])
     const top = readdirSync(work).find((d) => d.startsWith('ffmpeg-'))
-    if (!top) throw new Error('zip の中身が想定と違います')
+    if (!top) throw new Error('The zip contents are not as expected')
     rmSync(FFMPEG, { recursive: true, force: true })
     mkdirSync(FFMPEG, { recursive: true })
     for (const f of readdirSync(join(work, top, 'bin'))) if (FF.keep(f)) copyFileSync(join(work, top, 'bin', f), join(FFMPEG, f))
     copyFileSync(join(work, top, 'LICENSE.txt'), join(FFMPEG, 'LICENSE-LGPL-3.0.txt'))
-    if (!ffVersion().includes(FF.version)) throw new Error(`ffmpeg の版が違います: ${ffVersion()}`)
+    if (!ffVersion().includes(FF.version)) throw new Error(`ffmpeg version mismatch: ${ffVersion()}`)
     writeFileSync(join(FFMPEG, 'BUILD.json'), JSON.stringify({ zip: FF.url.split('/').pop(), url: FF.url, sha256: zipSha }, null, 2) + '\n')
     console.log(`ffmpeg: ${ffVersion()}`)
   } finally {
     rmSync(work, { recursive: true, force: true })
   }
 }
-console.log('完了')
+console.log('Done.')

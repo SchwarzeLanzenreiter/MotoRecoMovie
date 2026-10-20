@@ -1,5 +1,5 @@
-"""比較動画の左右それぞれで、フレーム間の仮想カメラ回転を基本行列から推定し、
-高周波成分（振動）の大きさを比べる。並進（視差）の影響を受けない指標。"""
+"""For each of the left and right sides of the comparison video, estimate the virtual camera rotation between frames from the essential matrix
+and compare the magnitude of the high-frequency component (vibration). A metric unaffected by translation (parallax)."""
 import sys
 
 import cv2
@@ -37,9 +37,9 @@ while True:
 fps = 50
 win = int(0.3 * fps)
 kern = np.ones(win) / win
-names = ["ピッチ(x)", "ヨー(y)", "ロール(z)"]
+names = ["pitch(x)", "yaw(y)", "roll(z)"]
 for k, v in rv.items():
-    w = np.degrees(np.array(v)) * fps  # 角速度 deg/s
+    w = np.degrees(np.array(v)) * fps  # angular velocity deg/s
     low = np.stack([np.convolve(w[:, j], kern, mode="same") for j in range(3)], 1)
     hf = (w - low)[win:-win]
-    print(f"{k:5s} 角速度の高周波RMS[deg/s]: " + "  ".join(f"{n} {hf[:, j].std():6.2f}" for j, n in enumerate(names)))
+    print(f"{k:5s} angular velocity high-freq RMS[deg/s]: " + "  ".join(f"{n} {hf[:, j].std():6.2f}" for j, n in enumerate(names)))

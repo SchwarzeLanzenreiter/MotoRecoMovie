@@ -26,11 +26,11 @@ import { Timeline } from './Timeline'
 import { SidePanel } from './SidePanel'
 import { Recent, type RecentItem } from './Recent'
 import { useLang } from './useLang'
-import { getLang, setLang, t, type Lang } from '../i18n'
+import { getLang, setLang, t, LANG_NAMES, type Lang } from '../i18n'
 
 const projectPathFor = (insv: string): string => insv + '.motorecomovie.json'
 
-/** テレメトリーの車速の、時刻 a〜b [s] の平均 [km/h]（車速が無ければ undefined） */
+/** Average vehicle speed [km/h] of the telemetry between times a and b [s] (undefined if there is no speed) */
 function meanSpeed(tel: Telemetry | null, a: number, b: number): number | undefined {
   const sp = tel?.channels.speed
   if (!tel || !sp) return undefined
@@ -43,7 +43,7 @@ function meanSpeed(tel: Telemetry | null, a: number, b: number): number | undefi
   }
   return n ? s / n : undefined
 }
-/** 前の名前（Insta360 Reframe）のときの編集内容。新しい名前のものが無ければこちらを読む（保存は新しい名前へ） */
+/** Edits from the previous name (Insta360 Reframe). Read these if there are none under the new name (they are saved under the new name) */
 const legacyProjectPathFor = (insv: string): string => insv + '.reframe.json'
 
 const fmt = (s: number): string => {
@@ -51,21 +51,20 @@ const fmt = (s: number): string => {
   return `${m}:${(s - m * 60).toFixed(2).padStart(5, '0')}`
 }
 
-/** 新しいレイヤーの既定の位置（右下の小窓） */
+/** Default position of a new layer (small window at the bottom right) */
 const PIP: Rect = { x: 0.66, y: 0.04, w: 0.3, h: 0.3 }
 
-/** 言語の選択肢（それぞれの言語で書いた名前） */
-const LANG_NAMES: [Lang, string][] = [['ja', '日本語'], ['en', 'English']] // i18n-ignore
-/** 自動テスト用の状態で、非表示のレイヤーに付ける印（画面には出さない） */
-const HIDDEN_MARK = '(非表示)' // i18n-ignore
+/** Language choices (names written in each language) */
+/** Mark added to hidden layers in the autotest state (not shown on screen) */
+const HIDDEN_MARK = '(hidden)' // i18n-ignore
 
-/** タイムラインの高さ [px]（既定と最小） */
+/** Timeline height [px] (default and minimum) */
 const TIMELINE_DEFAULT = 150
 const TIMELINE_MIN = 90
 
 export function App(): React.JSX.Element {
   const lang = useLang()
-  // メインメニューも画面の言語にそろえる
+  // make the main menu follow the UI language too
   useEffect(() => {
     void window.api.setMenuLang(lang)
   }, [lang])
@@ -73,9 +72,9 @@ export function App(): React.JSX.Element {
   const [project, setProject] = useState<Project | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [log, setLog] = useState<LogInfo | null>(null)
-  // .dat の変換規則（.ddf）と .dat を探すフォルダ（このパソコンに覚えておく）
+  // conversion rules for .dat (.ddf) and the folder to search for .dat (remembered on this computer)
   const [logPrefs, setLogPrefsState] = useState<LogPrefs>(loadLogPrefs)
-  // 自動生成の視点の既定値（このパソコンに覚える）と、それを変える設定の画面（開いている間は選んだ視点をプレビューに映す）
+  // defaults of the auto-generated views (remembered on this computer) and the settings screen to change them (while it is open, the selected view is shown in the preview)
   const [shotViews, setShotViewsState] = useState<ShotViews>(loadShotViews)
   const setShotViews = (v: ShotViews): void => {
     setShotViewsState(v)
@@ -101,7 +100,7 @@ export function App(): React.JSX.Element {
     window.api.recent.list().then(setRecent, () => setRecent([]))
   }, [])
   useEffect(refreshRecent, [refreshRecent])
-  // 数秒で消える控えめな通知（操作を止めない）
+  // a discreet notification that disappears after a few seconds (does not interrupt the operation)
   useEffect(() => {
     if (!toast) return
     const id = setTimeout(() => setToast(null), 4500)
@@ -116,17 +115,17 @@ export function App(): React.JSX.Element {
     setError(e instanceof Error ? e.message : String(e))
   }, [])
 
-  // 選択中のレイヤー。視点の編集とタイムラインのキーフレームは「選択中の視点レイヤー」が対象
+  // selected layer. View editing and the timeline keyframes target the "selected view layer"
   const selLayer: Layer | undefined = project ? (findLayer(project, selected) ?? viewLayers(project)[0]) : undefined
   const selView: ViewLayer | undefined = selLayer?.type === 'view' ? selLayer : project ? viewLayers(project)[0] : undefined
   const selViewRef = useRef<string | null>(null)
   selViewRef.current = selView?.id ?? null
 
-  // ---- ファイルを開く ----
+  // ---- Open a file ----
   const openInsv = useCallback(
     async (path: string) => {
       try {
-        setLoading(t('読み込んでいます'))
+        setLoading(t('Loading'))
         await closeRef.current()
         let proj = newProject(path)
         let pp = projectPathFor(path)
@@ -135,26 +134,26 @@ export function App(): React.JSX.Element {
           try {
             proj = migrateProject(JSON.parse(await window.api.readText(pp)), path)
           } catch {
-            /* 壊れたプロジェクトは無視して新規にする */
+            /* ignore a broken project and start a new one */
           }
         }
         const s = await Session.open(path, proj.stab, setLoading)
-        // 以前の版で保存したプロジェクトの時刻を、今の動画時刻に直す（X5・分割の 2 本目以降の動画で、記録の時刻がずれていた）
+        // Convert the times of projects saved by an earlier version to the current video times (on the X5 and on second and later split videos, the recorded times were offset)
         if (proj.timeBase !== 1) {
-          if (s.legacyTimeShiftSec) console.log(`プロジェクトの時刻を ${s.legacyTimeShiftSec.toFixed(3)} 秒ずらしました（以前の版の時刻の基準）`)
+          if (s.legacyTimeShiftSec) console.log(`Shifted the project times by ${s.legacyTimeShiftSec.toFixed(3)} s (time base of the earlier version)`)
           proj = { ...shiftProjectTimes(proj, s.legacyTimeShiftSec), timeBase: 1 }
         }
-        // レンズの継ぎ目の合わせ込み: まだ推定していなければ、開いた後に裏で推定して反映・保存する
+        // Lens seam alignment: if not estimated yet, estimate it in the background after opening, then apply and save it
         const needSeam = proj.stab.seam === undefined
-        // 車両ログ: プロジェクトに記録があればそれ、無ければ同じフォルダの CSV、
-        // それも無ければ .dat のフォルダ（設定してあれば）から映像に合うものを探す
+        // Vehicle log: the one recorded in the project if any, otherwise the CSV in the same folder,
+        // otherwise look for one matching the video in the .dat folder (if set)
         const prefs = loadLogPrefs()
         let logPath = proj.logPath && (await window.api.exists(proj.logPath)) ? proj.logPath : await Session.findLog(path)
         if (!logPath && prefs.datFolder && prefs.ddfPath && (await window.api.exists(prefs.datFolder))) {
           try {
             logPath = (await s.findDat(prefs.datFolder, prefs.ddfPath, setLoading))?.path ?? null
           } catch (e) {
-            console.warn('.dat の自動選択に失敗', e)
+            console.warn('Automatic .dat selection failed', e)
           }
         }
         let info: LogInfo | null = null
@@ -163,23 +162,23 @@ export function App(): React.JSX.Element {
             const ddf = isDatPath(logPath) ? (proj.ddfPath && (await window.api.exists(proj.ddfPath)) ? proj.ddfPath : prefs.ddfPath) : null
             info = await s.loadLog(logPath, ddf, setLoading)
             if (info.sync.peakRatio < 1.5) {
-              setMessage(t('車両ログ {file} は映像と同期できませんでした（別の走行のログかもしれません）。', { file: window.api.path.basename(logPath) }))
+              setMessage(t('Could not sync vehicle log {file} with the video (it may be from a different ride).', { file: window.api.path.basename(logPath) }))
               info = null
               logPath = null
               s.clearLog()
             }
           } catch (e) {
-            setMessage(t('車両ログを読み込めませんでした: {msg}', { msg: e instanceof Error ? e.message : String(e) }))
+            setMessage(t('Could not load the vehicle log: {msg}', { msg: e instanceof Error ? e.message : String(e) }))
             logPath = null
           }
         }
-        // 車両ログが無くても画角の自動切り替え・浮遊標識・水平の補正が動くよう、動画の IMU から推定しておく
-        //（ログがあっても、ログを無効にしたときに使う。精度はログより落ちる）
+        // Estimate from the video IMU so that auto camera, floating signs and horizon correction work even without a vehicle log
+        // (even when there is a log, it is used when the log is disabled; the accuracy is lower than the log)
         try {
-          setLoading(t('動画の動きから走行状態を推定しています'))
+          setLoading(t('Estimating riding state from the video motion'))
           await s.loadImuTelemetry()
         } catch (e) {
-          console.warn('動画の IMU からの推定に失敗', e)
+          console.warn('Estimation from the video IMU failed', e)
         }
         proj = { ...proj, logPath, ddfPath: info?.ddfPath ?? null }
         s.setLogEnabled(proj.logEnabled)
@@ -210,7 +209,7 @@ export function App(): React.JSX.Element {
     [showError, refreshRecent]
   )
 
-  // ---- 履歴のサムネイル（プレビューを縮小して保存）----
+  // ---- History thumbnail (the preview is scaled down and saved) ----
   const thumbPending = useRef<string | null>(null)
   const saveThumb = async (): Promise<void> => {
     const path = sessionRef.current ? projectRef.current?.insvPath : null
@@ -225,7 +224,7 @@ export function App(): React.JSX.Element {
     await window.api.recent.update(path, { thumb: tc.toDataURL('image/jpeg', 0.72) }).catch(() => undefined)
     refreshRecent()
   }
-  // 開いて最初のフレームが表示されたら撮る
+  // take it when the first frame is shown after opening
   useEffect(() => {
     if (!thumbPending.current || !session || status.playing) return
     const id = setTimeout(() => {
@@ -236,16 +235,16 @@ export function App(): React.JSX.Element {
     }, 600)
     return () => clearTimeout(id)
   }, [status.frame, session]) // eslint-disable-line react-hooks/exhaustive-deps
-  // 閉じるときも、作業していた場面で更新する（できる範囲で）
+  // also update it when closing, with the scene being worked on (as far as possible)
   useEffect(() => {
     const h = (): void => void saveThumb()
     window.addEventListener('beforeunload', h)
     return () => window.removeEventListener('beforeunload', h)
   })
 
-  // ---- 閉じて起動画面（履歴）へ戻る ----
+  // ---- Close and return to the start screen (history) ----
   const closeVideo = async (): Promise<void> => {
-    // 自動保存の待ち時間中なら、すぐに保存してから閉じる
+    // if we are within the autosave wait time, save immediately and then close
     if (project && !saved) {
       await window.api.writeText(projectPathFor(project.insvPath), JSON.stringify(project, null, 2)).catch(showError)
       setSaved(true)
@@ -264,23 +263,23 @@ export function App(): React.JSX.Element {
   closeRef.current = closeVideo
 
   const openDialog = async (): Promise<void> => {
-    const r = await window.api.openDialog({ title: t('.insv を開く'), filters: [{ name: t('Insta360 動画'), extensions: ['insv'] }], properties: ['openFile'] })
+    const r = await window.api.openDialog({ title: t('Open .insv'), filters: [{ name: t('Insta360 video'), extensions: ['insv'] }], properties: ['openFile'] })
     if (r?.[0]) await openInsv(r[0])
   }
 
-  // ---- 設定ファイル（右側の設定とメーターなどの位置。ほかの動画でも使える）----
+  // ---- Settings file (the settings on the right, positions of meters, etc.; usable for other videos too) ----
   const saveSettings = async (outPath?: string): Promise<void> => {
     if (!project) return
     const base = window.api.path.basename(project.insvPath).replace(/\.insv$/i, '')
     const out = outPath ?? await window.api.saveDialog({
-      title: t('設定を保存'),
+      title: t('Save settings'),
       defaultPath: window.api.path.join(window.api.path.dirname(project.insvPath), `${base}${SETTINGS_EXT}`),
-      filters: [{ name: t('MotoRecoMovie の設定'), extensions: ['json'] }]
+      filters: [{ name: t('MotoRecoMovie settings'), extensions: ['json'] }]
     })
     if (!out) return
     try {
       await window.api.writeText(out, JSON.stringify(settingsFromProject(project), null, 2))
-      setToast(t('設定を保存しました: {file}', { file: window.api.path.basename(out) }))
+      setToast(t('Settings saved: {file}', { file: window.api.path.basename(out) }))
     } catch (e) {
       showError(e)
     }
@@ -288,9 +287,9 @@ export function App(): React.JSX.Element {
   const loadSettings = async (inPath?: string): Promise<void> => {
     if (!project) return
     const r = inPath ? [inPath] : await window.api.openDialog({
-      title: t('設定を読み込む'),
+      title: t('Load settings'),
       defaultPath: window.api.path.dirname(project.insvPath),
-      filters: [{ name: t('MotoRecoMovie の設定'), extensions: ['json'] }],
+      filters: [{ name: t('MotoRecoMovie settings'), extensions: ['json'] }],
       properties: ['openFile']
     })
     if (!r?.[0]) return
@@ -298,21 +297,21 @@ export function App(): React.JSX.Element {
       const s = parseSettings(await window.api.readText(r[0]))
       const next = applySettings(project, s, (a, b) => layerName(a) === layerName(b))
       updateProject(next)
-      // 選んでいたレイヤーが無くなっていれば、先頭の視点レイヤーを選ぶ
+      // if the selected layer no longer exists, select the first view layer
       if (!next.layers.some((l) => l.id === selected)) setSelected(next.layers.find((l) => l.type === 'view')?.id ?? null)
-      setToast(t('設定を読み込みました: {file}（Ctrl+Z で元に戻せます）', { file: window.api.path.basename(r[0]) }))
+      setToast(t('Settings loaded: {file} (Ctrl+Z to undo)', { file: window.api.path.basename(r[0]) }))
     } catch (e) {
       showError(e)
     }
   }
 
-  /** 変換規則（.ddf）を選ぶ。選ばなければ null */
+  /** Choose the conversion rules (.ddf). null if none is chosen */
   const pickDdf = async (): Promise<string | null> => {
     const logPrefs = loadLogPrefs()
     const r = await window.api.openDialog({
-      title: t('変換規則（.ddf）を選ぶ'),
+      title: t('Choose decoding rules (.ddf)'),
       defaultPath: logPrefs.ddfPath ? window.api.path.dirname(logPrefs.ddfPath) : logPrefs.datFolder ?? undefined,
-      filters: [{ name: t('MotoRecoViewer の変換規則'), extensions: ['ddf'] }],
+      filters: [{ name: t('MotoRecoViewer decoding rules'), extensions: ['ddf'] }],
       properties: ['openFile']
     })
     if (!r?.[0]) return null
@@ -320,13 +319,13 @@ export function App(): React.JSX.Element {
     return r[0]
   }
 
-  /** ログを読み込んで使う（CSV、または .dat を ddf の規則でデコード） */
+  /** Load a log and use it (a CSV, or a .dat decoded with the rules of a ddf) */
   const useLogFile = async (path: string, ddf: string | null): Promise<void> => {
     if (!session || !project) return
     try {
-      setLoading(t('ログを読み込んでいます'))
+      setLoading(t('Loading log'))
       const info = await session.loadLog(path, ddf, setLoading)
-      if (info.sync.peakRatio < 1.5) setMessage(t('このログは映像とうまく同期できませんでした。結果を確認してください。'))
+      if (info.sync.peakRatio < 1.5) setMessage(t('This log did not sync well with the video. Please check the result.'))
       setLog(info)
       updateProject({ ...project, logPath: path, ddfPath: info.ddfPath, logEnabled: true })
       session.setLogEnabled(true)
@@ -342,9 +341,9 @@ export function App(): React.JSX.Element {
     if (!session || !project) return
     const logPrefs = loadLogPrefs()
     const r = await window.api.openDialog({
-      title: t('MotoReco のログを開く'),
+      title: t('Open MotoReco log'),
       defaultPath: logPrefs.datFolder ?? window.api.path.dirname(project.insvPath),
-      filters: [{ name: t('MotoReco のログ（.dat・CSV）'), extensions: ['dat', 'csv'] }],
+      filters: [{ name: t('MotoReco logs (.dat, CSV)'), extensions: ['dat', 'csv'] }],
       properties: ['openFile']
     })
     if (!r?.[0]) return
@@ -356,20 +355,20 @@ export function App(): React.JSX.Element {
     await useLogFile(r[0], ddf)
   }
 
-  /** 変換規則を変える。今のログが .dat なら、新しい規則で読み直す */
+  /** Change the conversion rules. If the current log is a .dat, reload it with the new rules */
   const changeDdf = async (): Promise<void> => {
     const ddf = await pickDdf()
     if (ddf && log && isDatPath(log.path)) await useLogFile(log.path, ddf)
   }
 
-  /** .dat のフォルダから、映像に合うものを探して読み込む */
+  /** Look for a .dat matching the video in the .dat folder and load it */
   const findDatInFolder = async (pickFolder: boolean): Promise<void> => {
     if (!session || !project) return
     const logPrefs = loadLogPrefs()
     setLogPrefsState(logPrefs)
     let folder = logPrefs.datFolder
     if (pickFolder || !folder || !(await window.api.exists(folder))) {
-      const r = await window.api.openDialog({ title: t('MotoReco の .dat のフォルダを選ぶ'), defaultPath: folder ?? undefined, properties: ['openDirectory'] })
+      const r = await window.api.openDialog({ title: t('Choose the folder with MotoReco .dat files'), defaultPath: folder ?? undefined, properties: ['openDirectory'] })
       if (!r?.[0]) return
       folder = r[0]
       setLogPrefs({ datFolder: folder })
@@ -378,7 +377,7 @@ export function App(): React.JSX.Element {
     if (!ddf) return
     let found: { path: string; peakRatio: number } | null = null
     try {
-      setLoading(t('映像に合う車両ログを探しています'))
+      setLoading(t('Looking for a matching bike log'))
       found = await session.findDat(folder, ddf, setLoading)
     } catch (e) {
       showError(e)
@@ -386,14 +385,14 @@ export function App(): React.JSX.Element {
       setLoading(null)
     }
     if (!found) {
-      setMessage(t('フォルダ {folder} に、この映像に合う .dat が見つかりませんでした。', { folder: window.api.path.basename(folder) }))
+      setMessage(t('No .dat matching this video was found in {folder}.', { folder: window.api.path.basename(folder) }))
       return
     }
     await useLogFile(found.path, ddf)
   }
 
-  // ---- プロジェクトの更新・元に戻す・自動保存 ----
-  // 変更のたびに直前の状態を履歴に積む。0.5 秒以内に続いた変更（ドラッグなど）は1回分にまとめる
+  // ---- Project update, undo, autosave ----
+  // on every change, push the previous state onto the history. Changes that follow within 0.5 s (drags, etc.) are merged into one
   const hist = useRef<{ past: Project[]; future: Project[]; last: number }>({ past: [], future: [], last: 0 })
   const record = (prev: Project): void => {
     const h = hist.current
@@ -412,7 +411,7 @@ export function App(): React.JSX.Element {
     })
     setSaved(false)
   }, [])
-  /** 最新の状態に対して変更を適用する（連続した操作で古い状態を上書きしないように） */
+  /** Apply a change to the latest state (so that consecutive operations do not overwrite an older state) */
   const apply = useCallback((f: (p: Project) => Project) => {
     setProject((p) => {
       if (!p) return p
@@ -457,7 +456,7 @@ export function App(): React.JSX.Element {
     return () => clearTimeout(id)
   }, [project, saved, showError])
 
-  // ログの有効・無効をリーン角とテレメトリー表示に反映
+  // reflect enabling/disabling the log in the lean angle and the telemetry display
   useEffect(() => {
     if (!session || !project) return
     session.setLogEnabled(project.logEnabled)
@@ -465,7 +464,7 @@ export function App(): React.JSX.Element {
   }, [project?.logEnabled, session, log]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const time = session ? session.motion.videoTime(Math.min(status.frame, session.frameCount - 1)) : 0
-  // 「このコマのキーフレーム」とみなす時間差（コマの間隔の 0.6 倍。自動生成のキーフレームはコマの区切りに乗っていないため）
+  // time difference treated as "a keyframe at this frame" (0.6 x the frame interval; auto-generated keyframes do not sit on frame boundaries)
   const keyTol = session ? keyTolerance(session.fps) : undefined
   const hasKeyHere = selView ? keyIndex(selView.keyframes, time, keyTol) >= 0 : false
 
@@ -495,14 +494,14 @@ export function App(): React.JSX.Element {
     else p.play()
   }
 
-  // ---- レイヤー操作 ----
-  // 追加は常に最新の状態に対して行う（続けて追加しても前の追加を上書きしないように）
+  // ---- Layer operations ----
+  // always add to the latest state (so that consecutive additions do not overwrite the previous one)
   const addView = (): void => {
     const now = currentTime()
     const fromId = selViewRef.current
     apply((p) => {
       const from = viewLayers(p).find((l) => l.id === fromId) ?? viewLayers(p)[0]
-      const next = addViewLayer(p, t('視点 {n}', { n: viewLayers(p).length + 1 }), PIP, now, from)
+      const next = addViewLayer(p, t('View {n}', { n: viewLayers(p).length + 1 }), PIP, now, from)
       setSelected(next.layers[next.layers.length - 1].id)
       return next
     })
@@ -515,7 +514,7 @@ export function App(): React.JSX.Element {
     })
   }
 
-  // ---- 注目ポイントと画角の自動切り替え ----
+  // ---- Markers and auto camera ----
   const addMarker = (): void => {
     const now = currentTime()
     apply((p) => ({ ...p, markers: [...p.markers, { id: newId(), t: now, yaw: 90, pitch: 0, fov: 90, hold: 4 }] }))
@@ -524,17 +523,17 @@ export function App(): React.JSX.Element {
   const removeMarker = (id: string): void => apply((p) => ({ ...p, markers: p.markers.filter((m) => m.id !== id) }))
   const updateDirector = (d: DirectorSettings): void => apply((p) => ({ ...p, director: d }))
 
-  // ---- レンズの継ぎ目の合わせ込み（裏で推定して反映する）----
+  // ---- Lens seam alignment (estimated in the background and applied) ----
   const [seamBusy, setSeamBusy] = useState(false)
   async function estimateSeamFor(s: Session, manual: boolean): Promise<void> {
     setSeamBusy(true)
     try {
       const r = await s.estimateSeam()
-      console.log(`継ぎ目の合わせ込み 回転 [${r.fix.rot.map((v) => v.toFixed(2)).join(', ')}]° 縁 ${r.fix.edge.toFixed(2)}°  重なり帯の差 ${r.before.toFixed(3)} → ${r.after.toFixed(3)}`)
-      if (sessionRef.current !== s) return // 推定中に別の動画を開いた
+      console.log(`Seam alignment rotation [${r.fix.rot.map((v) => v.toFixed(2)).join(', ')}]° edge ${r.fix.edge.toFixed(2)}°  overlap band difference ${r.before.toFixed(3)} -> ${r.after.toFixed(3)}`)
+      if (sessionRef.current !== s) return // another video was opened while estimating
       apply((p) => ({ ...p, stab: { ...p.stab, seam: r.fix, ...(manual && { seamFix: true }) } }))
       setToast(
-        t('レンズの継ぎ目を合わせました（縁の角度 {edge}°・回転 {rot}°、重なり帯の差 {before} → {after}）。', {
+        t('Lens seam aligned (edge angle {edge}°, rotation {rot}°, overlap difference {before} → {after}).', {
           edge: r.fix.edge.toFixed(1),
           rot: Math.hypot(...r.fix.rot).toFixed(1),
           before: r.before.toFixed(3),
@@ -542,7 +541,7 @@ export function App(): React.JSX.Element {
         })
       )
     } catch (e) {
-      console.warn('継ぎ目の合わせ込みを推定できませんでした', e)
+      console.warn('Could not estimate the seam alignment', e)
       if (sessionRef.current === s && !manual) apply((p) => ({ ...p, stab: { ...p.stab, seam: null } }))
       if (manual) showError(e)
     } finally {
@@ -553,8 +552,8 @@ export function App(): React.JSX.Element {
     if (session) void estimateSeamFor(session, true)
   }
 
-  // ---- 自車の継ぎ目の型（engine/bodymap.ts。AI で裏で作り、動画の横に保存する）----
-  // 型はレンズの補正（継ぎ目の合わせ込み）で変わるので、合わせ込みが決まってから作る
+  // ---- Own-bike seam pattern (engine/bodymap.ts; built in the background with AI and saved next to the video) ----
+  // The pattern changes with the lens correction (seam alignment), so build it after the alignment is decided
   const [bodyStatus, setBodyStatus] = useState<{ busy: boolean; frac: number; msg: string } | null>(null)
   const bodyJob = useRef<{ s: Session; key: string; signal: { aborted: boolean } } | null>(null)
   async function prepareBody(s: Session, rebuild: boolean): Promise<void> {
@@ -579,9 +578,9 @@ export function App(): React.JSX.Element {
         return
       }
     }
-    setBodyStatus({ busy: true, frac: 0, msg: t('自車の継ぎ目を作っています') })
+    setBodyStatus({ busy: true, frac: 0, msg: t('Building the body seam map') })
     try {
-      // 確認用（自動テストの bodyRange）: 作る範囲を限る
+      // for checking (autotest bodyRange): limit the range to build
       const range = (globalThis as { __bodyRange?: [number, number] }).__bodyRange
       const tr = await buildBodyTrack(s, { inpaint: kind, signal: job.signal, from: range?.[0], to: range?.[1] }, (frac, msg) => {
         if (bodyJob.current === job) setBodyStatus({ busy: true, frac, msg })
@@ -591,11 +590,11 @@ export function App(): React.JSX.Element {
       await saveBodyTrack(s, tr)
       setBodyStatus(null)
       player.current?.redraw()
-      setToast(t('自車の継ぎ目を作りました（トップケースなどカメラと一緒に動く物を、区間ごとに AI で合わせました）。'))
+      setToast(t('Body seam map built (parts that move with the camera, such as the top case, are aligned by AI per section).'))
     } catch (e) {
       if (bodyJob.current !== job || job.signal.aborted) return
-      console.warn('自車の継ぎ目を作れませんでした', e)
-      setBodyStatus({ busy: false, frac: 0, msg: t('自車の継ぎ目を作れませんでした: {msg}', { msg: e instanceof Error ? e.message : String(e) }) })
+      console.warn('Could not build the own-bike seam pattern', e)
+      setBodyStatus({ busy: false, frac: 0, msg: t('Could not build the body seam map: {msg}', { msg: e instanceof Error ? e.message : String(e) }) })
     }
   }
   useEffect(() => {
@@ -603,7 +602,7 @@ export function App(): React.JSX.Element {
     void prepareBody(session, false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, seamBusy, project?.stab.seam, project?.stab.seamFix, project?.stab.bodyStitch, project?.stab.bodyInpaint])
-  // 動画を閉じたら、作りかけの型を止める
+  // when the video is closed, stop the pattern that is being built
   useEffect(() => {
     if (!session && bodyJob.current) {
       bodyJob.current.signal.aborted = true
@@ -615,8 +614,8 @@ export function App(): React.JSX.Element {
     if (session) void prepareBody(session, true)
   }
 
-  // ---- 走行中の音を整える（engine/audiofx.ts。裏で作り、アプリのキャッシュに置く）----
-  // 設定を変えたら、できるまでは動画の音声のまま鳴らす
+  // ---- Condition the audio while riding (engine/audiofx.ts; built in the background and placed in the app cache) ----
+  // after changing the settings, keep playing the video's own audio until it is ready
   const [audioStatus, setAudioStatus] = useState<{ busy: boolean; frac: number; msg: string } | null>(null)
   const audioJob = useRef<{ s: Session; key: string; signal: { aborted: boolean } } | null>(null)
   useEffect(() => {
@@ -635,7 +634,7 @@ export function App(): React.JSX.Element {
     if (audioJob.current) audioJob.current.signal.aborted = true
     const job = { s, key, signal: { aborted: false } }
     audioJob.current = job
-    // 設定を続けて動かしたときに何度も作り直さないよう、少し待ってから
+    // wait a little so that it is not rebuilt many times when the settings are moved continuously
     const timer = setTimeout(() => {
       void (async () => {
         try {
@@ -655,8 +654,8 @@ export function App(): React.JSX.Element {
           setAudioStatus(null)
         } catch (e) {
           if (audioJob.current !== job || job.signal.aborted) return
-          console.warn('音を整えられませんでした', e)
-          setAudioStatus({ busy: false, frac: 0, msg: t('音を整えられませんでした: {msg}', { msg: e instanceof Error ? e.message : String(e) }) })
+          console.warn('Could not condition the audio', e)
+          setAudioStatus({ busy: false, frac: 0, msg: t('Could not clean up the sound: {msg}', { msg: e instanceof Error ? e.message : String(e) }) })
         } finally {
           if (audioJob.current === job) audioJob.current = null
         }
@@ -666,23 +665,23 @@ export function App(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, project?.audioFx])
 
-  // ---- 車体挙動の乱れがあった時の 2 画面 ----
+  // ---- 2 screens when a bike disturbance occurs ----
   const disturb = project?.logEnabled ? log?.telemetry.disturb : undefined
   const durSec = session ? session.frameCount / session.fps : 0
   const inc = project?.incident
-  /** 検出した事象（除外したものも含めた一覧。除外は一覧の上で印を付ける） */
+  /** Detected events (the list including excluded ones; exclusion is marked on the list) */
   const incidentList = useMemo(
     () => (disturb && inc ? incidentEvents(disturb, { ...inc, skip: [] }, durSec) : []),
-    // 除外（skip）と表示の切り替えでは作り直さない
+    // do not rebuild on exclusion (skip) or display toggles
     [disturb, inc?.threshold, inc?.pre, inc?.post, inc?.minDur, inc?.transition, durSec] // eslint-disable-line react-hooks/exhaustive-deps
   )
   const mainView = project?.layers.find((l) => l.type === 'view' && l.visible && !l.role)
   const updateIncident = (patch: Partial<IncidentSettings>): void =>
     apply((p) => {
       let layers = p.layers
-      // 初めてオンにしたときは「自車」の画面（後ろ向き・広角・水平固定）を作る
+      // the first time it is turned on, create the "own bike" screen (facing backward, wide angle, horizon locked)
       if (patch.on && !layers.some((l) => l.type === 'view' && l.role === 'incident')) {
-        const nl = { ...newViewLayer(t('自車（挙動の乱れ）'), { x: 0.5, y: 0, w: 0.5, h: 1 }, RIDER_VIEW), role: 'incident' as const, border: { ...DEFAULT_BORDER } }
+        const nl = { ...newViewLayer(t('Own bike (disturbance)'), { x: 0.5, y: 0, w: 0.5, h: 1 }, RIDER_VIEW), role: 'incident' as const, border: { ...DEFAULT_BORDER } }
         const lastView = layers.reduce((acc, l, i) => (l.type === 'view' ? i : acc), -1)
         layers = [...layers.slice(0, lastView + 1), nl, ...layers.slice(lastView + 1)]
       }
@@ -691,12 +690,12 @@ export function App(): React.JSX.Element {
 
   const generate = async (range: 'export' | 'all'): Promise<void> => {
     if (!project || !selView || !session) return
-    // 追い越しの演出: まだ調べていなければ、動画から追い越しの場面を探す（初回だけ。結果はプロジェクトに残す）
-    // 判定の方法が変わっていれば（保存した結果の版が古ければ）調べ直す
+    // Overtake effect: if not examined yet, look for overtakes in the video (first time only; the result is kept in the project)
+    // re-examine if the detection method has changed (if the saved result has an older version)
     let overtakes = project.overtakesVersion === OVERTAKE_SCAN_VERSION ? project.overtakes : undefined
     if (project.director.overtake.on && !overtakes) {
       try {
-        setLoading(t('追い越しの場面を探しています'))
+        setLoading(t('Looking for overtakes'))
         overtakes = (await session.scanOvertakes(setLoading)).overtakes.map((o) => ({ start: o.start, end: o.end }))
       } catch (e) {
         showError(e)
@@ -708,16 +707,16 @@ export function App(): React.JSX.Element {
     const dur = session.frameCount / session.fps
     const t0 = range === 'all' ? 0 : Math.max(0, project.export.inSec)
     const t1 = range === 'all' || project.export.outSec < 0 ? dur : Math.min(dur, project.export.outSec)
-    // 走行状態: 車両ログから。ログが無い（無効にした）ときは動画の IMU から推定したもの
+    // Riding state: from the vehicle log; if there is no log (disabled), the one estimated from the video IMU
     const riding = session.telemetry(project.logEnabled)?.riding ?? null
-    // 視点（前方・コーナー入口・側方・後方）は、設定メニューの「自動生成の視点」の既定値
-    // 追い越しの区間ごとの平均の車速（低速の追い越しでは切り替えない設定のため）
+    // Views (front, corner entry, side, rear) are the defaults of "Auto-generated views" in the settings menu
+    // average vehicle speed for each overtake span (because of the setting not to switch on low-speed overtakes)
     const tel = session.telemetry(project.logEnabled)
     const spans = (overtakes ?? []).map((o) => ({ ...o, speed: meanSpeed(tel, o.start, o.end) }))
     const g = generateKeyframes(selView.keyframes, riding, project.markers, project.director, t0, t1, project.director.overtake.on ? spans : [], shotViews)
     updateProject({ ...updateLayer(project, selView.id, { keyframes: g.keyframes }), overtakes, overtakesVersion: overtakes ? OVERTAKE_SCAN_VERSION : undefined })
     setToast(
-      t('「{name}」のキーフレームを {n} 個にしました（ショット {shots} 個、{from}〜{to}）。Ctrl+Z で元に戻せます。', {
+      t('Set "{name}" to {n} keyframes ({shots} shots, {from}–{to}). Press Ctrl+Z to undo.', {
         name: layerName(selView.name),
         n: g.keyframes.length,
         shots: g.shots.length,
@@ -727,14 +726,14 @@ export function App(): React.JSX.Element {
     )
   }
 
-  // ---- 書き出し ----
+  // ---- Export ----
   const doExport = async (outPath?: string): Promise<void> => {
     if (!session || !project) return
     const base = window.api.path.basename(project.insvPath).replace(/\.insv$/i, '')
     const out =
       outPath ??
       (await window.api.saveDialog({
-        title: t('書き出し先'),
+        title: t('Export to'),
         defaultPath: window.api.path.join(window.api.path.dirname(project.insvPath), `${base}_motorecomovie.mp4`),
         filters: [{ name: 'MP4', extensions: ['mp4'] }]
       }))
@@ -748,17 +747,17 @@ export function App(): React.JSX.Element {
       const r = await exportVideo(session, project, out, setExporting, ac.signal)
       const sec = (performance.now() - t0) / 1000
       setMessage(
-        t('書き出しが完了しました（{min}分{sec}秒、{codec}{audio}）', {
+        t('Export finished ({min} min {sec} s, {codec}{audio})', {
           min: Math.floor(sec / 60),
           sec: Math.round(sec % 60),
           codec: r.codecUsed.startsWith('hvc') ? 'HEVC' : 'H.264',
-          audio: r.audio ? t('、音声あり') : ''
+          audio: r.audio ? t(', with audio') : ''
         }) +
           `\n${out}` +
           (r.log ? `\n\n${r.log}` : '')
       )
     } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') setMessage(t('書き出しを中止しました。'))
+      if (e instanceof DOMException && e.name === 'AbortError') setMessage(t('Export canceled.'))
       else showError(e)
     } finally {
       setExporting(null)
@@ -766,7 +765,7 @@ export function App(): React.JSX.Element {
     }
   }
 
-  // ---- キーボード操作 ----
+  // ---- Keyboard operation ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (!session || !project || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
@@ -799,7 +798,7 @@ export function App(): React.JSX.Element {
       else if (e.key === 'i' || e.key === 'I') updateProject({ ...project, export: { ...project.export, inSec: time } })
       else if (e.key === 'o' || e.key === 'O') updateProject({ ...project, export: { ...project.export, outSec: time } })
       else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && selView) {
-        // 選択中の視点レイヤーの、前後のキーフレームへ移動
+        // move to the previous/next keyframe of the selected view layer
         const ks = selView.keyframes.map((k) => k.t)
         const tol = keyTolerance(session.fps)
         const tgt = e.key === 'ArrowUp' ? ks.filter((t) => t > time + tol).sort((a, b) => a - b)[0] : ks.filter((t) => t < time - tol).sort((a, b) => b - a)[0]
@@ -811,7 +810,7 @@ export function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  // ---- ドラッグ＆ドロップ ----
+  // ---- Drag and drop ----
   useEffect(() => {
     const over = (e: DragEvent): void => e.preventDefault()
     const drop = (e: DragEvent): void => {
@@ -829,7 +828,7 @@ export function App(): React.JSX.Element {
     }
   }, [openInsv])
 
-  // ---- 自動テストからの操作（REFRAME_AUTOTEST=ui）----
+  // ---- Operations from the autotest (REFRAME_AUTOTEST=ui) ----
   useEffect(() => {
     ;(window as unknown as { __reframe: unknown }).__reframe = {
       loading,
@@ -862,7 +861,7 @@ export function App(): React.JSX.Element {
   doExportRef.current = doExport
   const projectRef = useRef(project)
   projectRef.current = project
-  // メインメニューの「開く」「閉じる」
+  // main menu "Open" and "Close"
   const menuRef = useRef({ openDialog, closeVideo })
   menuRef.current = { openDialog, closeVideo }
   useEffect(
@@ -917,7 +916,7 @@ export function App(): React.JSX.Element {
     return () => window.removeEventListener('reframe:test', h)
   }, [openInsv, seek, onEditView, apply])
 
-  // 設定の画面でプレビューしている間は、選んでいる視点レイヤーをその視点で映す（プロジェクトは変えない）
+  // while previewing in the settings screen, show the selected view layer with that view (the project is not changed)
   const shownProject = useMemo((): Project | null => {
     if (!project || !shotDlg?.preview || !selView) return null
     const v = shotPreviewView(shotViews, shotDlg.kind, 30, shotDlg.side)
@@ -925,7 +924,7 @@ export function App(): React.JSX.Element {
   }, [project, shotDlg, shotViews, selView])
 
   const leanData = useMemo(() => (log && project?.logEnabled ? { t: log.lean.t, v: log.lean.lean } : null), [log, project?.logEnabled])
-  // タイムラインに重ねる車速（テレメトリーの 100Hz の車速を、動画時刻の列に）
+  // vehicle speed overlaid on the timeline (the 100 Hz telemetry speed, per column of video time)
   const speedData = useMemo(() => {
     const tel = log && project?.logEnabled ? log.telemetry : null
     const sp = tel?.channels.speed
@@ -933,7 +932,7 @@ export function App(): React.JSX.Element {
     return { t: Float64Array.from(sp, (_, i) => tel.t0 + i / tel.rate), v: Float64Array.from(sp) }
   }, [log, project?.logEnabled])
 
-  // ---- タイムラインの高さ（プレビューとの境界をドラッグして変える。このパソコンに覚えておく）----
+  // ---- Timeline height (changed by dragging the boundary with the preview; remembered on this computer) ----
   const [timelineH, setTimelineH] = useState<number>(() => {
     try {
       const v = Number(localStorage.getItem('reframe.timelineH'))
@@ -957,7 +956,7 @@ export function App(): React.JSX.Element {
       try {
         localStorage.setItem('reframe.timelineH', String(h))
       } catch {
-        /* 覚えられなくても使える */
+        /* it still works even if it cannot be remembered */
       }
     }
     window.addEventListener('pointermove', move)
@@ -968,16 +967,16 @@ export function App(): React.JSX.Element {
     <div className="app" style={{ gridTemplateRows: `44px minmax(0, 1fr) ${timelineH}px` }}>
       <div className="toolbar">
         <span className="title">MotoRecoMovie</span>
-        <button onClick={openDialog}>{t('開く…')}</button>
-        <button disabled={!project || !!exporting} onClick={() => void closeVideo()} title={t('閉じて最近開いた動画の一覧へ戻る')}>{t('閉じる')}</button>
-        <button className="icon" disabled={!project} onClick={undo} title={t('元に戻す（Ctrl+Z）')}>↶</button>
-        <button className="icon" disabled={!project} onClick={redo} title={t('やり直し（Ctrl+Y）')}>↷</button>
+        <button onClick={openDialog}>{t('Open…')}</button>
+        <button disabled={!project || !!exporting} onClick={() => void closeVideo()} title={t('Close and return to recent videos')}>{t('Close')}</button>
+        <button className="icon" disabled={!project} onClick={undo} title={t('Undo (Ctrl+Z)')}>↶</button>
+        <button className="icon" disabled={!project} onClick={redo} title={t('Redo (Ctrl+Y)')}>↷</button>
         <span className="file">
-          {project ? window.api.path.basename(project.insvPath) : t('.insv をドラッグ＆ドロップするか「開く」から選んでください')}
-          {session && `　${session.meta.model}　${session.rig[0].pictureSize}×${session.rig[0].pictureSize}×2　${session.fps}fps`}
+          {project ? window.api.path.basename(project.insvPath) : t('Drag and drop an .insv file, or choose one with "Open"')}
+          {session && `\u2003${session.meta.model}\u2003${session.rig[0].pictureSize}×${session.rig[0].pictureSize}×2\u2003${session.fps}fps`}
         </span>
-        {project && <span className="note">{saved ? t('保存済み') : t('保存中…')}</span>}
-        <select className="lang" value={lang} onChange={(e) => setLang(e.target.value as Lang)} title={t('表示の言語')}>
+        {project && <span className="note">{saved ? t('Saved') : t('Saving…')}</span>}
+        <select className="lang" value={lang} onChange={(e) => setLang(e.target.value as Lang)} title={t('Display language')}>
           {LANG_NAMES.map(([v, name]) => (
             <option key={v} value={v}>
               {name}
@@ -1095,20 +1094,20 @@ export function App(): React.JSX.Element {
           data-handle="timeline"
           onPointerDown={startTimelineResize}
           onDoubleClick={() => setTimelineH(TIMELINE_DEFAULT)}
-          title={t('ドラッグでタイムラインの高さを変える（ダブルクリックで元の高さ）')}
+          title={t('Drag to resize the timeline (double-click to reset)')}
         />
         <div className="transport">
-          <button className="icon" disabled={!session} onClick={() => seek(0)} title={t('先頭（Home）')}>⏮</button>
-          <button className="icon" disabled={!session} onClick={() => seek(status.frame - 1)} title={t('1フレーム戻る（←）')}>◀</button>
-          <button className="icon" disabled={!session} onClick={togglePlay} title={t('再生／一時停止（Space）')}>{status.playing ? '⏸' : '▶'}</button>
-          <button className="icon" disabled={!session} onClick={() => seek(status.frame + 1)} title={t('1フレーム進む（→）')}>▶|</button>
-          <button className="icon" disabled={!session || !session.audioTrack} onClick={toggleMute} title={t('ミュート（M）')}>{muted ? '🔇' : '🔊'}</button>
+          <button className="icon" disabled={!session} onClick={() => seek(0)} title={t('Go to start (Home)')}>⏮</button>
+          <button className="icon" disabled={!session} onClick={() => seek(status.frame - 1)} title={t('Previous frame (←)')}>◀</button>
+          <button className="icon" disabled={!session} onClick={togglePlay} title={t('Play / pause (Space)')}>{status.playing ? '⏸' : '▶'}</button>
+          <button className="icon" disabled={!session} onClick={() => seek(status.frame + 1)} title={t('Next frame (→)')}>▶|</button>
+          <button className="icon" disabled={!session || !session.audioTrack} onClick={toggleMute} title={t('Mute (M)')}>{muted ? '🔇' : '🔊'}</button>
           <span className="time">
-            {session ? `${fmt(time)} / ${fmt(session.frameCount / session.fps)}　#${status.frame}` : '--:--'}
+            {session ? `${fmt(time)} / ${fmt(session.frameCount / session.fps)}\u2003#${status.frame}` : '--:--'}
           </span>
-          {selView && <span className="note">{t('キーフレーム: {name}', { name: layerName(selView.name) })}</span>}
+          {selView && <span className="note">{t('Keyframes: {name}', { name: layerName(selView.name) })}</span>}
           <span className="spacer" />
-          <span className="note">{t('Space 再生　M ミュート　B 注目ポイント　←→ コマ送り（Shift で1秒）　↑↓ キーフレーム間を移動　K 追加　Del 削除　I/O 書き出し範囲')}</span>
+          <span className="note">{t('Space play · M mute · B marker · ←→ step frame (Shift: 1 s) · ↑↓ jump between keyframes · K add · Del delete · I/O export range')}</span>
         </div>
         {session && project && selView ? (
           <Timeline
@@ -1143,7 +1142,7 @@ export function App(): React.JSX.Element {
             {error && <div className="error">{error}</div>}
             {message && <div style={{ whiteSpace: 'pre-wrap' }}>{message}</div>}
             <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
-              <button onClick={() => (setError(null), setMessage(null))}>{t('閉じる')}</button>
+              <button onClick={() => (setError(null), setMessage(null))}>{t('Close')}</button>
             </div>
           </div>
         </div>

@@ -1,4 +1,4 @@
-// HEVC Main10（4K×2本）を WebCodecs でデコードできるかの検証
+// Check whether HEVC Main10 (2 x 4K) can be decoded with WebCodecs
 import { demux, keyframeBefore, type Track } from './core/mp4'
 import { openLocal } from './core/file'
 
@@ -50,7 +50,7 @@ export async function runDecodeSpike(path: string, canvas: HTMLCanvasElement, st
         }
         await dec.flush()
         const el = (performance.now() - ts0) / 1000
-        console.log(`track ${t.id}: ${N} フレーム（キーフレーム ${key} から）を ${el.toFixed(2)}s でデコード = ${(N / el).toFixed(1)} fps, 形式 ${fmt}`)
+        console.log(`track ${t.id}: decoded ${N} frames (from keyframe ${key}) in ${el.toFixed(2)}s = ${(N / el).toFixed(1)} fps, format ${fmt}`)
         dec.close()
       })().catch(reject)
     })

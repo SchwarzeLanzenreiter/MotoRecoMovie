@@ -1,14 +1,14 @@
-"""ffmpeg で .insv の各レンズストリームからフレームを読み出す。"""
+"""Read frames from each lens stream of an .insv with ffmpeg."""
 import subprocess
 
 import numpy as np
 
-# X6 はトラック順が逆（ストリーム1がレンズ0）。継ぎ目誤差の比較で確認済み。
+# On the X6 the track order is reversed (stream 1 is lens 0). Confirmed by comparing seam errors.
 LENS_TO_STREAM = {0: 1, 1: 0}
 
 
 def read_frames(path, lens, start_frame, count, size, fps=50, every=1, gray=False):
-    """lens の start_frame から count 枚（every 枚おき）を size×size の BGR（gray=True ならグレー）uint8 で返す。"""
+    """Return count frames (every `every` frames) from the lens start_frame as size x size uint8 BGR (grayscale if gray=True)."""
     ch = 1 if gray else 3
     vf = f"scale={size}:{size}:flags=area"
     if every > 1:

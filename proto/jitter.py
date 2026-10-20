@@ -1,9 +1,9 @@
-"""比較動画（左=補正なし, 右=補正あり）の画面上部（遠景）のフレーム間の動きを測り、揺れを数値化する。
+"""Measure the frame-to-frame motion in the upper part (distant view) of the comparison video (left = no correction, right = corrected) to quantify shake.
 
-各フレームペアで回転＋平行移動（相似変換）を推定し、
-  - 高周波成分（0.5秒移動平均からの残差）= 振動
-  - 低周波成分 = 意図的な動き（コーナリングでの傾きの変化など）
-に分けて比べる。
+For each frame pair, estimate rotation + translation (similarity transform) and
+  - high-frequency component (residual from a 0.5 s moving average) = vibration
+  - low-frequency component = intentional motion (change of lean in cornering etc.)
+compare them separately.
 """
 import sys
 
@@ -40,9 +40,9 @@ fps = 50
 win = int(0.5 * fps)
 for k, v in motion.items():
     v = np.array(v)
-    cum = np.cumsum(v, axis=0)  # 累積の画面位置・回転
+    cum = np.cumsum(v, axis=0)  # cumulative screen position and rotation
     kern = np.ones(win) / win
     low = np.stack([np.convolve(cum[:, j], kern, mode="same") for j in range(3)], 1)
     hf = (cum - low)[win:-win]
-    print(f"{k:5s}: 振動(高周波) RMS  x {hf[:, 0].std():6.2f}px  y {hf[:, 1].std():6.2f}px  回転 {hf[:, 2].std():5.3f}°"
-          f"  | 総回転量 {cum[-1, 2]:+6.2f}°")
+    print(f"{k:5s}: vibration (high freq) RMS  x {hf[:, 0].std():6.2f}px  y {hf[:, 1].std():6.2f}px  rotation {hf[:, 2].std():5.3f}°"
+          f"  | total rotation {cum[-1, 2]:+6.2f}°")

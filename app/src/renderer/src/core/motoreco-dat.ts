@@ -1,19 +1,19 @@
-// MotoReco の生ログ（.dat）を、MotoRecoViewer と同じ変換規則（.ddf）でデコードする。
-// 組み込みの規則の式と、表にするまでの手順（並べ替え・平滑化・積算・10ms の表）は MotoRecoViewer のソースの移植
-// （DecodeRule.cs・Model/ChData.cs・Analysis/ChannelAnalyzer.cs・FormMain.Data.cs・FormMain.Export.cs）。
-// 出力は MotoRecoViewer の CSV（"TO Custom v1"）と同じ列名・同じ 10ms 刻みの表で、そのまま BikeLog にできる。docs/motoreco-dat.md を参照
+// Decode the raw MotoReco log (.dat) with the same conversion rules (.ddf) as MotoRecoViewer.
+// The built-in rule formulas and the steps up to the table (sorting, smoothing, accumulation, the 10 ms table) are a port of MotoRecoViewer's source
+// (DecodeRule.cs, Model/ChData.cs, Analysis/ChannelAnalyzer.cs, FormMain.Data.cs, FormMain.Export.cs).
+// The output is a table with the same column names and the same 10 ms step as MotoRecoViewer's CSV ("TO Custom v1"), and can be used as a BikeLog as is. See docs/motoreco-dat.md
 
-/** .dat の 1 レコード = 16 バイト: u32 秒, u16 ミリ秒, u16 CAN ID（すべてリトルエンディアン）, データ 8 バイト */
+/** One .dat record = 16 bytes: u32 seconds, u16 milliseconds, u16 CAN ID (all little-endian), 8 bytes of data */
 export const DAT_RECORD = 16
 
-/** .ddf の 1 行: 名前, CAN ID（16進）, 規則, 色, 最小, 最大, 表示, …, 平滑化, カットオフ [Hz] */
+/** One .ddf row: name, CAN ID (hex), rule, color, min, max, display, ..., smoothing, cutoff [Hz] */
 export interface DdfChannel {
   name: string
   id: number
   rule: string
-  /** 9 列目: 平滑化（前後両方向の 2 次バターワース）をかけるか */
+  /** Column 9: whether to apply smoothing (2nd-order Butterworth, forward and backward) */
   filter: boolean
-  /** 10 列目: 平滑化のカットオフ周波数 [Hz] */
+  /** Column 10: smoothing cutoff frequency [Hz] */
   cutoffHz: number
 }
 
@@ -28,17 +28,17 @@ export function parseDdf(text: string): DdfChannel[] {
     const cutoff = parseFloat(f[9] ?? '')
     out.push({ name: f[0].trim(), id, rule: f[2].trim(), filter: (f[8] ?? '').trim().toLowerCase() === 'true', cutoffHz: Number.isFinite(cutoff) ? cutoff : 0 })
   }
-  if (!out.length) throw new Error('.ddf にチャンネルがありません')
+  if (!out.length) throw new Error('The .ddf has no channels')
   return out
 }
 
-/** 8 バイトのデータ（d[o]〜d[o+7]）から値を求める関数 */
+/** Function that computes a value from 8 bytes of data (d[o] to d[o+7]) */
 type Fn = (d: Uint8Array, o: number) => number
 
-// ---- 式の規則（Data1〜8, LoData1〜8, HiData1〜8, 数, + - * / と括弧）----
+// ---- Formula rules (Data1-8, LoData1-8, HiData1-8, numbers, + - * / and parentheses) ----
 export function compileFormula(src: string): Fn {
   const toks = src.match(/\d+\.?\d*(?:e[+-]?\d+)?|\.\d+|[A-Za-z_]\w*|[-+*/()]/gi) ?? []
-  if (toks.join('') !== src.replace(/\s+/g, '')) throw new Error(`式を読めません: ${src}`)
+  if (toks.join('') !== src.replace(/\s+/g, '')) throw new Error(`Cannot read the formula: ${src}`)
   let p = 0
   const peek = (): string | undefined => toks[p]
   const expr = (): Fn => {
@@ -72,10 +72,10 @@ export function compileFormula(src: string): Fn {
   }
   const atom = (): Fn => {
     const tk = toks[p++]
-    if (tk === undefined) throw new Error(`式を読めません: ${src}`)
+    if (tk === undefined) throw new Error(`Cannot read the formula: ${src}`)
     if (tk === '(') {
       const a = expr()
-      if (toks[p++] !== ')') throw new Error(`式を読めません: ${src}`)
+      if (toks[p++] !== ')') throw new Error(`Cannot read the formula: ${src}`)
       return a
     }
     if (/^[\d.]/.test(tk)) {
@@ -83,7 +83,7 @@ export function compileFormula(src: string): Fn {
       return () => v
     }
     const m = /^(lo|hi)?data([1-8])$/i.exec(tk)
-    if (!m) throw new Error(`式を読めません: ${src}`)
+    if (!m) throw new Error(`Cannot read the formula: ${src}`)
     const i = Number(m[2]) - 1
     const part = m[1]?.toLowerCase()
     if (part === 'lo') return (d, o) => d[o + i] & 15
@@ -91,24 +91,24 @@ export function compileFormula(src: string): Fn {
     return (d, o) => d[o + i]
   }
   const f = expr()
-  if (p !== toks.length) throw new Error(`式を読めません: ${src}`)
+  if (p !== toks.length) throw new Error(`Cannot read the formula: ${src}`)
   return f
 }
 
-// ---- 組み込みの規則（MotoRecoViewer の DecodeRule.FixedFormula と同じ式）----
+// ---- Built-in rules (the same formulas as MotoRecoViewer's DecodeRule.FixedFormula) ----
 const D = (d: Uint8Array, o: number, n: number): number => d[o + n - 1]
 const LO = (d: Uint8Array, o: number, n: number): number => d[o + n - 1] & 15
 const HI = (d: Uint8Array, o: number, n: number): number => d[o + n - 1] >> 4
 const U32 = (d: Uint8Array, o: number, n: number): number => d[o + n - 1] + d[o + n] * 256 + d[o + n + 1] * 65536 + d[o + n + 2] * 16777216
-/** 角速度 [deg/s]（無効値は -125） */
+/** Angular rate [deg/s] (invalid value is -125) */
 const RATE: Fn = (d, o) => (D(d, o, 2) * 125) / 127 + D(d, o, 1) / 255 - 125
-/** 加速度 [G] */
+/** Acceleration [G] */
 const ACCEL: Fn = (d, o) => (D(d, o, 6) + D(d, o, 5) / 255 - 128) / 32
 const FR_SPEED1: Fn = (d, o) => (LO(d, o, 5) * 256 + D(d, o, 4)) / 8
 const RR_SPEED: Fn = (d, o) => (LO(d, o, 2) * 256 + D(d, o, 1)) / 8
-/** ギア: Data6 の上位 4 ビット → 段。それ以外は 0（ニュートラル・不明） */
+/** Gear: upper 4 bits of Data6 → gear. Anything else is 0 (neutral / unknown) */
 const GEAR: Record<number, number> = { 1: 1, 4: 2, 7: 3, 8: 4, 11: 5, 13: 6 }
-/** 積算・燃費などは後処理で求める（ここでは 0） */
+/** Accumulated values, fuel economy, etc. are computed in post-processing (0 here) */
 const LATER: Fn = () => 0
 
 const BUILTIN: Record<string, Fn> = {
@@ -152,20 +152,20 @@ const BUILTIN: Record<string, Fn> = {
   BMW_Range: LATER,
   GPS_Latitude: (d, o) => (U32(d, o, 5) - 90000000) / 1000000,
   GPS_Longitude: (d, o) => (U32(d, o, 1) - 180000000) / 1000000,
-  // 単位は m/s の 10⁶ 倍 → km/h
+  // Unit is 10⁶ times m/s → km/h
   GPS_Speed: (d, o) => ((U32(d, o, 5) / 1000000) * 3600) / 1000,
-  // ロガーは 標高·10000 + 10000000 で記録する（旧仕様の 標高·10⁶ + 10⁹ で記録した .dat は正しく読めない）
+  // The logger records altitude·10000 + 10000000 (a .dat recorded with the old spec of altitude·10⁶ + 10⁹ cannot be read correctly)
   GPS_Altitude: (d, o) => (U32(d, o, 1) - 10000000) / 10000,
   GPS_Distance: LATER
 }
-// #Data1〜#Data8・#HiData1〜・#LoData1〜（どの ID でも使える）
+// #Data1-#Data8, #HiData1-, #LoData1- (usable with any ID)
 for (let n = 1; n <= 8; n++) {
   BUILTIN[`Data${n}`] = (d, o) => D(d, o, n)
   BUILTIN[`HiData${n}`] = (d, o) => HI(d, o, n)
   BUILTIN[`LoData${n}`] = (d, o) => LO(d, o, n)
 }
 
-/** 組み込みの規則の列の、BMW.ddf での列名（アプリはこの名前で読む） */
+/** Column names of the built-in rules in BMW.ddf (the app reads by these names) */
 const COLUMN: Record<string, string> = {
   BMW_RPM: 'RPM',
   BMW_ThrottelValvePosition: 'ThrottelValvePosition',
@@ -209,15 +209,15 @@ const COLUMN: Record<string, string> = {
   GPS_Distance: 'Distance'
 }
 
-/** 同期とリーン角に必ず使うので、.ddf に無くても読むチャンネル */
+/** Channels that are read even if missing from the .ddf, because they are always needed for sync and lean angle */
 const REQUIRED: DdfChannel[] = [
   { name: 'LeanAngle', id: 0x10c, rule: '#BMW_LeanAngle', filter: false, cutoffHz: 0 },
   { name: 'RollRate', id: 0x178, rule: '#BMW_RollRate', filter: false, cutoffHz: 0 }
 ]
 
 /**
- * 組み込みの規則の名前（# の後ろ）。#K51_* は #BMW_* と同じに扱う（古い .ddf の書き方。今の MotoRecoViewer では 0 になる）。
- * 組み込みでない（式）なら undefined、知らない名前なら null
+ * Name of a built-in rule (after the #). #K51_* is treated the same as #BMW_* (the old .ddf notation. In the current MotoRecoViewer it becomes 0).
+ * undefined if it is not built-in (a formula), null if the name is unknown
  */
 function builtinKey(rule: string): string | null | undefined {
   if (!rule.startsWith('#')) return undefined
@@ -226,13 +226,13 @@ function builtinKey(rule: string): string | null | undefined {
   return key ?? null
 }
 
-// ---- レコードの読み出し ----
+// ---- Reading records ----
 
-/** ID ごとのレコード（時刻順）。MotoRecoViewer と同じく、同じ時刻はファイルの順のまま並べる */
+/** Records per ID (in time order). As in MotoRecoViewer, records with the same time stay in file order */
 interface IdIndex {
-  /** 時刻 [s] = 秒 + ミリ秒/1000 */
+  /** Time [s] = seconds + milliseconds/1000 */
   time: Float64Array
-  /** データ 8 バイトの位置 */
+  /** Position of the 8 bytes of data */
   off: Uint32Array
 }
 function indexById(buf: Uint8Array, want?: Set<number>): { byId: Map<number, IdIndex>; start: number; end: number } {
@@ -257,7 +257,7 @@ function indexById(buf: Uint8Array, want?: Set<number>): { byId: Map<number, IdI
     e.off[e.k] = o + 8
     e.k++
   }
-  // GPS のレコードは少し遅れて書き込まれ、時刻が前後する。安定な並べ替え（同じ時刻はファイルの順）
+  // GPS records are written a little late, so the time order is shuffled. Stable sort (same time stays in file order)
   for (const e of byId.values()) {
     if (e.sorted) continue
     const order = Array.from(e.time.keys()).sort((a, b) => e.time[a] - e.time[b])
@@ -266,11 +266,11 @@ function indexById(buf: Uint8Array, want?: Set<number>): { byId: Map<number, IdI
     e.time = time
     e.off = off
   }
-  // 表の範囲は、ファイルの最初と最後のレコードの時刻（MotoRecoViewer の startTime・endTime）
+  // The table range is the time of the first and last records in the file (MotoRecoViewer's startTime and endTime)
   return { byId, start: n ? timeAt(0) : 0, end: n ? timeAt((n - 1) * DAT_RECORD) : 0 }
 }
 
-/** 時刻 x の左側（x 以下で最も新しい）レコードの番号。MotoRecoViewer の ChData.FindLeftIndex と同じ（範囲の外の扱いも） */
+/** Index of the record on the left of time x (the latest at or before x). Same as MotoRecoViewer's ChData.FindLeftIndex (including handling of out-of-range) */
 function findLeftIndex(time: Float64Array, x: number): number {
   const n = time.length
   if (n < 3) return 0
@@ -288,8 +288,8 @@ function findLeftIndex(time: Float64Array, x: number): number {
 }
 
 /**
- * 2 次バターワースの前後両方向の平滑化。MotoRecoViewer の ChData.Butterworth の移植
- * （両端は 2 点ずつ端の値で延ばす。最後の 1 点は平滑化しない）。dt はサンプルの間隔 [s]
+ * Forward-backward 2nd-order Butterworth smoothing. A port of MotoRecoViewer's ChData.Butterworth
+ * (each end is extended by 2 points of the edge value. The last point is not smoothed). dt is the sample interval [s]
  */
 export function butterworthFiltfilt(x: Float64Array, dt: number, cutoffHz: number): Float64Array {
   const out = x.slice()
@@ -322,7 +322,7 @@ export function butterworthFiltfilt(x: Float64Array, dt: number, cutoffHz: numbe
   return out
 }
 
-/** サンプルの間隔 [s]: 先頭 100 個の平均（MotoRecoViewer の ChData.FilterData と同じ） */
+/** Sample interval [s]: the mean of the first 100 (same as MotoRecoViewer's ChData.FilterData) */
 function sampleInterval(time: Float64Array): number {
   const j = Math.min(time.length, 100)
   let sum = 0
@@ -331,7 +331,7 @@ function sampleInterval(time: Float64Array): number {
   return sum / i
 }
 
-/** 1 チャンネルのレコードの列（時刻順） */
+/** The list of records of one channel (in time order) */
 interface Channel {
   def: DdfChannel
   key: string | null | undefined
@@ -339,11 +339,11 @@ interface Channel {
   value: Float64Array
 }
 
-// ---- 積算・燃費・走行可能距離（MotoRecoViewer の ChannelAnalyzer と同じ。デコードした値から後で求める）----
+// ---- Accumulation, fuel economy, range (same as MotoRecoViewer's ChannelAnalyzer. Computed later from the decoded values) ----
 function calcDerived(chs: Channel[]): void {
-  // 規則で引く（同じ規則が複数あれば最初のもの）
+  // Look up by rule (the first one if several have the same rule)
   const by = (key: string): Channel | undefined => chs.find((c) => c.key === key)
-  /** 速度 [km/h] を、レコードごとに「その速度 × 前のレコードからの時間」で積分 [km] */
+  /** Integrate the speed [km/h] per record as "that speed × time since the previous record" [km] */
   const integrate = (speedKey: string, distKey: string): void => {
     const s = by(speedKey)
     const dist = by(distKey)
@@ -352,7 +352,7 @@ function calcDerived(chs: Channel[]): void {
     dist.value[0] = 0
     for (let i = 1; i < n; i++) dist.value[i] = dist.value[i - 1] + (s.value[i] / 3600) * (s.time[i] - s.time[i - 1])
   }
-  /** カウンタの増分を積算する。1 周したとき（増分が wrapBelow 未満）だけ wrap を足し、それ以外の減少（エンジン停止など）は 0 */
+  /** Accumulate counter increments. Only when it wraps (increment below wrapBelow) add wrap; any other decrease (engine stop, etc.) is 0 */
   const accumulate = (countKey: string, accKey: string, wrapBelow: number, wrap: number, scale: number): void => {
     const cnt = by(countKey)
     const acc = by(accKey)
@@ -369,13 +369,13 @@ function calcDerived(chs: Channel[]): void {
   }
   integrate('GPS_Speed', 'GPS_Distance')
   integrate('BMW_FrSpeed1', 'BMW_DistFrSpeed1')
-  // 前輪の距離カウンタは最大 3951、×0.000255 で前輪速の積分と同じ距離 [km] になる
+  // The front wheel distance counter has a max of 3951; ×0.000255 gives the same distance as integrating the front wheel speed [km]
   accumulate('BMW_DistCountFr', 'BMW_AccumulatedDistCountFr', -3900, 3951, 0.000255)
-  // 後輪の距離カウンタは最大 255、×0.004 でおおよその距離 [km]（加速中は後輪が滑るので少し長くなる）
+  // The rear wheel distance counter has a max of 255; ×0.004 gives a rough distance [km] (a little longer because the rear wheel slips when accelerating)
   accumulate('BMW_DistCountRr', 'BMW_AccumulatedDistCountRr', -250, 255, 0.004)
-  // 燃料カウンタは 16 ビット、÷10⁶ で消費燃料 [L]
+  // The fuel counter is 16 bits; /10⁶ gives the fuel consumed [L]
   accumulate('BMW_FuelCount', 'BMW_AccumulatedFuelCount', -65000, 65536, 1 / 1000000)
-  // 燃費 [km/L] = 積算距離（前輪のカウンタ）/ 消費燃料。燃料カウンタのレコードの時刻ごと
+  // Fuel economy [km/L] = accumulated distance (front wheel counter) / fuel consumed. For each time of the fuel counter's records
   const fuel = by('BMW_AccumulatedFuelCount')
   const dist = by('BMW_AccumulatedDistCountFr')
   const cons = by('BMW_FuelConsumption')
@@ -387,7 +387,7 @@ function calcDerived(chs: Channel[]): void {
       cons.value[i] = f !== 0 ? km / f : 0
     }
   }
-  // 走行可能距離 [km] = タンク容量 30L × 燃料残量 [%] × 燃費
+  // Range [km] = tank capacity 30 L × remaining fuel [%] × fuel economy
   const level = by('BMW_FuelLevel')
   const range = by('BMW_Range')
   if (cons && level && range) {
@@ -401,20 +401,20 @@ function calcDerived(chs: Channel[]): void {
 }
 
 export interface DatTable {
-  /** 秒（10ms 刻み。ログの最初のレコードの時刻から） */
+  /** Seconds (10 ms step. From the time of the first record in the log) */
   t: Float64Array
   columns: Map<string, Float64Array>
-  /** .ddf にあったが、知らない組み込みの規則（列を作らない） */
+  /** Built-in rules that were in the .ddf but are unknown (no column is made) */
   unsupported: string[]
 }
 
 /**
- * .dat を .ddf の規則でデコードし、MotoRecoViewer の CSV 書き出しと同じ表にする。
- * 手順も MotoRecoViewer と同じ: レコードごとに値を求める → ID ごとに時刻順に並べる → 平滑化（レコードの列に）→
- * 積算などの後処理 → 最初のレコードの時刻から 0.01 秒ずつ足した時刻ごとに、その時刻以下で最新のレコードの値
+ * Decode the .dat with the .ddf rules into the same table as MotoRecoViewer's CSV export.
+ * The steps are also the same as MotoRecoViewer: compute values per record → sort by time per ID → smoothing (on the record series) →
+ * post-processing such as accumulation → for each time stepping 0.01 s from the first record's time, the value of the latest record at or before that time
  */
 function decodeTable(buf: Uint8Array, ddf: DdfChannel[], addRequired: boolean): DatTable {
-  if (buf.byteLength < DAT_RECORD || buf.byteLength % DAT_RECORD !== 0) throw new Error('MotoReco の .dat ではありません（大きさが 16 バイト単位ではありません）')
+  if (buf.byteLength < DAT_RECORD || buf.byteLength % DAT_RECORD !== 0) throw new Error('Not a MotoReco .dat (size is not a multiple of 16 bytes)')
   const defs = [...ddf]
   if (addRequired) for (const req of REQUIRED) if (!defs.some((c) => c.name === req.name || builtinKey(c.rule) === builtinKey(req.rule))) defs.push(req)
   const unsupported: string[] = []
@@ -423,24 +423,24 @@ function decodeTable(buf: Uint8Array, ddf: DdfChannel[], addRequired: boolean): 
   for (const def of defs) {
     const key = builtinKey(def.rule)
     if (key === null) {
-      unsupported.push(`${def.name}（${def.rule}）`)
+      unsupported.push(`${def.name} (${def.rule})`)
       continue
     }
     const idx = byId.get(def.id)
-    if (!idx) continue // データの来ない ID の列は作らない（MotoRecoViewer と同じ）
+    if (!idx) continue // do not make columns for IDs that send no data (same as MotoRecoViewer)
     const fn = key ? BUILTIN[key] : compileFormula(def.rule)
     const value = new Float64Array(idx.time.length)
     for (let i = 0; i < value.length; i++) value[i] = fn(buf, idx.off[i])
     chs.push({ def, key, time: idx.time, value })
   }
   calcDerived(chs)
-  // 10ms ごとの表。時刻は 0.01 を足し続ける（浮動小数の誤差も含めて MotoRecoViewer と同じ行・同じ値になる）
+  // The 10 ms table. Time keeps adding 0.01 (including the floating-point error, giving the same rows and values as MotoRecoViewer)
   const stamps: number[] = []
   for (let ts = start; ts < end; ts += 0.01) stamps.push(ts)
   const columns = new Map<string, Float64Array>()
   const canonical = new Map<string, Float64Array>()
   for (const c of chs) {
-    // 平滑化はレコードの列にかける（積算の列は積算した後の値に）
+    // Smoothing is applied to the record series (for accumulated columns, to the value after accumulation)
     const v = c.def.filter ? butterworthFiltfilt(c.value, sampleInterval(c.time), c.def.cutoffHz) : c.value
     const col = new Float64Array(stamps.length)
     for (let r = 0; r < stamps.length; r++) col[r] = v[findLeftIndex(c.time, stamps[r])]
@@ -450,26 +450,26 @@ function decodeTable(buf: Uint8Array, ddf: DdfChannel[], addRequired: boolean): 
     const cn = c.key ? COLUMN[c.key] : undefined
     if (cn && !canonical.has(cn)) canonical.set(cn, col)
   }
-  // 組み込みの規則の列は、.ddf での名前が違っても BMW.ddf の列名で引けるようにする
+  // Columns of the built-in rules can be looked up by their BMW.ddf column name even if the name in the .ddf differs
   for (const [name, v] of canonical) if (!columns.has(name)) columns.set(name, v)
-  // CSV の time (ms) は「時刻×1000 の整数」なので、秒もそれにそろえる
+  // The CSV's time (ms) is "an integer of time×1000", so the seconds are aligned to that too
   const t = Float64Array.from(stamps, (s) => Math.round(s * 1000) / 1000)
   return { t, columns, unsupported }
 }
 
-/** .dat を .ddf の規則でデコードし、CSV と同じ表にする（同期に使う LeanAngle・RollRate は .ddf に無くても読む） */
+/** Decode the .dat with the .ddf rules into the same table as the CSV (LeanAngle and RollRate used for sync are read even if missing from the .ddf) */
 export function decodeDat(buf: Uint8Array, ddf: DdfChannel[]): DatTable {
   return decodeTable(buf, ddf, true)
 }
 
-/** ファイル名（YYYYMMDD_HHMMSS.dat）から記録開始の時刻（ローカル時刻の ms）。読めなければ null */
+/** Recording start time (local time in ms) from the file name (YYYYMMDD_HHMMSS.dat). null if unreadable */
 export function datStartFromName(name: string): number | null {
   const m = /(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/.exec(name)
   if (!m) return null
   return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime()
 }
 
-/** ファイルの末尾のレコード（数件）から、記録の長さ [s] */
+/** Recording length [s] from the last few records in the file */
 export function datDurationFromTail(tail: Uint8Array): number {
   const v = new DataView(tail.buffer, tail.byteOffset, tail.byteLength)
   let s = 0
@@ -477,7 +477,7 @@ export function datDurationFromTail(tail: Uint8Array): number {
   return s
 }
 
-/** 映像との照合用に、ロールレートだけを 10ms 刻みで取り出す（無効値は NaN） */
+/** For matching with the video, extract only the roll rate at a 10 ms step (invalid value is NaN) */
 export function datRollRate(buf: Uint8Array, ddf: DdfChannel[] | null): { t: Float64Array; rollRate: Float64Array } {
   const def = ddf?.find((x) => builtinKey(x.rule) === 'BMW_RollRate') ?? REQUIRED[1]
   const table = decodeTable(buf, [{ ...def, name: 'RollRate', filter: false }], false)

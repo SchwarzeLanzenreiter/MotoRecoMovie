@@ -1,44 +1,44 @@
-// これから進入するコーナーの検出と、曲線半径の推定（空中に浮かぶ標識の内容と位置）。
+// Detection of upcoming corners and estimation of curve radius (the content and position of floating signs in the air).
 //
-// コーナー = 走行状態のコーナリング区間（リーン角 > 15°）。曲線半径は
-//   R = 速度 ÷ 鉛直軸まわりの旋回の角速度（ジャイロ）
-// を、旋回がいちばん強い部分（最大の 8 割以上）の中央値で求める。
-// 検証用に、GPS の軌跡の曲率からの推定と、R = v² / (g·tan L) の推定も持つ（test/corners.test.ts で比べる）。
+// Corner = a cornering section of the riding state (lean angle > 15°). The curve radius is
+//   R = speed ÷ angular rate of turning about the vertical axis (gyro)
+// taken as the median over the part where the turn is strongest (80% or more of the maximum).
+// For validation it also keeps an estimate from the curvature of the GPS track and an estimate from R = v² / (g·tan L) (compared in test/corners.test.ts).
 import type { NavTrack } from './nav'
 import type { RidingTrack } from './riding'
 import type { Telemetry } from './telemetry'
 
 export interface Corner {
-  /** 進入の時刻 [s]（コーナリング区間の開始） */
+  /** Entry time [s] (start of the cornering section) */
   start: number
   end: number
-  /** 旋回がいちばん強い時刻 [s] */
+  /** Time [s] of the strongest turn */
   apex: number
-  /** 右 = +1、左 = -1 */
+  /** Right = +1, left = -1 */
   dir: 1 | -1
-  /** 曲線半径 [m]（5m 単位に丸めたもの） */
+  /** Curve radius [m] (rounded to 5 m) */
   radius: number
-  /** 検証用: GPS の軌跡の曲率から / リーン角から（丸める前） */
+  /** For validation: from the GPS track curvature / from the lean angle (before rounding) */
   radiusGps: number
   radiusLean: number
   /**
-   * 進入地点の前後の走行経路（PATH_STEP m ごと）。s = 進入地点からの経路に沿った距離 [m]（手前が負）。
-   * 標識をどこに置くか（signPlace）に使う
+   * Riding path around the entry point (every PATH_STEP m). s = distance along the path from the entry point [m] (negative before it).
+   * Used to decide where to place the sign (signPlace)
    */
   path: { s: number[]; x: number[]; y: number[]; alt: number[]; heading: number[]; t: number[] }
-  /** 進入地点（融合した位置, m）。残り距離の表示に使う */
+  /** Entry point (fused position, m). Used to display the remaining distance */
   ex: number
   ey: number
 }
 
 const G = 9.80665
 
-/** 経路を持っておく範囲（進入地点の手前・先 [m]）と間隔 */
+/** Range over which the path is kept (before and after the entry point [m]) and the spacing */
 export const PATH_BEFORE = 120
 export const PATH_AFTER = 60
 const PATH_STEP = 2
 
-/** 標識を置く地点: 進入地点から経路に沿って ahead m 先（負なら手前）。経路の範囲外なら端 */
+/** Sign placement point: ahead m along the path from the entry point (before it if negative). The end if outside the path */
 export function signPlace(c: Corner, ahead: number): { x: number; y: number; alt: number; heading: number; t: number } | null {
   const p = c.path
   const n = p.s.length
@@ -63,7 +63,7 @@ export function detectCorners(tel: Telemetry, nav: NavTrack, riding: RidingTrack
   const rate = tel.rate
   const out: Corner[] = []
   if (!ch.speed) return out
-  // 走行経路に沿った距離 [m]（前輪速の積分）。標識を進入地点の前後に置くのに使う
+  // Distance along the riding path [m] (integral of the front wheel speed). Used to place signs before and after the entry point
   const along = new Float64Array(tel.n)
   for (let i = 1; i < tel.n; i++) along[i] = along[i - 1] + (Number.isNaN(ch.speed[i]) ? 0 : ch.speed[i] / 3.6 / rate)
   const d2r = Math.PI / 180
@@ -72,7 +72,7 @@ export function detectCorners(tel: Telemetry, nav: NavTrack, riding: RidingTrack
     const a = Math.max(1, Math.round(sg.start * rate))
     const b = Math.min(tel.n - 2, Math.round(sg.end * rate))
     if (b - a < rate * 0.8) continue
-    // 旋回の角速度の最大と、その 8 割以上の区間
+    // Maximum turn angular rate, and the section at 80% or more of it
     let wMax = 0
     let iMax = a
     for (let i = a; i <= b; i++) {
@@ -96,7 +96,7 @@ export function detectCorners(tel: Telemetry, nav: NavTrack, riding: RidingTrack
       rW.push(v / (Math.abs(w) * d2r))
       const L = ch.lean ? Math.abs(ch.lean[i]) : 0
       if (L > 3) rL.push((v * v) / (G * Math.tan(L * d2r)))
-      // GPS の軌跡の曲率: 方位（GPS）の変化率から
+      // Curvature of the GPS track: from the rate of change of heading (GPS)
       const h0 = ch.heading?.[i - 1]
       const h1 = ch.heading?.[i + 1]
       if (h0 !== undefined && h1 !== undefined && !Number.isNaN(h0) && !Number.isNaN(h1)) {
@@ -106,7 +106,7 @@ export function detectCorners(tel: Telemetry, nav: NavTrack, riding: RidingTrack
     }
     const R = median(rW)
     if (!(R >= minRadius && R <= maxRadius)) continue
-    // 進入地点の前後の経路（PATH_STEP m ごと）
+    // Path around the entry point (every PATH_STEP m)
     let k0 = a
     while (k0 > 0 && along[a] - along[k0] < PATH_BEFORE) k0--
     const path: Corner['path'] = { s: [], x: [], y: [], alt: [], heading: [], t: [] }

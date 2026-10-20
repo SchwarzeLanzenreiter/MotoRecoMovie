@@ -1,4 +1,4 @@
-"""継ぎ目の重なり帯で両レンズの画素差を測り、トラック順を判定する。"""
+"""Measure the pixel difference between both lenses in the seam overlap band to determine the track order."""
 import sys
 import cv2
 import numpy as np
@@ -15,4 +15,4 @@ for name, order in [("normal", (0, 1)), ("reversed", (1, 0))]:
     s = [cv2.remap(imgs[order[i]], proj[i][0].astype(np.float32), proj[i][1].astype(np.float32), cv2.INTER_LINEAR) for i in (0, 1)]
     g = [cv2.GaussianBlur(cv2.cvtColor(a, cv2.COLOR_BGR2GRAY), (0, 0), 1.5) for a in s]
     err = np.abs(g[0] - g[1])[band]
-    print(f"{name}: 重なり帯の平均差 {err.mean():.4f}  中央値 {np.median(err):.4f}")
+    print(f"{name}: mean difference in the overlap band {err.mean():.4f}  median {np.median(err):.4f}")

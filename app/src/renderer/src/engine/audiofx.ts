@@ -1,9 +1,9 @@
-// 走行中の音を整えた音声（core/audiofx.ts）を作り、アプリのキャッシュのフォルダに .m4a で置く。プレビューと書き出しで使う。
-// 重い処理（音割れの補修・エンジン音以外を抑える）だけをここで前もって作る。高い音を切る・音圧を抑えるは、鳴らすときに
-// core/audiofx.ts の Dynamics でかける（設定がすぐに聞こえるように）
-//   1. ffmpeg: 動画の音声をモノラルの 32bit 浮動小数点に（音割れの補修 adeclip もここで）
-//   2. 解析スレッド: 倍音を残して雑音を抑える（20 秒ずつ、前後に余白を付けて）
-//   3. ffmpeg: FX_BUILD_GAIN 倍して（音割れの補修で 1 を超えることがあるので）AAC に
+// Builds the tidied riding audio (core/audiofx.ts) and places it as .m4a in the app cache folder. Used by the preview and export.
+// Only the heavy processing (declip, suppress non-engine sound) is built ahead of time here. Cutting high sounds and reducing loudness are applied
+// at playback time by Dynamics in core/audiofx.ts (so settings are heard immediately)
+//   1. ffmpeg: video audio to mono 32-bit float (declip adeclip also happens here)
+//   2. analysis thread: suppress noise while keeping harmonics (20 s at a time, with margins before and after)
+//   3. ffmpeg: multiply by FX_BUILD_GAIN (declip can exceed 1) and encode to AAC
 import { AFX_HOP, AFX_N, audioFxKey, FX_BUILD_GAIN, type AudioFx } from '../core/audiofx'
 import { demux, type FileReader, type Track } from '../core/mp4'
 import { openLocal } from '../core/file'
@@ -14,7 +14,7 @@ const FS = 48000
 const CHUNK_SEC = 20
 const MARGIN = AFX_N + 8 * AFX_HOP
 
-/** 整えた音声（プレビューの AudioPlayer と書き出しに渡す） */
+/** Tidied audio (passed to the preview AudioPlayer and to export) */
 export interface FxAudio {
   path: string
   key: string
@@ -22,7 +22,7 @@ export interface FxAudio {
   track: Track
 }
 
-/** 文字列の短いハッシュ（キャッシュのファイル名に） */
+/** Short hash of a string (for the cache file name) */
 function hash(s: string): string {
   let h1 = 0x811c9dc5
   let h2 = 0x01000193
@@ -61,7 +61,7 @@ async function openFx(path: string, key: string): Promise<FxAudio> {
   const file = await openLocal(path)
   try {
     const track = (await demux(file)).find((tr) => tr.kind === 'audio')
-    if (!track) throw new Error(t('整えた音声を読めません'))
+    if (!track) throw new Error(t('Cannot read the cleaned-up audio'))
     return { path, key, file, track }
   } catch (e) {
     await file.close()
@@ -69,7 +69,7 @@ async function openFx(path: string, key: string): Promise<FxAudio> {
   }
 }
 
-/** 作ってある整えた音声を開く（無ければ null） */
+/** Open the tidied audio if already built (null if not) */
 export async function loadFxAudio(s: Session, fx: AudioFx): Promise<FxAudio | null> {
   const key = fxAudioKey(s, fx)
   const path = window.api.path.join(await window.api.cacheDir(), `audio-${key}.m4a`)
@@ -81,7 +81,7 @@ export async function loadFxAudio(s: Session, fx: AudioFx): Promise<FxAudio | nu
   }
 }
 
-/** 整えた音声を作る（キャッシュにあればそれを開く）。onProgress は 0〜1 と表示の文 */
+/** Build the tidied audio (open it if it is in the cache). onProgress receives 0 to 1 and a message */
 export async function buildFxAudio(s: Session, fx: AudioFx, onProgress?: (frac: number, msg: string) => void, signal?: { aborted: boolean }): Promise<FxAudio> {
   const have = await loadFxAudio(s, fx)
   if (have) return have
@@ -91,29 +91,29 @@ export async function buildFxAudio(s: Session, fx: AudioFx, onProgress?: (frac: 
   const tmpIn = window.api.path.join(dir, `tmp-${key}-in.f32`)
   const tmpOut = window.api.path.join(dir, `tmp-${key}-out.f32`)
   const stop = (): void => {
-    if (signal?.aborted) throw new Error(t('中止しました'))
+    if (signal?.aborted) throw new Error(t('Cancelled'))
   }
   try {
-    // 1. 取り出し（と音割れの補修）
-    onProgress?.(0, fx.declip ? t('音声を取り出して音割れを補修しています') : t('音声を取り出しています'))
+    // 1. Extract (and declip)
+    onProgress?.(0, fx.declip ? t('Extracting audio and repairing clipping') : t('Extracting audio'))
     let r = await window.api.runFfmpeg(['-y', '-v', 'error', '-i', s.path, '-map', '0:a:0', '-ac', '1', '-ar', String(FS), ...(fx.declip ? ['-af', 'adeclip'] : []), '-f', 'f32le', '-c:a', 'pcm_f32le', tmpIn])
-    if (r.code !== 0) throw new Error(t('ffmpeg で音声を取り出せませんでした: {log}', { log: r.log.slice(-300) }))
+    if (r.code !== 0) throw new Error(t('ffmpeg could not extract the audio: {log}', { log: r.log.slice(-300) }))
     stop()
-    // 2. 雑音を抑える（20 秒ずつ）
+    // 2. Suppress noise (20 s at a time)
     const fin = await window.api.open(tmpIn, 'r')
     const fout = await window.api.open(tmpOut, 'w')
     try {
       const n = Math.floor(fin.size / 4)
-      // 区切りはフーリエ変換のずらし幅の倍数に（フレームの位置が区切りの前後でそろい、つなぎ目で音が変わらない）
+      // Chunk boundaries are multiples of the Fourier transform hop (frame positions line up across boundaries, so the sound does not change at the seams)
       const chunk = Math.round((CHUNK_SEC * FS) / AFX_HOP) * AFX_HOP
       for (let p = 0; p < n; p += chunk) {
         stop()
-        onProgress?.(0.1 + (0.8 * p) / n, t('エンジン音以外を抑えています（{p}%）', { p: Math.round((100 * p) / n) }))
+        onProgress?.(0.1 + (0.8 * p) / n, t('Reducing non-engine noise ({p}%)', { p: Math.round((100 * p) / n) }))
         const a = Math.max(0, p - MARGIN)
         const b = Math.min(n, p + chunk + MARGIN)
         const raw = await window.api.read(fin.id, a * 4, (b - a) * 4)
         const src = new Float32Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength))
-        // 前後の余白（動画の始まり・終わりでは 0 で埋める）
+        // Margins before and after (zero-filled at the start and end of the video)
         const seg = new Float32Array(Math.min(chunk, n - p) + 2 * MARGIN)
         seg.set(src, MARGIN - (p - a))
         const y = await process(seg, fx.noiseDb)
@@ -124,11 +124,11 @@ export async function buildFxAudio(s: Session, fx: AudioFx, onProgress?: (frac: 
       await window.api.close(fout.id)
     }
     stop()
-    // 3. 音圧を抑えて AAC に（左右に同じ音）
-    onProgress?.(0.9, t('音声を書き出しています'))
+    // 3. Reduce loudness and encode to AAC (same sound on left and right)
+    onProgress?.(0.9, t('Encoding the audio'))
     r = await window.api.runFfmpeg(['-y', '-v', 'error', '-f', 'f32le', '-ar', String(FS), '-ac', '1', '-i', tmpOut, '-af', `volume=${FX_BUILD_GAIN}`, '-ac', '2', '-c:a', 'aac', '-b:a', '192k', out])
-    if (r.code !== 0) throw new Error(t('ffmpeg で音声を書き出せませんでした: {log}', { log: r.log.slice(-300) }))
-    // 同じ動画の古い整えた音声を消す
+    if (r.code !== 0) throw new Error(t('ffmpeg could not encode the audio: {log}', { log: r.log.slice(-300) }))
+    // Delete old tidied audio of the same video
     const prefix = `audio-${videoId(s)}-`
     for (const name of await window.api.listDir(dir)) if (name.startsWith(prefix) && name !== `audio-${key}.m4a`) await window.api.unlink(window.api.path.join(dir, name)).catch(() => undefined)
   } finally {

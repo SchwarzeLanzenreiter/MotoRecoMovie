@@ -1,12 +1,12 @@
-// 空中に浮かぶコーナーの標識（曲線半径）。地図上の地点に固定した 3D の物体として、
-// 仮想カメラから透視投影で描く。近づくほど大きくなり、カーブの外側・頭上を通り過ぎていく。
+// Floating corner signs in the air (curve radius). Drawn as 3D objects fixed to points on the map,
+// with perspective projection from the virtual camera. They grow as you approach, and pass by outside the curve and overhead.
 //
-// 座標の流れ:
-//   標識の位置（東・北 [m] と標高）− カメラの位置（融合した位置と標高）
-//   → 地図の座標（x 東, y 下, z 北）
-//   → 仮想カメラの向き（映像を描いたのと同じ回転を地図の座標へ移したもの。motion-model.ts の cameraInMap）の逆
-//   → 画面へ投影（映像と同じ投影。projection.ts）
-// 映像と同じ回転・同じ投影を使うので、映像に残った細かい揺れにも標識が一緒に動き、景色に貼り付いて見える。
+// Coordinate flow:
+//   sign position (east/north [m] and elevation) - camera position (fused position and elevation)
+//   -> map coordinates (x east, y down, z north)
+//   -> inverse of the virtual camera orientation (the rotation used to draw the video, moved into map coordinates; cameraInMap in motion-model.ts)
+//   -> projection onto the screen (same projection as the video; projection.ts)
+// Because the same rotation and projection as the video are used, the signs move together with the fine shake left in the video and look stuck to the scenery.
 import { signPlace, type Corner } from '../core/corners'
 import { sightVisibility, type RoadTrack } from '../core/sightline'
 import type { Mat3 } from '../core/quat'
@@ -20,38 +20,38 @@ export interface SignCamera {
   x: number
   y: number
   alt: number
-  /** 仮想カメラの向き（列 = カメラの右・下・前を地図の座標 x 東・y 下・z 北で表したもの） */
+  /** Orientation of the virtual camera (columns = the camera's right, down and forward expressed in map coordinates x east, y down, z north) */
   rot: Mat3
-  fov: number // 水平画角 [deg]
+  fov: number // horizontal FOV [deg]
   rect: { x: number; y: number; w: number; h: number }
 }
 
 export const SIGN = {
-  size: 5, // ひし形の幅 [m]（空中に浮かぶ大きな標識）
-  height: 6, // 路面からの高さ [m]（カメラは路面から約 1.2m）
-  offset: 5, // カーブの外側へずらす量 [m]
+  size: 5, // width of the diamond [m] (a large sign floating in the air)
+  height: 6, // height above the road surface [m] (the camera is about 1.2m above the road)
+  offset: 5, // amount to shift toward the outside of the curve [m]
   camHeight: 1.2,
-  maxDist: 320, // これより遠い標識は出さない [m]
-  fadeDist: 80, // 遠くからフェードインする幅 [m]
-  passFade: 0.3 // 標識の地点を通る前に消していく時間 [s]（通り過ぎた標識は出さない）
+  maxDist: 320, // signs farther than this are not shown [m]
+  fadeDist: 80, // width over which signs fade in from a distance [m]
+  passFade: 0.3 // time to fade out a sign before passing its point [s] (signs already passed are not shown)
 }
 
 const NUM = "Bahnschrift, 'Segoe UI', sans-serif"
 
-/** 標識の基準点をカメラ座標へ（z = 前方の距離） */
+/** Reference point of a sign in camera coordinates (z = forward distance) */
 function toCamera(cam: SignCamera, e: number, n: number, up: number): [number, number, number] {
-  const M = cam.rot // 行優先。列がカメラの軸 → カメラ座標 = Mᵀ · p（p = 東, 下, 北）
+  const M = cam.rot // row-major. Columns are the camera axes -> camera coordinates = Mᵀ · p (p = east, down, north)
   const d = -up
   return [M[0] * e + M[3] * d + M[6] * n, M[1] * e + M[4] * d + M[7] * n, M[2] * e + M[5] * d + M[8] * n]
 }
 
-/** 標識（日本の警戒標識風: 黄色いひし形とカーブの矢印、下に「R=○○」の補助板） */
+/** Sign (Japanese warning sign style: a yellow diamond with a curve arrow, and a "R=nn" sub-plate below) */
 function drawSign(g: Ctx, s: number, dir: 1 | -1, radius: number): void {
   const d = s / 2
-  // 浮いている感じの影（下側にぼかし）
+  // Shadow that gives a floating feel (blurred toward the bottom)
   g.save()
   g.shadowColor = 'rgba(0,0,0,0.55)'
-  // ぼかしは大きいほど重いので上限を設ける（通過直前は標識が画面いっぱいになる）
+  // Blur gets heavier the larger it is, so cap it (the sign fills the screen just before passing)
   g.shadowBlur = Math.min(30, s * 0.12)
   g.shadowOffsetY = Math.min(15, s * 0.06)
   g.beginPath()
@@ -63,7 +63,7 @@ function drawSign(g: Ctx, s: number, dir: 1 | -1, radius: number): void {
   g.fillStyle = '#ffd200'
   g.fill()
   g.restore()
-  // 黒い縁取り
+  // Black outline
   g.lineJoin = 'round'
   g.strokeStyle = '#111'
   g.lineWidth = s * 0.035
@@ -75,7 +75,7 @@ function drawSign(g: Ctx, s: number, dir: 1 | -1, radius: number): void {
   g.lineTo(-di, 0)
   g.closePath()
   g.stroke()
-  // カーブの矢印（下から上へ進み、右または左へ曲がる）
+  // Curve arrow (goes from bottom to top, turning right or left)
   g.save()
   g.scale(dir, 1)
   g.strokeStyle = '#111'
@@ -94,7 +94,7 @@ function drawSign(g: Ctx, s: number, dir: 1 | -1, radius: number): void {
   g.closePath()
   g.fill()
   g.restore()
-  // 補助板「R=○○」
+  // Sub-plate "R=nn"
   const pw = s * 0.82
   const ph = s * 0.3
   const py = d + s * 0.06
@@ -119,16 +119,16 @@ function drawSign(g: Ctx, s: number, dir: 1 | -1, radius: number): void {
   g.fillText(`R=${radius}`, 0, py + ph * 0.54)
 }
 
-/** 曲線半径に応じた色（AR 風）: 急 = 赤、中 = 橙、緩 = 青 */
+/** Color by curve radius (AR style): tight = red, medium = orange, gentle = blue */
 function cyberColor(radius: number): string {
   return radius < 60 ? M_COLORS.red : radius < 120 ? '#ffb000' : M_COLORS.light
 }
 
-/** AR 風の標識: 半透明のホログラム風パネルに、ネオンの枠・カーブの矢印・「R165」・残り距離 */
+/** AR-style sign: a translucent hologram-like panel with a neon frame, curve arrow, "R165" and the remaining distance */
 function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: number, col: string): void {
   const w = s
   const h = s * 0.56
-  const ch = h * 0.18 // 角の切り欠き
+  const ch = h * 0.18 // corner cut size
   const lw = Math.max(1, s * 0.012)
   const shape = (): void => {
     g.beginPath()
@@ -140,7 +140,7 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
     g.lineTo(-w / 2, -h / 2 + ch)
     g.closePath()
   }
-  // パネル（半透明）と走査線
+  // Panel (translucent) and scan lines
   shape()
   g.fillStyle = 'rgba(4, 16, 34, 0.42)'
   g.fill()
@@ -151,7 +151,7 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   const step = Math.max(2, h / 22)
   for (let y = -h / 2; y < h / 2; y += step) g.fillRect(-w / 2, y, w, step * 0.3)
   g.restore()
-  // 枠（発光）
+  // Frame (glowing)
   shape()
   g.strokeStyle = col
   g.lineWidth = lw * 1.4
@@ -159,7 +159,7 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   g.shadowBlur = Math.min(24, s * 0.06)
   g.stroke()
   g.shadowBlur = 0
-  // 左: カーブの矢印（ネオンの線）
+  // Left: curve arrow (neon line)
   g.save()
   g.translate(-w * 0.28, h * 0.02)
   g.scale(dir, 1)
@@ -181,7 +181,7 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   g.stroke()
   g.restore()
   g.shadowBlur = 0
-  // 区切り線
+  // Divider line
   g.save()
   g.strokeStyle = col
   g.globalAlpha *= 0.6
@@ -191,7 +191,7 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   g.lineTo(-w * 0.1, h * 0.34)
   g.stroke()
   g.restore()
-  // 右: 半径と残り距離
+  // Right: radius and remaining distance
   const tx = w * 0.2
   const cg = g as CanvasRenderingContext2D
   g.textAlign = 'center'
@@ -210,7 +210,7 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   g.font = `600 ${(h * 0.13).toFixed(1)}px ${NUM}`
   g.fillStyle = col
   g.fillText(`\u25B8 ${Math.max(0, Math.round(distM / 5) * 5)} m`, tx, h * 0.28)
-  // 残り距離のバー（近づくほど短く。100m で満杯）
+  // Remaining distance bar (shorter the closer you get; full at 100m)
   const bw = w * 0.5
   const frac = Math.max(0, Math.min(1, distM / 100))
   g.fillStyle = 'rgba(255,255,255,0.15)'
@@ -219,11 +219,11 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   g.fillRect(tx - bw / 2, h * 0.38, bw * frac, h * 0.04)
 }
 
-/** 標識の位置の既定値: コーナーの進入地点から経路に沿って何 m 先か（負 = 手前） */
+/** Default sign position: how many m ahead along the route from the corner entry point (negative = before it) */
 export const DEFAULT_SIGN_AHEAD = -25
 
 /**
- * road を渡すと、今いる場所から見通せない標識（山の向こう・峠の頂上の先）は出さない（core/sightline.ts）
+ * If road is passed, signs that cannot be seen from the current location (over a hill or beyond a pass summit) are not shown (core/sightline.ts)
  */
 export function drawCornerSigns(
   g: Ctx,
@@ -243,13 +243,13 @@ export function drawCornerSigns(
     const s = projectPoint(q, focal, k)
     return s ? [cx + s[0], cy + s[1]] : null
   }
-  // これから通る標識だけ（通り過ぎた標識は、後ろや横を映す視点でも出さない）。遠い方から描く
+  // Only signs still ahead (signs already passed are not shown even for views that look back or sideways). Draw from the far end
   const items: { z: number; u: number; v: number; s: number; rot: number; a: number; c: Corner; ground: [number, number][]; gu: number; gv: number }[] = []
   for (const c of corners) {
     const pl = signPlace(c, ahead)
     if (!pl || pl.t <= t || pl.t > t + 30) continue
     const h = (pl.heading * Math.PI) / 180
-    // カーブの外側へずらす（右カーブなら左側）。進入地点での進行方向の右 = (cos h, −sin h)
+    // Shift toward the outside of the curve (the left side for a right curve). Right of the heading at the entry point = (cos h, −sin h)
     const side = -c.dir * SIGN.offset
     const ax = pl.x + Math.cos(h) * side
     const ay = pl.y - Math.sin(h) * side
@@ -259,22 +259,22 @@ export function drawCornerSigns(
     const range = Math.hypot(p[0], p[1], p[2])
     if (range < 2 || dist > SIGN.maxDist) continue
     const sp = toScreen(p)
-    // 世界の「上」が画面でどちらを向くか（画面の傾きに合わせて標識も傾ける）。0.2m 上の点との差で見る
+    // Which way the world "up" points on screen (tilt the sign to match the screen tilt). Measured from the difference with a point 0.2m higher
     const p2 = toCamera(cam, ax - cam.x, ay - cam.y, up + 0.2)
     const sp2 = toScreen(p2)
     if (!sp || !sp2) continue
     const [u, v] = sp
     const [u2, v2] = sp2
     const rot = Math.atan2(u2 - u, -(v2 - v))
-    // 大きさ: その位置での拡大率 = 0.2m 上の点との画面上の距離 ÷ そのずれのうち視線に垂直な成分 [m]
+    // Size: magnification at that position = screen distance to a point 0.2m higher ÷ the component of that offset perpendicular to the line of sight [m]
     const along = ((p2[0] - p[0]) * p[0] + (p2[1] - p[1]) * p[1] + (p2[2] - p[2]) * p[2]) / range
     const perp = Math.sqrt(Math.max(1e-4, 0.04 - along * along))
     const s = (Math.hypot(u2 - u, v2 - v) / perp) * SIGN.size
-    // 遠くから現れ、標識の地点に着く直前に消える。見通せないところでは出さない
+    // Appears from far away and disappears just before reaching the sign's point. Not shown where it cannot be seen
     let a = Math.min(1, Math.max(0, (SIGN.maxDist - dist) / SIGN.fadeDist), (pl.t - t) / SIGN.passFade)
     if (a > 0 && road) a *= sightVisibility(road, t, pl.t, { x: cam.x, y: cam.y, h: cam.alt + SIGN.camHeight }, { x: ax, y: ay, h: pl.alt + SIGN.height - SIGN.size * 0.3 })
     if (a <= 0.01) continue
-    // 地面の点（標識の真下の路面）と、そのまわりの円（AR 風の表示で使う）
+    // Ground point (the road surface directly below the sign) and the circle around it (used by the AR-style display)
     const upG = pl.alt - (cam.alt + SIGN.camHeight)
     const proj = (e: number, n: number, uu: number): [number, number] | null => toScreen(toCamera(cam, e, n, uu))
     const gp = proj(ax - cam.x, ay - cam.y, upG)
@@ -299,7 +299,7 @@ export function drawCornerSigns(
     g.globalAlpha = it.a
     if (style === 'cyber') {
       const col = cyberColor(it.c.radius)
-      // 地面の円（路面上の円を投影したもの）と、標識から地面へ下ろす光の線
+      // Ground circle (a circle on the road surface, projected) and a line of light dropped from the sign to the ground
       if (it.ground.length > 8) {
         g.beginPath()
         it.ground.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y)))

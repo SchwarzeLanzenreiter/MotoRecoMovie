@@ -1,9 +1,9 @@
-"""Insta360 のレンズモデル（Mei統一球面 + RadtanPro 13項歪み）とステッチ。
+"""Insta360 lens model (Mei unified sphere + RadtanPro 13-term distortion) and stitching.
 
-参考: telemetry-parser (MIT/Apache-2.0) src/insta360/rig.rs と
-video-types クレートの MeiDistortion::RadtanPro の定義。
+Reference: telemetry-parser (MIT/Apache-2.0) src/insta360/rig.rs and
+the definition of MeiDistortion::RadtanPro in the video-types crate.
 
-座標系（リグ座標）: +x 右, +y 下, +z 前（レンズ0の光軸方向）。
+Coordinate system (rig coordinates): +x right, +y down, +z front (optical axis direction of lens 0).
 """
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
@@ -22,7 +22,7 @@ def _rz(a):
 
 
 def vendor_rotation(ypr_deg, lens_index, num_lenses=2):
-    """メーカー定義の world→camera 回転行列。"""
+    """Manufacturer-defined world -> camera rotation matrix."""
     yaw, pitch, roll = np.radians(ypr_deg)
     r = _ry(pitch + np.pi / 2) @ _rz(yaw) @ _rx(roll)
     if lens_index == 0 and num_lenses == 2:
@@ -32,20 +32,20 @@ def vendor_rotation(ypr_deg, lens_index, num_lenses=2):
 
 class Lens:
     def __init__(self, calib, index, num_lenses, picture_w):
-        self.xi = calib["fov_rad"]  # 文字列の先頭値は xi
+        self.xi = calib["fov_rad"]  # the first value of the string is xi
         self.fx, self.fy = calib["fx"], calib["fy"]
         frame_w = calib["img_w"] / num_lenses
-        # レンズ1の主点は左右並びの空間で1枚分右にずれている
+        # The principal point of lens 1 is shifted right by one image width in the side-by-side space
         self.cx = calib["cx"] - frame_w * index
         self.cy = calib["cy"]
         self.d = np.array(calib["k"], dtype=np.float64)  # d0..d12
-        self.scale = picture_w / frame_w  # キャリブ空間 → 実映像（3840）への一様スケール
+        self.scale = picture_w / frame_w  # uniform scale from the calibration space to the actual video (3840)
         base = vendor_rotation([0.0, 0.0, 90.0], 0, num_lenses)
-        # リグ座標の光線 → カメラ座標の光線
+        # ray in rig coordinates -> ray in camera coordinates
         self.R_cam_from_rig = vendor_rotation(calib["rot_deg"], index, num_lenses) @ base.T
 
     def project(self, rays_rig):
-        """リグ座標の光線(N,3) → 映像上の画素座標 (u, v) と光軸からの角度 θ。"""
+        """Rays in rig coordinates (N,3) -> pixel coordinates (u, v) on the video and the angle θ from the optical axis."""
         c = rays_rig @ self.R_cam_from_rig.T
         c = c / np.linalg.norm(c, axis=-1, keepdims=True)
         x, y, z = c[..., 0], c[..., 1], c[..., 2]
@@ -76,11 +76,11 @@ class Lens:
         return xd, yd
 
     def unproject_cam(self, u, v, iters=8):
-        """映像の画素 → カメラ座標の単位光線（歪みはニュートン法で逆算）。"""
+        """Video pixels -> unit rays in camera coordinates (distortion inverted with Newton's method)."""
         xd = (u / self.scale - self.cx) / self.fx
         yd = (v / self.scale - self.cy) / self.fy
         mx, my = xd.copy(), yd.copy()
-        # 初期値: 放射方向の多項式だけを1次元で粗く解く
+        # Initial value: roughly solve only the radial polynomial in one dimension
         for _ in range(iters):
             fx_, fy_ = self._distort(mx, my)
             e = 1e-6
@@ -98,7 +98,7 @@ class Lens:
         return c / np.linalg.norm(c, axis=-1, keepdims=True)
 
     def project_cam(self, c):
-        """カメラ座標の光線 → 映像の画素。"""
+        """Rays in camera coordinates -> video pixels."""
         c = c / np.linalg.norm(c, axis=-1, keepdims=True)
         den = c[..., 2] + self.xi
         xd, yd = self._distort(c[..., 0] / den, c[..., 1] / den)
@@ -111,7 +111,7 @@ def make_rig(insv, picture_w=3840):
 
 
 def equirect_rays(w, h):
-    """正距円筒の各画素に対応するリグ座標の光線。中央=前(+z)、上=-y。"""
+    """Rays in rig coordinates for each pixel of the equirectangular image. Center = front (+z), up = -y."""
     lon = (np.arange(w) + 0.5) / w * 2 * np.pi - np.pi
     lat = np.pi / 2 - (np.arange(h) + 0.5) / h * np.pi
     lon, lat = np.meshgrid(lon, lat)
@@ -119,15 +119,15 @@ def equirect_rays(w, h):
 
 
 def stitch_maps(lenses, rays, blend_deg=6.0):
-    """各レンズの remap 用マップと合成ウェイトを返す。"""
+    """Return the remap maps and blend weights for each lens."""
     maps = []
     thetas = []
     for L in lenses:
         u, v, th = L.project(rays)
         maps.append((u.astype(np.float32), v.astype(np.float32)))
         thetas.append(th)
-    # 光軸からの角度の差で継ぎ目付近をクロスフェード
-    diff = np.degrees(thetas[1] - thetas[0])  # 正ならレンズ0側
+    # Crossfade near the seam by the difference of the angle from the optical axis
+    diff = np.degrees(thetas[1] - thetas[0])  # positive means the lens 0 side
     w0 = np.clip(0.5 + diff / blend_deg, 0, 1).astype(np.float32)
     return maps, w0
 

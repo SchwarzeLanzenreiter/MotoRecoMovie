@@ -1,23 +1,23 @@
-// 解析用 Web Worker の呼び出し口
+// Entry point for the analysis Web Worker
 import type { AnalyzeLogRequest, AnalyzeLogResult, ScoreDatRequest, ScoreDatResult, ImuTelemetryRequest } from './analysis.worker'
 import type { ImuTelemetry } from '../core/imu-telemetry'
 import type { LensModel } from '../core/lens'
 import type { SeamFitResult, SeamFrame } from '../core/seamfit'
 import { t } from '../i18n'
 
-// 解析スレッドと core のエラー（どちらも日本語のまま投げる）を画面の言語に直す。
-// 差し込みのあるものは、型の {名前} の部分を取り出して t() に渡す
+// Convert errors from the analysis thread and core (both thrown in English) to the UI language.
+// For templates with placeholders, extract the {name} parts and pass them to t()
 const CORE_ERRORS = [
-  'Insta360 のトレーラーが見つかりません（.insv ではない可能性があります）',
-  '未対応の wire type {wt}',
-  '未対応のキャリブレーション形式 V{version}（V6のみ対応）',
-  'レコード 0x{id} がありません',
-  'moov ボックスが見つかりません',
-  'MotoReco の CSV ではありません（time 列が見つかりません）',
-  '列 {name} がありません',
-  '.ddf にチャンネルがありません',
-  '式を読めません: {src}',
-  'MotoReco の .dat ではありません（大きさが 16 バイト単位ではありません）'
+  'Insta360 trailer not found (this may not be an .insv file)',
+  'Unsupported wire type {wt}',
+  'Unsupported calibration format V{version} (only V6 is supported)',
+  'Record 0x{id} is missing',
+  'moov box not found',
+  'Not a MotoReco CSV (no time column)',
+  'Column {name} is missing',
+  'The .ddf has no channels',
+  'Cannot read the formula: {src}',
+  'Not a MotoReco .dat (size is not a multiple of 16 bytes)'
 ]
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const CORE_ERROR_RE = CORE_ERRORS.map((tpl) => {
@@ -26,7 +26,7 @@ const CORE_ERROR_RE = CORE_ERRORS.map((tpl) => {
   return { tpl, names, re }
 })
 
-/** core・解析スレッドのエラーメッセージを画面の言語にする（知らないものはそのまま） */
+/** Convert core / analysis thread error messages to the UI language (unknown ones are returned as is) */
 export function localizeError(msg: string): string {
   for (const { tpl, names, re } of CORE_ERROR_RE) {
     const m = re.exec(msg)
@@ -55,7 +55,7 @@ function getWorker(): Worker {
     else p.resolve(e.data.result!)
   }
   worker.onerror = (e) => {
-    for (const p of pending.values()) p.reject(new Error(t('解析スレッドでエラー: {msg}', { msg: e.message })))
+    for (const p of pending.values()) p.reject(new Error(t('Error in analysis thread: {msg}', { msg: e.message })))
     pending.clear()
     worker = null
   }
@@ -66,12 +66,12 @@ export function analyzeLog(req: AnalyzeLogRequest, onProgress?: (m: string) => v
   const id = nextId++
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, progress: onProgress })
-    // IMU はメインスレッドでも使い続けるので、所有権は渡さずコピーする（.dat の中身は渡す）
+    // The IMU is still used on the main thread, so it is copied rather than transferred (the contents of the .dat are transferred)
     getWorker().postMessage({ id, type: 'analyzeLog', req }, req.dat ? [req.dat.buf.buffer] : [])
   })
 }
 
-/** 車両ログが無いときの推定（動画の IMU から）を解析スレッドで求める */
+/** Estimate without a vehicle log (from the video IMU) on the analysis thread */
 export function imuTelemetryInWorker(req: ImuTelemetryRequest): Promise<ImuTelemetry> {
   const id = nextId++
   return new Promise((resolve, reject) => {
@@ -80,7 +80,7 @@ export function imuTelemetryInWorker(req: ImuTelemetryRequest): Promise<ImuTelem
   })
 }
 
-/** .dat が映像と同じ走行のものかを解析スレッドで調べる（.dat の中身は所有権ごと渡す） */
+/** Check on the analysis thread whether the .dat is from the same ride as the video (the contents of the .dat are transferred by ownership) */
 export function scoreDatInWorker(req: ScoreDatRequest): Promise<ScoreDatResult> {
   const id = nextId++
   return new Promise((resolve, reject) => {
@@ -89,7 +89,7 @@ export function scoreDatInWorker(req: ScoreDatRequest): Promise<ScoreDatResult> 
   })
 }
 
-/** レンズの継ぎ目の合わせ込みを解析スレッドで推定する（フレームの画素は所有権ごと渡す） */
+/** Estimate lens seam fitting on the analysis thread (frame pixels are transferred by ownership) */
 export function seamFitInWorker(rig: LensModel[], frames: SeamFrame[]): Promise<SeamFitResult> {
   const id = nextId++
   return new Promise((resolve, reject) => {

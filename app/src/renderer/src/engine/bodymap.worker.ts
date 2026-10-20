@@ -1,5 +1,5 @@
-// 自車の継ぎ目の型を作る Web Worker（core/bodymap.ts）。重い処理（型の中央値・AI のオプティカルフロー・画像の補完）を
-// 画面の操作と別のスレッドで行う。AI は onnxruntime-web で、使えれば GPU（WebGPU）、無ければ CPU（WebAssembly）
+// Web Worker that builds the own-bike seam template (core/bodymap.ts). Runs the heavy work (template median, AI optical flow, image inpainting)
+// on a thread separate from the UI. The AI runs on onnxruntime-web: GPU (WebGPU) if available, otherwise CPU (WebAssembly)
 import * as ort from 'onnxruntime-web/webgpu'
 import {
   BAND_H,
@@ -28,16 +28,16 @@ export interface BodyInitRequest {
 
 export interface BodyWindowRequest {
   kind: 'window'
-  /** 区間のキーフレームの帯の画像（RGBA、レンズ0 とレンズ1） */
+  /** Images of the keyframe bands of the section (RGBA, lens 0 and lens 1) */
   bands0: Uint8Array[]
   bands1: Uint8Array[]
-  /** 確認用: この矩形 [x0, y0, x1, y1]（帯の画素）の自車の部分を穴にする */
+  /** For verification: make the own-bike part inside this rectangle [x0, y0, x1, y1] (band pixels) a hole */
   forceHole?: number[] | null
 }
 
 export interface BodyWindowResult {
   map: BodyMapC | null
-  /** 前の区間と同じ型を使い回したか */
+  /** Whether the same template as the previous section was reused */
   reused: boolean
   holes: number
   ms: Record<string, number>
@@ -47,11 +47,11 @@ let flowSession: ort.InferenceSession | null = null
 let inpaintSession: ort.InferenceSession | null = null
 let inpaintKind: InpaintKind = 'lama'
 let provider = ''
-/** 前の区間（使い回しの判定用） */
+/** Previous section (for the reuse check) */
 let prev: { lum: Float32Array; m: Uint8Array; map: BodyMapC | null } | null = null
 
 async function createSession(model: Uint8Array): Promise<ort.InferenceSession> {
-  // GPU（WebGPU）が使えなければ CPU（1 スレッド。複数スレッドは SharedArrayBuffer が要る）
+  // If GPU (WebGPU) is unavailable, use CPU (1 thread; multiple threads need SharedArrayBuffer)
   ort.env.wasm.numThreads = 1
   const nav = navigator as Navigator & { gpu?: unknown }
   if (nav.gpu) {
@@ -60,7 +60,7 @@ async function createSession(model: Uint8Array): Promise<ort.InferenceSession> {
       provider = 'webgpu'
       return s
     } catch (e) {
-      console.warn('WebGPU で AI を動かせないので CPU で動かす', e)
+      console.warn('Cannot run the AI on WebGPU, running it on CPU', e)
     }
   }
   provider = 'wasm'
@@ -73,7 +73,7 @@ async function runFlow(a: Float32Array, b: Float32Array): Promise<Float32Array> 
   return r[s.outputNames[0]].data as Float32Array
 }
 
-/** 自車の部分がある列を覆うフローのタイルの左端（FLOW_W 列ずつ、少し重ねる） */
+/** Left edges of the flow tiles covering the columns that contain the own-bike part (FLOW_W columns each, slightly overlapping) */
 function tilesFor(s0: BandStats, s1: BandStats): number[] {
   const col = new Uint8Array(BAND_W)
   for (let y = 0; y < BAND_H; y++)
@@ -81,7 +81,7 @@ function tilesFor(s0: BandStats, s1: BandStats): number[] {
       const i = y * BAND_W + x
       if ((s0.valid[i] && s0.stat[i] > 0.5) || (s1.valid[i] && s1.stat[i] > 0.5)) col[x] = 1
     }
-  // 自車の部分が無い列のいちばん長い並びを除いた弧を、タイルで覆う（端は 96 列ずつ余分に）
+  // Cover the arc, excluding the longest run of columns without the own-bike part, with tiles (96 extra columns at each end)
   let bestLen = 0
   let bestStart = 0
   for (let x = 0; x < BAND_W; x++) {
@@ -99,21 +99,21 @@ function tilesFor(s0: BandStats, s1: BandStats): number[] {
   const step = FLOW_W - 96
   const n = Math.max(1, Math.ceil((arcLen - FLOW_W) / step) + 1)
   const out: number[] = []
-  // 弧の真ん中にそろえる
+  // Center on the middle of the arc
   const span = (n - 1) * step + FLOW_W
   const start = arcStart - 96 - Math.floor((span - arcLen) / 2)
   for (let k = 0; k < n; k++) out.push((((start + k * step) % BAND_W) + BAND_W) % BAND_W)
   return out
 }
 
-/** 穴を AI で埋める（512 四方ずつ。帯の 288 行は上下の端の行を複製して 512 行にする） */
+/** Fill the holes with the AI (512 square at a time; the 288 rows of the band are extended to 512 rows by duplicating the top and bottom rows) */
 async function inpaint(img: Uint8Array, holes: Uint8Array): Promise<Uint8Array> {
   const out = img.slice()
   const s = inpaintSession
   if (!s) return out
   const S = 512
   const pad = (S - BAND_H) >> 1
-  // 穴のある列を 400 列ずつのまとまりにして、真ん中に 512 列の窓を置く
+  // Group the columns with holes into chunks of 400 columns and place a 512-column window at the center
   const col = new Uint8Array(BAND_W)
   for (let y = 0; y < BAND_H; y++) for (let x = 0; x < BAND_W; x++) if (holes[y * BAND_W + x]) col[x] = 1
   const centers: number[] = []
@@ -142,11 +142,11 @@ async function inpaint(img: Uint8Array, holes: Uint8Array): Promise<Uint8Array> 
     }
     let res: Uint8Array
     if (inpaintKind === 'migan') {
-      // MI-GAN（前処理・後処理込み）: uint8 の画像と、255 = 残す / 0 = 埋めるのマスク
+      // MI-GAN (with pre/post-processing): a uint8 image and a mask with 255 = keep / 0 = fill
       const r = await s.run({ image: new ort.Tensor('uint8', rgb, [1, 3, S, S]), mask: new ort.Tensor('uint8', keep.map((v) => v * 255), [1, 1, S, S]) })
       res = r[s.outputNames[0]].data as Uint8Array
     } else {
-      // LaMa: 0〜1 の画像と、1 = 埋めるのマスク。出力は 0〜255
+      // LaMa: a 0 to 1 image and a mask with 1 = fill. The output is 0 to 255
       const fimg = new Float32Array(rgb.length)
       for (let i = 0; i < rgb.length; i++) fimg[i] = rgb[i] / 255
       const fm = new Float32Array(S * S)
@@ -167,7 +167,7 @@ async function inpaint(img: Uint8Array, holes: Uint8Array): Promise<Uint8Array> 
   return out
 }
 
-/** 前の区間と同じ型を使えるか: 前の区間の自車の部分で、レンズ0 の型の明るさがほぼ同じ（カメラの台が回っていない） */
+/** Whether the same template as the previous section can be used: in the own-bike part of the previous section, the lens 0 template brightness is nearly the same (the camera mount has not rotated) */
 function sameAsPrev(lum: Float32Array): boolean {
   if (!prev) return false
   let s = 0
@@ -190,7 +190,7 @@ async function handleWindow(req: BodyWindowRequest): Promise<BodyWindowResult> {
   }
   const s0 = bandStats(req.bands0)
   const s1 = bandStats(req.bands1)
-  lap('型')
+  lap('template')
   const N = BAND_W * BAND_H
   const lum = new Float32Array(N)
   for (let i = 0; i < N; i++) lum[i] = (s0.med[i * 3] + s0.med[i * 3 + 1] + s0.med[i * 3 + 2]) / (3 * 255)
@@ -211,16 +211,16 @@ async function handleWindow(req: BodyWindowRequest): Promise<BodyWindowResult> {
         f.fx[i] /= f.w[i]
         f.fy[i] /= f.w[i]
       }
-  lap(`フロー（${tiles.length} 枚、${provider}）`)
+  lap(`flow (${tiles.length} tiles, ${provider})`)
   const st = buildStitch(s0, s1, fwd, bwd)
-  lap('つなぎ目')
+  lap('seam')
   const holes = findHoles(s0, s1, st, req.forceHole ?? null)
   let nh = 0
   for (let i = 0; i < N; i++) nh += holes[i]
   let fill: Uint8Array | null = null
   if (nh > 0) {
     fill = await inpaint(stitchedTemplate(s0, s1, st), holes)
-    lap(`補完（${inpaintKind}）`)
+    lap(`inpaint (${inpaintKind})`)
   }
   const map = compactStitch(st, holes, fill)
   const m = new Uint8Array(N)

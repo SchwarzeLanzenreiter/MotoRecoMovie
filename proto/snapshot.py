@@ -1,6 +1,6 @@
-"""指定時刻の1フレームを、設定を変えて並べた静止画にする（水平の目視確認用）。
+"""Make a still image of one frame at the given time, with different settings side by side (for visually checking the horizon).
 
-使い方: python snapshot.py <insv> <出力名> <時刻1> [時刻2 ...]
+Usage: python snapshot.py <insv> <output name> <time 1> [time 2 ...]
 """
 import sys
 from dataclasses import replace
@@ -25,7 +25,7 @@ for t in times:
         for i, imgs in rf.frames():
             im = rf.render(i, imgs)
         Lv = np.interp(rf.t_video[0], lean[0], lean[1])
-        # 鉛直の確認用に細い縦線を3本引く
+        # Draw three thin vertical lines to check verticality
         for x in (240, 480, 720):
             cv2.line(im, (x, 0), (x, 539), (0, 255, 255), 1)
         txt = f"{label}  t={t:.1f}s lean={Lv:+.1f}"
@@ -34,4 +34,4 @@ for t in times:
         tiles.append(im)
     rows.append(np.hstack(tiles))
 cv2.imwrite(f"out/{name}.jpg", np.vstack(rows), [cv2.IMWRITE_JPEG_QUALITY, 88])
-print("保存", f"out/{name}.jpg")
+print("Saved", f"out/{name}.jpg")

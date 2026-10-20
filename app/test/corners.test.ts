@@ -1,5 +1,5 @@
-// 方位・位置の融合と、コーナーの曲線半径の推定を実データで確認する。
-// 実行: npx tsx test/corners.test.ts <insv> <csv>
+// Check heading/position fusion and corner curve-radius estimation on real data.
+// Run: npx tsx test/corners.test.ts <insv> <csv>
 import assert from 'node:assert/strict'
 import { open } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
@@ -28,9 +28,9 @@ const tel = buildTelemetry(log, sync, lean, dur, est.delay)
 const riding = detectRiding(tel)
 let t0 = performance.now()
 const nav = buildNav(tel, yaw)!
-console.log(`融合 ${(performance.now() - t0).toFixed(0)}ms`)
+console.log(`fusion ${(performance.now() - t0).toFixed(0)}ms`)
 
-// 融合した位置と GPS の差（GPS が有効な区間）、方位の差
+// Difference between the fused position and GPS (where GPS is valid), and the heading difference
 let se = 0, sh = 0, cnt = 0
 for (let i = 1000; i < tel.n - 1000; i += 10) {
   if (Number.isNaN(tel.channels.gpsX![i]) || !(tel.channels.speed![i] > 15)) continue
@@ -39,8 +39,8 @@ for (let i = 1000; i < tel.n - 1000; i += 10) {
   sh += dh * dh
   cnt++
 }
-console.log(`融合位置と GPS の差 RMS ${Math.sqrt(se / cnt).toFixed(1)}m  方位の差 RMS ${Math.sqrt(sh / cnt).toFixed(1)}°`)
-// 滑らかさ: 1フレームあたりの位置の変化の「ぶれ」（2階差分）を GPS と比べる
+console.log(`fused position vs GPS RMS ${Math.sqrt(se / cnt).toFixed(1)}m  heading difference RMS ${Math.sqrt(sh / cnt).toFixed(1)}°`)
+// Smoothness: compare the per-frame position "jitter" (second difference) with GPS
 const jerk = (x: ArrayLike<number>, y: ArrayLike<number>): number => {
   let s = 0, c = 0
   for (let i = 2000; i < tel.n - 2000; i += 2) {
@@ -52,21 +52,21 @@ const jerk = (x: ArrayLike<number>, y: ArrayLike<number>): number => {
   }
   return Math.sqrt(s / c) * 1000
 }
-console.log(`位置の2階差分（ぶれ）RMS [mm]: GPS ${jerk(tel.channels.gpsX!, tel.channels.gpsY!).toFixed(2)}  融合 ${jerk(nav.x, nav.y).toFixed(2)}`)
+console.log(`position second difference (jitter) RMS [mm]: GPS ${jerk(tel.channels.gpsX!, tel.channels.gpsY!).toFixed(2)}  fused ${jerk(nav.x, nav.y).toFixed(2)}`)
 
 t0 = performance.now()
 const corners = detectCorners(tel, nav, riding)
-console.log(`コーナー ${corners.length} 本（${(performance.now() - t0).toFixed(0)}ms）`)
-// 3つの推定の比較
+console.log(`corners ${corners.length} (${(performance.now() - t0).toFixed(0)}ms)`)
+// Comparison of the three estimates
 const ratios = corners.filter((c) => c.radiusGps > 0 && c.radiusLean > 0).map((c) => [c.radius / c.radiusGps, c.radius / c.radiusLean])
 const med = (a: number[]): number => [...a].sort((p, q) => p - q)[a.length >> 1]
-console.log(`半径の比（ジャイロ ÷ GPS 軌跡）中央値 ${med(ratios.map((r) => r[0])).toFixed(2)}   （ジャイロ ÷ リーン角）中央値 ${med(ratios.map((r) => r[1])).toFixed(2)}`)
+console.log(`radius ratio (gyro / GPS track) median ${med(ratios.map((r) => r[0])).toFixed(2)}   (gyro / lean angle) median ${med(ratios.map((r) => r[1])).toFixed(2)}`)
 const rs = corners.map((c) => c.radius).sort((a, b) => a - b)
-console.log(`半径の分布: 最小 ${rs[0]}m  25% ${rs[rs.length >> 2]}m  中央 ${rs[rs.length >> 1]}m  75% ${rs[(rs.length * 3) >> 2]}m  最大 ${rs[rs.length - 1]}m`)
+console.log(`radius distribution: min ${rs[0]}m  25% ${rs[rs.length >> 2]}m  median ${rs[rs.length >> 1]}m  75% ${rs[(rs.length * 3) >> 2]}m  max ${rs[rs.length - 1]}m`)
 for (const c of corners.filter((c) => c.start > 1385 && c.start < 1415)) {
-  console.log(`  ${c.start.toFixed(1)}s ${c.dir > 0 ? '右' : '左'} R=${c.radius}m（GPS ${c.radiusGps.toFixed(0)} / リーン ${c.radiusLean.toFixed(0)}）`)
+  console.log(`  ${c.start.toFixed(1)}s ${c.dir > 0 ? 'R' : 'L'} R=${c.radius}m (GPS ${c.radiusGps.toFixed(0)} / lean ${c.radiusLean.toFixed(0)})`)
 }
 assert.ok(corners.length > 50)
-assert.ok(Math.abs(med(ratios.map((r) => r[0])) - 1) < 0.25, 'ジャイロと GPS の半径が大きく食い違う')
+assert.ok(Math.abs(med(ratios.map((r) => r[0])) - 1) < 0.25, 'gyro and GPS radii differ greatly')
 console.log('corners.test: OK')
 await fh.close()

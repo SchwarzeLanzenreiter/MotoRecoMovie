@@ -1,12 +1,12 @@
-"""#BMW_* の変換式の候補を、CSV（MotoRecoViewer の出力）と 1 行ずつ突き合わせて確かめる。
-一致率（誤差がほぼ 0 の行の割合）が 100% 近ければ、その式で正しい。"""
+"""Check candidate conversion formulas for #BMW_* against the CSV (output of MotoRecoViewer) row by row.
+If the match rate (fraction of rows with near-zero error) is close to 100%, the formula is correct."""
 import sys
 import numpy as np
 import pandas as pd
 from motoreco_dat import read_dat
 
 DAT = sys.argv[1] if len(sys.argv) > 1 else r'E:\R1200GSA\CAN Log\2026\20260919_143356.dat'
-CSV = sys.argv[2] if len(sys.argv) > 2 else r'E:\R1200GSA\Movie\2026\0919宗谷丘陵\0919.csv'
+CSV = sys.argv[2] if len(sys.argv) > 2 else r'E:\R1200GSA\Movie\2026\0919宗谷丘陵\0919.csv'  # i18n-ignore
 r = read_dat(DAT)
 tt = r['t'].astype(np.float64) + r['t2'] / 1000.0
 df = pd.read_csv(CSV, skiprows=1)
@@ -34,11 +34,11 @@ def check(name, cid, f, tol=None, show=0):
         if best is None or rate > best[0]:
             best = (rate, off, np.sqrt(np.mean(e ** 2)), i, ok)
     rate, off, rmse, i, ok = best
-    print(f'{name:24s} 一致 {rate*100:6.2f}%  RMSE {rmse:.4g}  ずれ {off*1000:+.0f}ms')
+    print(f'{name:24s} match {rate*100:6.2f}%  RMSE {rmse:.4g}  offset {off*1000:+.0f}ms')
     if show:
         bad = np.flatnonzero(ok)[np.abs(v[i[ok]] - y[ok]) > 1e-6 * max(1.0, np.nanmax(np.abs(y)))][:show]
         for k in bad:
-            print(f'    行 {k}: csv {y[k]:.6g} 予想 {v[i[k]]:.6g}  d=' + ' '.join(f'{b:02X}' for b in d[i[k]]))
+            print(f'    row {k}: csv {y[k]:.6g} expected {v[i[k]]:.6g}  d=' + ' '.join(f'{b:02X}' for b in d[i[k]]))
     return rate
 
 

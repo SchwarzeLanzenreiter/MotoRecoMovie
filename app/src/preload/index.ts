@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { promises as fsp } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
-/** 開いた動画の履歴の1件（main/index.ts の recent.json と同じ形） */
+/** One entry of the history of opened videos (same shape as recent.json in main/index.ts) */
 export interface RecentEntry {
   path: string
   name: string
@@ -13,7 +13,7 @@ export interface RecentEntry {
   thumb?: string
 }
 
-// 開いているファイルハンドル（レンダラーには番号だけを渡す）
+// Open file handles (only the number is passed to the renderer)
 const handles = new Map<number, fsp.FileHandle>()
 let nextId = 1
 
@@ -21,7 +21,7 @@ const api = {
   openDialog: (opts: Electron.OpenDialogOptions): Promise<string[] | null> => ipcRenderer.invoke('dialog:open', opts),
   saveDialog: (opts: Electron.SaveDialogOptions): Promise<string | null> => ipcRenderer.invoke('dialog:save', opts),
   runFfmpeg: (args: string[]): Promise<{ code: number; log: string }> => ipcRenderer.invoke('ffmpeg:run', args),
-  /** アプリのキャッシュのフォルダ（整えた音声など） */
+  /** App cache folder (tidied audio, etc.) */
   cacheDir: (): Promise<string> => ipcRenderer.invoke('app:cacheDir'),
 
   async open(path: string, flags: 'r' | 'w' = 'r'): Promise<{ id: number; size: number }> {
@@ -31,10 +31,10 @@ const api = {
     const st = await h.stat()
     return { id, size: st.size }
   },
-  /** offset から length バイトを読む（巨大ファイルのランダムアクセス用） */
+  /** Read length bytes from offset (for random access into huge files) */
   async read(id: number, offset: number, length: number): Promise<Uint8Array> {
     const h = handles.get(id)
-    if (!h) throw new Error('ファイルが開かれていません')
+    if (!h) throw new Error('File is not open')
     const buf = new Uint8Array(length)
     let done = 0
     while (done < length) {
@@ -46,7 +46,7 @@ const api = {
   },
   async write(id: number, data: Uint8Array, position: number | null = null): Promise<void> {
     const h = handles.get(id)
-    if (!h) throw new Error('ファイルが開かれていません')
+    if (!h) throw new Error('File is not open')
     await h.write(data, 0, data.length, position)
   },
   async close(id: number): Promise<void> {
@@ -54,12 +54,12 @@ const api = {
     handles.delete(id)
   },
   readText: (path: string): Promise<string> => fsp.readFile(path, 'utf-8'),
-  // 自動テストでは、動画の横の編集内容（.motorecomovie.json、前の名前の .reframe.json）を書き換えない（実際の編集内容を守るため）
+  // In automated tests, do not overwrite the edits next to the video (.motorecomovie.json, or .reframe.json under the previous name) (to protect the real edits)
   writeText: async (path: string, text: string): Promise<void> => {
     if (process.env['REFRAME_AUTOTEST'] && (path.endsWith('.motorecomovie.json') || path.endsWith('.reframe.json'))) return
     await fsp.writeFile(path, text, 'utf-8')
   },
-  // 自動テストでは、動画の横の自車の継ぎ目の型（.motorecomovie-body.bin）も書かない
+  // In automated tests, also do not write the own-bike seam template next to the video (.motorecomovie-body.bin)
   writeBinary: async (path: string, data: Uint8Array): Promise<void> => {
     if (process.env['REFRAME_AUTOTEST'] && path.endsWith('.motorecomovie-body.bin')) return
     await fsp.writeFile(path, data)
@@ -75,7 +75,7 @@ const api = {
   async listDir(path: string): Promise<string[]> {
     return await fsp.readdir(path)
   },
-  /** フォルダの中身（名前・フォルダかどうか・大きさ） */
+  /** Contents of a folder (name, whether it is a folder, size) */
   async listDirEntries(path: string): Promise<{ name: string; dir: boolean; size: number }[]> {
     const ents = await fsp.readdir(path, { withFileTypes: true })
     const out: { name: string; dir: boolean; size: number }[] = []
@@ -85,7 +85,7 @@ const api = {
         try {
           out.push({ name: e.name, dir: false, size: (await fsp.stat(join(path, e.name))).size })
         } catch {
-          /* 消えたファイルは飛ばす */
+          /* skip files that have disappeared */
         }
       }
     }
@@ -99,15 +99,15 @@ const api = {
     update: (path: string, patch: Partial<RecentEntry>): Promise<void> => ipcRenderer.invoke('recent:update', path, patch),
     remove: (path: string): Promise<void> => ipcRenderer.invoke('recent:remove', path)
   },
-  /** メインメニューの言語を伝える */
+  /** Tell the main menu the language */
   setMenuLang: (lang: 'ja' | 'en'): Promise<void> => ipcRenderer.invoke('menu:lang', lang),
-  /** メインメニューの操作（'open' | 'close'）を受け取る。戻り値で解除 */
+  /** Receive main menu actions ('open' | 'close'). The return value unsubscribes */
   onMenu: (cb: (action: string) => void): (() => void) => {
     const h = (_e: unknown, action: string): void => cb(action)
     ipcRenderer.on('menu', h)
     return () => ipcRenderer.removeListener('menu', h)
   },
-  /** ドラッグ＆ドロップされた File の実パス */
+  /** Real path of a dropped File (drag and drop) */
   pathForFile: (f: File): string => webUtils.getPathForFile(f),
   test: {
     env: (): Promise<{ autotest: string | null; args: string | null }> => ipcRenderer.invoke('test:env'),

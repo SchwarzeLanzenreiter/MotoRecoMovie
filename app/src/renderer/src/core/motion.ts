@@ -1,12 +1,12 @@
-// ジャイロ積分・取り付け推定・姿勢の平滑化（proto/stabilize.py, proto/mount.py の移植）。
+// Gyro integration, mount estimation, and attitude smoothing (port of proto/stabilize.py and proto/mount.py).
 //
-//   q(t)  : リグ座標→世界座標のカメラ姿勢（ジャイロ積分）
-//   qs(t) : q を車体の軸（ピッチ/ヨー/ロール）ごとにガウス平滑化した姿勢
-//   仮想カメラ = qs · [ロール補完] · [水平補正] · R_mount · R_視点
+//   q(t)  : camera attitude from rig to world coordinates (gyro integration)
+//   qs(t) : q Gaussian-smoothed per body axis (pitch/yaw/roll)
+//   virtual camera = qs · [roll completion] · [horizon correction] · R_mount · R_view
 import type { Imu } from './insv'
 import { matT, matVec, qConj, qFromRotvec, qMul, qNormalize, qSlerp, qToRotvec, type Mat3, type Quat } from './quat'
 
-/** IMU座標 → リグ座標（X6、映像との突き合わせで推定） */
+/** IMU coordinates → rig coordinates (X6; estimated by matching against the video) */
 export const IMU_TO_RIG: Mat3 = new Float64Array([0, 0, -1, 1, 0, 0, 0, -1, 0])
 
 export interface Orientation {
@@ -24,7 +24,7 @@ export function integrate(imu: Imu, M: Mat3 = IMU_TO_RIG): Orientation {
   for (let i = 1; i < n; i++) {
     const w = rigRate(imu.gyro, i, M)
     const dt = (imu.ts[i] - imu.ts[i - 1]) / 1e6
-    // 中点則: 区間 [i-1, i] の角速度は両端の平均
+    // Midpoint rule: the angular velocity over [i-1, i] is the average of the two endpoints
     const s = qFromRotvec(((w[0] + pw[0]) / 2) * d2r * dt, ((w[1] + pw[1]) / 2) * d2r * dt, ((w[2] + pw[2]) / 2) * d2r * dt)
     cur = qMul(cur, s)
     if ((i & 1023) === 0) cur = qNormalize(cur)
@@ -38,7 +38,7 @@ function rigRate(g: Float32Array, i: number, M: Mat3): [number, number, number] 
   return matVec(M, [g[i * 3], g[i * 3 + 1], g[i * 3 + 2]])
 }
 
-/** 時刻 t [us] の姿勢（球面線形補間） */
+/** Attitude at time t [us] (spherical linear interpolation) */
 export function sampleQ(o: Orientation, t: number): Quat {
   const ts = o.ts
   const n = ts.length
@@ -56,9 +56,9 @@ export function sampleQ(o: Orientation, t: number): Quat {
   return qSlerp(a, b, (t - ts[lo]) / (ts[hi] - ts[lo]))
 }
 
-// ---- 取り付け推定 ----
+// ---- Mount estimation ----
 
-/** 対称3×3行列の固有分解（ヤコビ法）。固有値の昇順で返す */
+/** Eigendecomposition of a symmetric 3×3 matrix (Jacobi method). Returns eigenvalues in ascending order */
 export function eigSym3(a: number[][]): { values: number[]; vectors: number[][] } {
   const A = a.map((r) => r.slice())
   const V = [
@@ -112,17 +112,17 @@ const unit = (a: number[]): [number, number, number] => {
   return [a[0] / n, a[1] / n, a[2] / n]
 }
 
-/** 前後の向きを「曲がる側へ倒れる」関係で決めるのに要る、リーン角とヨー角速度の相関の強さ（これより弱ければレンズの向きで決める） */
+/** Strength of the correlation between lean angle and yaw rate, needed to decide the front/back direction from the "leans into the turn" relationship (if weaker than this, the lens direction decides) */
 export const FWD_MIN_CORR = 0.1
 
 /**
- * カメラの取り付け姿勢を推定する。戻り値は列 = 車体の右・下・前（リグ座標）の行列（行優先）。
- * 上方向 = 加速度の平均（バイクはリーン中も合力が車体の鉛直方向）、
- * 前後の軸 = 0.5秒平均したジャイロの、上方向に垂直な成分の主成分（リーンのロール回転が最大）。
- * 前後の向き = バイクは曲がる側へ倒れるので、前方の軸まわりのリーン角（ロール角速度の積分）は、右へ曲がる間は右へ倒れる。
- * この関係（リーン角とヨー角速度の相関 coupling。正しい向きなら負）で決める。レンズが横・上下・後ろを向けて付けてあっても分かる。
- * 曲がりが少なく関係が弱い（|coupling| < FWD_MIN_CORR）ときだけ、前の決め方（レンズ1 の向き forwardHint に近い方）にする。
- * byHint = 前の決め方での前後の向きと逆になったか（前の版で作った編集内容との違いの確認用）
+ * Estimates the camera mount attitude. Returns a row-major matrix whose columns are the body's right, down, and forward (rig coordinates).
+ * Up = the mean acceleration (a bike's resultant force stays along the body's vertical even while leaning),
+ * front/back axis = the principal component of the 0.5 s-averaged gyro, perpendicular to up (the lean roll rotation is largest).
+ * Front/back direction = a bike leans into the turn, so the lean angle about the forward axis (the integral of the roll rate) leans right while turning right.
+ * The direction is decided by this relationship (the correlation coupling between lean angle and yaw rate; negative for the correct direction). It works even if the lenses are mounted facing sideways, up/down, or backward.
+ * Only when there are few turns and the relationship is weak (|coupling| < FWD_MIN_CORR) does it fall back to the previous method (whichever is closer to the lens 1 direction forwardHint).
+ * byHint = whether the front/back direction came out opposite to the previous method's (to check the difference from edits made with the previous version)
  */
 export function estimateMount(
   imu: Imu,
@@ -160,7 +160,7 @@ export function estimateMount(
   let fwd = e.vectors[2]
   const kk = dot(fwd, up)
   fwd = unit([fwd[0] - up[0] * kk, fwd[1] - up[1] * kk, fwd[2] - up[2] * kk])
-  const lensSays = dot(fwd, forwardHint) < 0 // 前の決め方: レンズ1 の向きに近い方
+  const lensSays = dot(fwd, forwardHint) < 0 // previous method: whichever is closer to the lens 1 direction
   const coupling = leanYawCoupling(imu, M, fwd, up)
   const by = Math.abs(coupling) >= FWD_MIN_CORR ? 'lean' : 'lens'
   const flip = by === 'lean' ? coupling > 0 : lensSays
@@ -172,14 +172,14 @@ export function estimateMount(
 }
 
 /**
- * 軸 fwd まわりのリーン角（ロール角速度を 100Hz で積分し、10 秒の移動平均を引いてドリフトを除いたもの）と、
- * 上方向 up まわりのヨー角速度の相関係数。fwd が本当の前方なら負（右へ曲がる = 上から見て時計回り = ヨー負の間、右へ倒れる = ロール正）
+ * Correlation coefficient between the lean angle about axis fwd (roll rate integrated at 100 Hz, minus a 10 s moving average to remove drift) and
+ * the yaw rate about up. If fwd is truly forward it is negative (turning right = clockwise from above = while yaw is negative, leaning right = roll positive)
  */
 export function leanYawCoupling(imu: Imu, M: Mat3, fwd: number[], up: number[]): number {
   const n = imu.ts.length
   if (n < 2) return 0
   const rate = (n - 1) / ((imu.ts[n - 1] - imu.ts[0]) / 1e6)
-  const B = Math.max(1, Math.round(rate / 100)) // 100Hz にまとめる
+  const B = Math.max(1, Math.round(rate / 100)) // bin down to 100 Hz
   const m = Math.floor(n / B)
   const roll = new Float64Array(m)
   const yaw = new Float64Array(m)
@@ -213,11 +213,11 @@ export function leanYawCoupling(imu: Imu, M: Mat3, fwd: number[], up: number[]):
   return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0
 }
 
-// ---- 平滑化 ----
+// ---- Smoothing ----
 
 /**
- * times [us] の各時刻について、周囲の姿勢を車体の軸ごとのガウス窓で平均した姿勢を返す（位相遅れなし）。
- * sigma = [ピッチ, ヨー, ロール] 秒。axes = R_mount（列 = 車体の右・下・前）。
+ * For each time in times [us], returns the attitude averaged over the surrounding attitudes with a Gaussian window per body axis (no phase lag).
+ * sigma = [pitch, yaw, roll] in seconds. axes = R_mount (columns = body right, down, forward).
  */
 export function smooth(
   o: Orientation,
@@ -239,19 +239,19 @@ export function smooth(
     }
     w[j] = w[j].map((v) => v / sum)
   }
-  // 等間隔グリッド上の姿勢を前計算
+  // Precompute the attitudes on a uniform grid
   const tmin = times[0] - (half + 2) * stepUs
   const tmax = times[times.length - 1] + (half + 2) * stepUs
   const ng = Math.floor((tmax - tmin) / stepUs) + 1
   const grid = new Float64Array(ng * 4)
   for (let i = 0; i < ng; i++) grid.set(sampleQ(o, tmin + i * stepUs), i * 4)
-  // 車体の軸（取り付け姿勢が時間で変わるときは、その時刻のもの）
+  // Body axes (if the mount attitude changes over time, the one at that time)
   const axesAt = typeof axes === 'function' ? axes : (): Mat3 => axes
   const out = new Float64Array(times.length * 4)
   for (let f = 0; f < times.length; f++) {
     const t = times[f]
     const ax = axesAt(t)
-    const axT = matT(ax) // 行 = 車体の右・下・前
+    const axT = matT(ax) // rows = body right, down, forward
     const center = sampleQ(o, t)
     const ci = qConj(center)
     const c = Math.round((t - tmin) / stepUs)
@@ -261,7 +261,7 @@ export function smooth(
     for (let k = -half; k <= half; k++) {
       const gi = Math.min(Math.max(c + k, 0), ng - 1)
       const rel = qToRotvec(qMul(ci, grid.subarray(gi * 4, gi * 4 + 4)))
-      const b = matVec(axT, rel) // 車体の軸成分
+      const b = matVec(axT, rel) // body-axis components
       const wi = k + half
       a0 += w[0][wi] * b[0]
       a1 += w[1][wi] * b[1]
@@ -273,7 +273,7 @@ export function smooth(
   return out
 }
 
-/** フレーム中央を基準に、読み出し中の K 時刻の相対回転（回転ベクトル, リグ座標）を返す */
+/** Returns the relative rotation (rotation vector, rig coordinates) of the K times during readout, relative to the frame center */
 export function readoutRotations(o: Orientation, tc: number, readoutUs: number, K = 17): Float32Array {
   const qc = qConj(sampleQ(o, tc))
   const out = new Float32Array(K * 3)

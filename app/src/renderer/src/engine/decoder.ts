@@ -1,21 +1,21 @@
-// 1本の映像トラックを WebCodecs でデコードし、任意のフレーム番号を取り出す。
-// 近い先のフレームなら続きからデコードし、離れていれば直前のキーフレームからやり直す。
+// Decode one video track with WebCodecs and fetch arbitrary frame numbers.
+// For a frame slightly ahead, decoding continues from where it is; for a distant one, it restarts from the preceding keyframe.
 import { keyframeBefore, type FileReader, type Track } from '../core/mp4'
 import { t } from '../i18n'
 
-const FRAME_US = 20000 // タイムスタンプ（フレーム番号 × 20ms）。実時刻は使わない
-const READY_MAX = 12 // 出力済みで、まだ使われていないフレームを持っておく上限
+const FRAME_US = 20000 // timestamp (frame number x 20 ms). The real time is not used
+const READY_MAX = 12 // upper limit on frames that are already output but not yet used
 
 export class TrackDecoder {
   private dec: VideoDecoder | null = null
-  private next = 0 // 次に投入するサンプル
-  private lastOut = -1 // 最後に出力されたフレーム番号
-  private wanted = -1 // いま求められているフレーム番号（これより前のフレームはもう使わない）
+  private next = 0 // next sample to feed
+  private lastOut = -1 // frame number output last
+  private wanted = -1 // frame number currently requested (frames before it are no longer used)
   private ready = new Map<number, VideoFrame>()
   private waiters = new Map<number, (f: VideoFrame) => void>()
   private lock: Promise<unknown> = Promise.resolve()
   private error: unknown = null
-  /** 確認用の集計: キーフレームからやり直した回数・投入したサンプル数・出力されて使われなかったフレーム数 */
+  /** Diagnostic counters: restarts from a keyframe, samples fed, frames output but never used */
   stats = { resets: 0, fed: 0, dropped: 0, outOfOrder: 0, why: {} as Record<string, number> }
 
   constructor(
@@ -50,12 +50,12 @@ export class TrackDecoder {
           w(fr)
         } else {
           this.ready.set(i, fr)
-          // もう使わないフレーム（求められている位置より前）は早めに解放する（ハードウェアデコーダーのバッファが詰まるため）。
-          // 以前は「出力された位置より 2 枚以上前」を捨てていたが、ハードウェアデコーダーは何枚かまとめて出力することがあり、
-          // 使う側が少し遅れていると（最初の書き出しのシェーダーの準備など）これから使うフレームまで捨ててしまい、
-          // キーフレームからのやり直しが連鎖して書き出しが極端に遅くなっていた（1 フレーム 235ms）
+          // Release frames that are no longer used (before the requested position) early (the hardware decoder buffer would clog).
+          // It used to discard frames "2 or more before the output position", but a hardware decoder may output several at once,
+          // so when the consumer lags a little (e.g. preparing the shader for the first export) it also discarded frames about to be used,
+          // restarts from a keyframe chained, and export became extremely slow (235 ms per frame)
           for (const k of [...this.ready.keys()]) if (k < this.wanted) (this.ready.get(k)!.close(), this.ready.delete(k), this.stats.dropped++)
-          // 念のため、溜まりすぎたら古いものから解放する
+          // Just in case, release the oldest first if too many pile up
           while (this.ready.size > READY_MAX) {
             const k = Math.min(...this.ready.keys())
             this.ready.get(k)!.close()
@@ -85,9 +85,9 @@ export class TrackDecoder {
   }
 
   /**
-   * フレーム i を返す（呼び出し側で close() すること）。
-   * ahead は先読みの投入枚数だが、デコード済みフレームを溜めるとハードウェアデコーダーの
-   * 出力バッファが詰まって大幅に遅くなる（実測 115fps → 13fps）ので、通常は 0 のまま使う。
+   * Returns frame i (the caller must close() it).
+   * ahead is the number of frames to feed ahead, but piling up decoded frames clogs the hardware decoder
+   * output buffer and slows things greatly (measured 115 fps -> 13 fps), so normally leave it at 0.
    */
   get(i: number, ahead = 0): Promise<VideoFrame> {
     const run = async (): Promise<VideoFrame> => {
@@ -99,10 +99,10 @@ export class TrackDecoder {
         await this.feed(Math.min(i + ahead, last))
         return have
       }
-      // 続きから届く範囲か: まだ出力されておらず（後戻りでない）、投入位置から遠すぎない
+      // Reachable by continuing: not yet output (not going backwards) and not too far from the feed position
       const reachable = this.dec && !this.error && i > this.lastOut && i - this.next < 60
       if (!reachable) {
-        const why = !this.dec ? 'なし' : this.error ? `エラー: ${String(this.error).slice(0, 80)}` : i <= this.lastOut ? `後戻り(i=${i}, 出力済み=${this.lastOut})` : `遠い(${i - this.next})`
+        const why = !this.dec ? 'none' : this.error ? `error: ${String(this.error).slice(0, 80)}` : i <= this.lastOut ? `backward(i=${i}, output=${this.lastOut})` : `far(${i - this.next})`
         const key = why.replace(/\d+/g, '#')
         this.stats.why[key] = (this.stats.why[key] ?? 0) + 1
         this.reset(i)
@@ -110,23 +110,23 @@ export class TrackDecoder {
       const box: { fr: VideoFrame | null } = { fr: null }
       this.waiters.set(i, (fr) => (box.fr = fr))
       await this.feed(Math.min(i + ahead, last))
-      // ハードウェアデコーダーは数枚ためてから出力するので、出てくるまで後続を1枚ずつ足す。
-      // （flush() するとキーフレームからしか再開できなくなるので、末尾以外では使わない）
+      // A hardware decoder outputs only after buffering a few frames, so keep adding following frames one by one until output appears.
+      // (flush() would allow resuming only from a keyframe, so do not use it except at the end)
       const t0 = performance.now()
       while (!box.fr) {
         if (this.error) throw this.error
         if (this.next <= last) {
           if (this.dec!.decodeQueueSize === 0) await this.feed(this.next)
         } else {
-          // 末尾: 残りを吐き出させる。以後は作り直しが必要
+          // End: make it flush the rest. After that it must be rebuilt
           await this.dec!.flush()
           this.dec!.close()
           this.dec = null
-          if (!box.fr) throw new Error(t('フレーム {i} がデコードされませんでした', { i }))
+          if (!box.fr) throw new Error(t('Frame {i} was not decoded', { i }))
           break
         }
         if (!box.fr) await new Promise((r) => setTimeout(r, 2))
-        if (performance.now() - t0 > 10000) throw new Error(t('フレーム {i} のデコードがタイムアウトしました', { i }))
+        if (performance.now() - t0 > 10000) throw new Error(t('Decoding frame {i} timed out', { i }))
       }
       return box.fr!
     }
@@ -144,9 +144,9 @@ export class TrackDecoder {
 }
 
 /**
- * 複数のトラックのキーフレームだけを順にデコードし、同じフレーム番号の組ができるたびに onFrames を呼ぶ
- * （onFrames は非同期でもよい。終わった後でフレームを閉じる）。キーフレームは単独でデコードできるので、間のフレームは読まない。
- * 動画全体をざっと調べる用（車線の判定・車の検出など）
+ * Decode only the keyframes of several tracks in turn, and call onFrames whenever a set with the same frame number is complete
+ * (onFrames may be async. Close the frames afterwards). A keyframe can be decoded alone, so the frames in between are not read.
+ * For scanning the whole video roughly (lane detection, car detection, etc.)
  */
 export async function decodeKeyframes(
   f: FileReader,
@@ -156,7 +156,7 @@ export async function decodeKeyframes(
   signal?: AbortSignal
 ): Promise<void> {
   const got = tracks.map(() => new Map<number, VideoFrame>())
-  const complete: number[] = [] // すべてのトラックがそろったフレーム番号
+  const complete: number[] = [] // frame numbers for which all tracks are present
   let error: unknown = null
   const decs = tracks.map((track, k) => {
     const d = new VideoDecoder({
@@ -187,14 +187,14 @@ export async function decodeKeyframes(
   try {
     for (const i of indices) {
       if (error) throw error
-      if (signal?.aborted) throw new Error(t('中止しました'))
+      if (signal?.aborted) throw new Error(t('Cancelled'))
       for (let k = 0; k < tracks.length; k++) {
         const tr = tracks[k]
         const data = await f.read(tr.offsets[i], tr.sizes[i])
         decs[k].decode(new EncodedVideoChunk({ type: 'key', timestamp: i * FRAME_US, data }))
       }
       await drain()
-      // 投入しすぎない（ハードウェアデコーダーのバッファが詰まる）
+      // Do not feed too much (the hardware decoder buffer would clog)
       while (!error && (decs.some((d) => d.decodeQueueSize > 2) || got.some((m) => m.size > 3))) {
         await new Promise((r) => setTimeout(r, 1))
         await drain()

@@ -1,6 +1,6 @@
-// .insv（MP4コンテナ）の最小限のデマルチプレクサ。
-// moov のサンプル表だけを読み、各サンプル（フレーム）の位置・サイズ・時刻を引けるようにする。
-// 34GB級のファイルでも moov を読むだけなので、開くのは一瞬で済む。
+// Minimal demultiplexer for .insv (MP4 container).
+// Reads only the sample tables in moov so the position, size, and time of each sample (frame) can be looked up.
+// Even for 34 GB-class files only moov is read, so opening takes an instant.
 
 export interface FileReader {
   size: number
@@ -14,22 +14,22 @@ export interface Track {
   duration: number
   width: number
   height: number
-  codec: string // WebCodecs 用のコーデック文字列（hvc1.* / mp4a.40.2）
-  description: Uint8Array | null // hvcC / esds の DecoderSpecificInfo
+  codec: string // codec string for WebCodecs (hvc1.* / mp4a.40.2)
+  description: Uint8Array | null // DecoderSpecificInfo of hvcC / esds
   sampleRate: number
   channels: number
-  offsets: Float64Array // ファイル内の位置（2^53 未満なので double で十分）
+  offsets: Float64Array // position in the file (below 2^53, so double is enough)
   sizes: Uint32Array
-  dts: Float64Array // timescale 単位
-  cts: Float64Array // 表示時刻（timescale 単位）
-  keyframes: Uint8Array // 1 = キーフレーム
+  dts: Float64Array // in timescale units
+  cts: Float64Array // presentation time (in timescale units)
+  keyframes: Uint8Array // 1 = keyframe
 }
 
 class Box {
   constructor(
     public type: string,
     public data: DataView,
-    public start: number, // data 内でのペイロード開始
+    public start: number, // payload start within data
     public end: number
   ) {}
 }
@@ -71,7 +71,7 @@ function find(dv: DataView, start: number, end: number, path: string[]): Box | n
   return cur
 }
 
-/** ファイル直下のボックスを走査して moov を読み込む */
+/** Scans the top-level boxes of the file and loads moov */
 async function readMoov(f: FileReader): Promise<DataView> {
   let p = 0
   while (p + 8 <= f.size) {
@@ -88,20 +88,20 @@ async function readMoov(f: FileReader): Promise<DataView> {
     if (size < 8) break
     p += size
   }
-  throw new Error('moov ボックスが見つかりません')
+  throw new Error('moov box not found')
 }
 
 function fullBoxBody(b: Box): number {
   return b.start + 4 // version(1) + flags(3)
 }
 
-/** hvcC から WebCodecs のコーデック文字列を作る（ISO/IEC 14496-15 Annex E） */
+/** Builds the WebCodecs codec string from hvcC (ISO/IEC 14496-15 Annex E) */
 function hevcCodecString(hvcc: Uint8Array): string {
   const profileSpace = hvcc[1] >> 6
   const tier = (hvcc[1] >> 5) & 1
   const profileIdc = hvcc[1] & 0x1f
   const compat = (hvcc[2] << 24) | (hvcc[3] << 16) | (hvcc[4] << 8) | hvcc[5]
-  // 互換フラグはビットを反転した順で16進表記
+  // Compatibility flags are written in hex with the bits reversed
   let rev = 0
   for (let i = 0; i < 32; i++) if (compat & (1 << i)) rev |= 1 << (31 - i)
   const constraint: number[] = []
@@ -115,7 +115,7 @@ function hevcCodecString(hvcc: Uint8Array): string {
 }
 
 function parseEsds(b: Box): Uint8Array | null {
-  // ES_Descriptor → DecoderConfigDescriptor → DecoderSpecificInfo（タグ5）を探す
+  // Find ES_Descriptor → DecoderConfigDescriptor → DecoderSpecificInfo (tag 5)
   const dv = b.data
   let p = fullBoxBody(b)
   const end = b.end
@@ -165,7 +165,7 @@ function parseTrak(dv: DataView, trak: Box): Track | null {
   if (!stbl) return null
   const kind = handler === 'vide' ? 'video' : handler === 'soun' ? 'audio' : 'other'
 
-  // ---- stsd（コーデック設定）----
+  // ---- stsd (codec configuration) ----
   const stsd = find(dv, stbl.start, stbl.end, ['stsd'])!
   const entryStart = fullBoxBody(stsd) + 4
   let codec = ''
@@ -198,7 +198,7 @@ function parseTrak(dv: DataView, trak: Box): Track | null {
     break
   }
 
-  // ---- サンプル表 ----
+  // ---- Sample tables ----
   const get = (t: string): Box | null => find(dv, stbl.start, stbl.end, [t])
   const stsz = get('stsz')!
   const fixed = dv.getUint32(fullBoxBody(stsz))
@@ -290,7 +290,7 @@ export async function demux(f: FileReader): Promise<Track[]> {
   return tracks
 }
 
-/** フレーム i を表示するのに必要な、直前のキーフレームのインデックス */
+/** Index of the keyframe immediately before, needed to display frame i */
 export function keyframeBefore(t: Track, i: number): number {
   for (let k = i; k >= 0; k--) if (t.keyframes[k]) return k
   return 0

@@ -1,9 +1,9 @@
-// クォータニオンと3×3行列の小さなユーティリティ。
-// クォータニオンは [x, y, z, w]（scipy と同じ順）。回転の合成 a*b は「b を先に適用」。
+// Small utilities for quaternions and 3×3 matrices.
+// Quaternions are [x, y, z, w] (same order as scipy). The composition a*b of rotations applies "b first".
 
 export type Quat = [number, number, number, number]
 export type Vec3 = [number, number, number]
-/** 行優先の3×3行列 */
+/** Row-major 3×3 matrix */
 export type Mat3 = Float64Array
 
 export const qIdentity = (): Quat => [0, 0, 0, 1]
@@ -119,10 +119,10 @@ export function matVec(m: ArrayLike<number>, v: ArrayLike<number>): Vec3 {
   ]
 }
 
-/** 軸 axis（単位ベクトル）まわりに角度 a [rad] の回転 */
+/** Rotation by angle a [rad] about axis axis (unit vector) */
 export const qAxisAngle = (axis: ArrayLike<number>, a: number): Quat => qFromRotvec(axis[0] * a, axis[1] * a, axis[2] * a)
 
-/** scipy の Rotation.from_euler("YX", [yaw, pitch], degrees=True) と同じ（内因性: 先にY, 次にX） */
+/** Same as scipy's Rotation.from_euler("YX", [yaw, pitch], degrees=True) (intrinsic: Y first, then X) */
 export function qYawPitch(yawDeg: number, pitchDeg: number): Quat {
   const r = Math.PI / 180
   return qMul(qFromRotvec(0, yawDeg * r, 0), qFromRotvec(pitchDeg * r, 0, 0))

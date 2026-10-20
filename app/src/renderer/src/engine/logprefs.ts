@@ -1,8 +1,8 @@
-// 車両ログの設定（このパソコンに覚えておく）: .dat の変換規則（.ddf）と、.dat を探すフォルダ
+// Vehicle log settings (remembered on this PC): the .dat conversion rules (.ddf) and the folder to search for .dat files
 export interface LogPrefs {
-  /** MotoRecoViewer と同じ変換規則のファイル（.ddf） */
+  /** Same conversion rules file as MotoRecoViewer (.ddf) */
   ddfPath: string | null
-  /** MotoReco の .dat を置いているフォルダ（その下のフォルダも探す） */
+  /** Folder holding the MotoReco .dat files (subfolders are searched too) */
   datFolder: string | null
 }
 
@@ -21,6 +21,6 @@ export function saveLogPrefs(p: LogPrefs): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(p))
   } catch {
-    /* 覚えられなくても使える */
+    /* works even if it cannot be remembered */
   }
 }

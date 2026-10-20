@@ -1,4 +1,4 @@
-// 1本の .insv を開いた状態（デコーダー・姿勢・ログ）をまとめる。
+// Groups the state of one opened .insv (decoders, attitude, log).
 import { keyframeBefore } from '../core/mp4'
 import { withSeamFix, type SeamFitResult, type SeamFrame } from '../core/seamfit'
 import { openLocal } from '../core/file'
@@ -27,9 +27,9 @@ import { detectVehicles } from './detector'
 
 export interface LogInfo {
   path: string
-  /** .dat のとき、デコードに使った変換規則（.ddf） */
+  /** When .dat, the conversion rules (.ddf) used for decoding */
   ddfPath: string | null
-  /** .ddf にあったが変換できなかった組み込みの規則 */
+  /** Built-in rules that were in the .ddf but could not be converted */
   unsupported: string[]
   sync: SyncResult
   lean: LeanTrack
@@ -38,41 +38,41 @@ export interface LogInfo {
 }
 
 export class Session {
-  decoders!: [TrackDecoder, TrackDecoder] // [レンズ0, レンズ1]
+  decoders!: [TrackDecoder, TrackDecoder] // [lens 0, lens 1]
   audioTrack: Track | null = null
   file!: FileReader
   meta!: InsvMeta
-  /** 描画に使うレンズ（継ぎ目の合わせ込みを含む） */
+  /** Lens used for rendering (including seam fitting) */
   rig!: LensModel[]
-  /** キャリブレーションのままのレンズ */
+  /** Lens as calibrated */
   baseRig!: LensModel[]
   private seamKey = ''
   imu!: Imu
   ori!: Orientation
-  /** カメラの取り付け姿勢（時刻で変わることがある。core/mount.ts） */
+  /** Camera mount attitude (may change over time. core/mount.ts) */
   mount!: MountTrack
-  /** IMU だけで求めた取り付け姿勢（ログを読み直すときの出発点） */
+  /** Mount attitude from the IMU alone (starting point when the log is re-read) */
   private imuMount!: MountTrack
   frameTimes!: Float64Array
   motion!: MotionModel
   log: LogInfo | null = null
-  /** 自車の継ぎ目の型（engine/bodymap.ts。作るまで・使わないときは null） */
+  /** Seam template of the own bike (engine/bodymap.ts. null until built or when not used) */
   body: BodyTrack | null = null
-  /** 整えた音声（engine/audiofx.ts。作るまで・使わないときは null = 動画の音声のまま） */
+  /** Cleaned-up audio (engine/audiofx.ts. null until built or when unused = the video's original audio) */
   fxAudio: FxAudio | null = null
 
-  /** 整えた音声を差し替える（前のものは閉じる） */
+  /** Replaces the cleaned-up audio (the previous one is closed) */
   async setFxAudio(a: FxAudio | null): Promise<void> {
     const old = this.fxAudio
     this.fxAudio = a
     if (old && old !== a) await old.file.close().catch(() => undefined)
   }
   fps = 50
-  /** 開いている .insv のパス */
+  /** Path of the opened .insv */
   path = ''
   /**
-   * 以前の版（記録の時刻のまま）の動画時刻からのずれ [s]。以前の版で保存したプロジェクトの時刻に足すと、今の動画時刻になる
-   * （X6 の普通の動画は 0、X5 は 0.77 秒など）
+   * Offset [s] from the video time of the earlier version (recorded times as is). Adding it to the times of a project saved with the earlier version gives the current video time
+   * (0 for a normal X6 video, 0.77 s etc. for the X5)
    */
   legacyTimeShiftSec = 0
   private closeFile: () => Promise<void> = async () => undefined
@@ -81,7 +81,7 @@ export class Session {
     try {
       return await Session.openInner(path, stab, onProgress)
     } catch (e) {
-      // core（mp4・insv）のエラーは日本語のまま投げられるので、画面の言語に直す
+      // Errors from core (mp4, insv) are thrown as raw English templates, so convert them to the UI language
       if (e instanceof Error) throw new Error(localizeError(e.message), { cause: e })
       throw e
     }
@@ -91,41 +91,41 @@ export class Session {
     const s = new Session()
     s.path = path
     const step = (m: string): void => onProgress?.(m)
-    step(t('ファイルを開いています'))
+    step(t('Opening file'))
     const f = await openLocal(path)
     s.closeFile = f.close
     s.file = f
     const tracks = await demux(f)
     const videos = tracks.filter((t) => t.kind === 'video')
-    if (videos.length !== 2) throw new Error(t('映像トラックが {n} 本あります（X6 の .insv は2本）', { n: videos.length }))
+    if (videos.length !== 2) throw new Error(t('Found {n} video tracks (an X6 .insv has 2)', { n: videos.length }))
     s.audioTrack = tracks.find((t) => t.kind === 'audio') ?? null
-    step(t('メタデータを読み込んでいます'))
+    step(t('Reading metadata'))
     const tr = await InsvTrailer.open(f)
     s.meta = tr.meta
     s.fps = tr.meta.fps
-    // stream_type 4 = トラックがレンズの逆順（X5/X6）
+    // stream_type 4 = tracks are in reverse lens order (X5/X6)
     const order = tr.meta.streamType === 4 ? [1, 0] : [0, 1]
     s.decoders = [new TrackDecoder(f, videos[order[0]]), new TrackDecoder(f, videos[order[1]])]
     s.baseRig = makeRig(tr.meta.calibration, videos[0].width)
     s.rig = s.baseRig
-    step(t('ジャイロを読み込んでいます'))
+    step(t('Reading gyro data'))
     s.imu = await tr.imu()
-    // フレームの時刻（ジャイロの時間軸）。記録の時刻が firstFrameUs とずれている動画（X5・分割の 2 本目以降）は、その分を直す
+    // Frame times (gyro time axis). For videos whose recorded times are offset from firstFrameUs (X5, second and later parts of a split recording), correct by that amount
     const rawTimes = await tr.frameTimes(0)
     s.frameTimes = await tr.gyroFrameTimes(0)
     s.legacyTimeShiftSec = rawTimes.length ? (s.frameTimes[0] - rawTimes[0]) / 1e6 : 0
-    // 取り付け姿勢: 前方 = 進行方向、上 = リーンしていないときの車体の上。走行中にカメラの向きが変わっていれば時刻ごと
+    // Mount attitude: forward = direction of travel, up = body up when not leaning. If the camera direction changed while riding, per time
     s.mount = estimateMountTrack(s.imu)
     s.imuMount = s.mount
     console.log(
-      `取り付け姿勢: ${s.mount.fixed ? '動画を通して 1 つ' : '時刻ごと'}（動画の中での変化 最大 ${s.mount.maxDeg.toFixed(0)}°）、前後の向きは${s.mount.by === 'lean' ? '曲がる側へ倒れる関係' : 'レンズの向き'}から`
+      `Mount attitude: ${s.mount.fixed ? 'one for the whole video' : 'per time'} (max change within the video ${s.mount.maxDeg.toFixed(0)}°), front/back direction from ${s.mount.by === 'lean' ? 'the leans-into-the-turn relationship' : 'the lens direction'}`
     )
     s.ori = integrate(s.imu)
     s.motion = new MotionModel(s.meta, s.ori, s.mount, s.frameTimes, null, stab)
     return s
   }
 
-  /** スタビライズの設定にある継ぎ目の合わせ込みを反映する。レンズが変わったら true */
+  /** Applies the seam fitting from the stabilization settings. Returns true if the lens changed */
   applySeam(stab: StabSettings): boolean {
     const fix = stab.seamFix !== false ? (stab.seam ?? null) : null
     const key = fix ? [...fix.rot, fix.edge].join(',') : ''
@@ -136,9 +136,9 @@ export class Session {
   }
 
   /**
-   * 継ぎ目の合わせ込み用に、動画の何か所かのフレームを両レンズとも縮めたグレーで読む
-   * （動画の 10〜90% を count 等分した位置の直前のキーフレーム。size 四方）。
-   * プレビューと干渉しないよう専用のデコーダーを使い、キーフレームだけを読むので速い
+   * For seam fitting, reads frames at several places in the video as shrunken gray images for both lenses
+   * (the keyframe just before each of count equally spaced positions between 10 and 90% of the video; size square).
+   * Uses a dedicated decoder so as not to interfere with the preview, and reads only keyframes, so it is fast
    */
   async seamFrames(count = 5, size = 960): Promise<SeamFrame[]> {
     const c = new OffscreenCanvas(size, size)
@@ -166,12 +166,12 @@ export class Session {
     return out
   }
 
-  /** 継ぎ目の合わせ込みを推定する（重なり帯が最も一致するレンズ1の補正） */
+  /** Estimates the seam fitting (the lens 1 correction at which the overlap band matches best) */
   async estimateSeam(): Promise<SeamFitResult> {
     return seamFitInWorker(this.baseRig, await this.seamFrames())
   }
 
-  /** 動画時刻 t [s] にいちばん近いコマ（実際のコマの時刻で。時刻 × fps を丸めると、記録のずれで 1 コマずれることがある） */
+  /** Frame closest to video time t [s] (by actual frame times. Rounding time × fps can be off by one frame because of recording offsets) */
   frameOf(t: number): number {
     let lo = 0
     let hi = this.frameCount - 1
@@ -188,43 +188,43 @@ export class Session {
   }
 
   /**
-   * MotoReco のログ（MotoRecoViewer の CSV、または .dat を .ddf の規則でデコード）を読み込み、
-   * 同期・リーン角の融合・テレメトリーの構築を解析スレッドで行う
+   * Loads the MotoReco log (MotoRecoViewer CSV, or a .dat decoded with the .ddf rules) and
+   * performs synchronization, lean angle fusion, and telemetry construction on the analysis thread
    */
   async loadLog(path: string, ddfPath: string | null, onProgress?: (msg: string) => void): Promise<LogInfo> {
-    onProgress?.(t('ログを読み込んでいます'))
+    onProgress?.(t('Loading log'))
     const isDat = isDatPath(path)
-    if (isDat && !ddfPath) throw new Error(t('.dat を読むには、変換規則（.ddf）を指定してください'))
+    if (isDat && !ddfPath) throw new Error(t('To read a .dat, choose the decoding rules (.ddf)'))
     const base = { imu: this.imu, mount: this.imuMount, firstFrameUs: this.meta.firstFrameUs, durationSec: this.frameCount / this.fps }
     const r = await analyzeLog(
       isDat ? { ...base, dat: { buf: await readBinary(path), ddfText: await window.api.readText(ddfPath!) } } : { ...base, csvText: await window.api.readText(path) },
       onProgress
     )
-    console.log('ログ解析の内訳[ms]', JSON.stringify(r.timingMs))
-    if (r.unsupported.length) console.log('変換できない規則', r.unsupported.join(', '))
+    console.log('Log analysis breakdown [ms]', JSON.stringify(r.timingMs))
+    if (r.unsupported.length) console.log('Rules that could not be converted', r.unsupported.join(', '))
     this.log = { path, ddfPath: isDat ? ddfPath : null, unsupported: r.unsupported, sync: r.sync, lean: r.lean, telemetry: r.telemetry, gpsDelay: r.gpsDelay }
-    // ログで詰めた取り付け姿勢に置き換える（前方 = 進行方向、上 = リーンしていないときの車体の上）
+    // Replace with the mount attitude refined using the log (forward = direction of travel, up = body up when not leaning)
     this.mount = r.mount
     this.motion.setMount(r.mount)
-    console.log(`取り付け姿勢をログで詰めた: ${r.mount.fixed ? '動画を通して 1 つ' : '時刻ごと'}（変化 最大 ${r.mount.maxDeg.toFixed(0)}°）`)
+    console.log(`Mount attitude refined with the log: ${r.mount.fixed ? 'one for the whole video' : 'per time'} (max change ${r.mount.maxDeg.toFixed(0)}°)`)
     this.motion.setLean(r.lean)
     return this.log
   }
 
   /**
-   * 表示・画角の自動切り替え・標識に使うテレメトリー。車両ログが無い（無効にした）ときは、動画の IMU から推定したもの
-   * （loadImuTelemetry の後。source = 'imu'。メーター類には使わない）
+   * Telemetry used for display, auto camera, and signs. When there is no vehicle log (disabled), it is the one estimated from the video's IMU
+   * (after loadImuTelemetry. source = 'imu'. Not used for meters)
    */
   telemetry(enabled: boolean): Telemetry | null {
     return enabled && this.log ? this.log.telemetry : (this.imuTel?.telemetry ?? null)
   }
 
-  /** 車両ログが無いときの推定（動画の IMU から）。開いた後に loadImuTelemetry で求める */
+  /** Estimate used when there is no vehicle log (from the video's IMU). Computed with loadImuTelemetry after opening */
   imuTel: ImuTelemetry | null = null
 
   /**
-   * 車両ログが無くても画角の自動切り替え・浮遊標識・水平の補正が動くよう、動画の IMU からリーン角・車速・走行状態・コーナーを推定する
-   * （core/imu-telemetry.ts。解析スレッドで 0.3〜0.5 秒）。ログを読み込んでいなければ、水平の補正にこのリーン角を使う
+   * So that auto camera, floating signs, and horizon correction work without a vehicle log, estimates lean angle, vehicle speed, riding state, and corners from the video's IMU
+   * (core/imu-telemetry.ts. 0.3-0.5 s on the analysis thread). If no log has been loaded, this lean angle is used for horizon correction
    */
   async loadImuTelemetry(): Promise<ImuTelemetry> {
     if (this.imuTel) return this.imuTel
@@ -235,7 +235,7 @@ export class Session {
 
   private logEnabled = true
 
-  /** 読み込んだ車両ログを捨てる（映像と同期できなかったとき） */
+  /** Discards the loaded vehicle log (when it could not be synchronized with the video) */
   clearLog(): void {
     this.log = null
     this.setLogEnabled(this.logEnabled)
@@ -246,7 +246,7 @@ export class Session {
     this.motion.setLean(on && this.log ? this.log.lean : (this.imuTel?.lean ?? null))
   }
 
-  /** 同じフォルダにある MotoReco の CSV を探す */
+  /** Finds a MotoReco CSV in the same folder */
   static async findLog(insvPath: string): Promise<string | null> {
     const dir = window.api.path.dirname(insvPath)
     const files = await window.api.listDir(dir)
@@ -262,8 +262,8 @@ export class Session {
   }
 
   /**
-   * 車線のどちら側を走っているかを、動画のキーフレーム（約 1 秒ごと）ごとに調べる（core/lanes.ts）。
-   * 前方の路面を見下ろした小さな画像を描き、センターラインの左右を判定する。20 分の動画で 1 分ほどかかる
+   * Examines, for each keyframe of the video (about every 1 second), which side of the lane the bike is riding on (core/lanes.ts).
+   * Draws a small image looking down at the road ahead and decides left/right of the center line. Takes about 1 minute for a 20-minute video
    */
   async scanLanes(onProgress?: (frac: number) => void, signal?: AbortSignal): Promise<LaneSample[]> {
     const { width: w, height: h } = LANE_VIEW
@@ -282,11 +282,11 @@ export class Session {
         keys,
         (i, fs) => {
           gl.upload([fs[0], fs[1]])
-          // 水平・リーンを戻した向きで、前方の路面を見下ろす
+          // Look down at the road ahead with the horizon and lean undone
           const fp = this.motion.frame(i, { yaw: 0, pitch: LANE_VIEW.pitch, fov: LANE_VIEW.fov, leanRatio: 0 })
           gl.draw({ view: fp.view, rs: fp.rs, hfovDeg: LANE_VIEW.fov }, w, h)
           gl.gl.readPixels(0, 0, w, h, gl.gl.RGBA, gl.gl.UNSIGNED_BYTE, buf)
-          // GL は下の行から並ぶので、上の行からに並べ替える
+          // GL rows run from the bottom, so reorder to run from the top
           for (let y = 0; y < h; y++) img.set(buf.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4)
           out.push({ t: this.motion.videoTime(i), ...laneSide(observeLanes(img, w, h)) })
           if (++done % 20 === 0) onProgress?.(done / keys.length)
@@ -301,8 +301,8 @@ export class Session {
   }
 
   /**
-   * 追い越しの場面を探す: 車線のどちら側を走っているかを動画全体で調べ（scanLanes）、センターラインをまたいだ区間の前後だけ
-   * 車を探して（scanVehicles）、追い越す側の真横を車が通った区間を選ぶ（core/overtake.ts）
+   * Finds overtake scenes: examines which side of the lane the bike rides on across the whole video (scanLanes), searches for cars (scanVehicles) only around
+   * the sections that crossed the center line, and selects the sections in which a car passed directly beside the overtaking side (core/overtake.ts)
    */
   async scanOvertakes(
     onProgress?: (msg: string) => void,
@@ -310,20 +310,20 @@ export class Session {
     explain?: (c: LaneCrossing, s: VehicleSighting) => void
   ): Promise<{ crossings: LaneCrossing[]; overtakes: Overtake[] }> {
     const pct = (f: number): string => `${Math.round(f * 100)}%`
-    const lanes = await this.scanLanes((f) => onProgress?.(t('車線を調べています {p}', { p: pct(f) })), signal)
+    const lanes = await this.scanLanes((f) => onProgress?.(t('Checking lanes {p}', { p: pct(f) })), signal)
     const crossings = findLaneCrossings(lanes)
     const own = ownSide(lanes)
     if (!crossings.length || !own) return { crossings, overtakes: [] }
-    // 車を探すのは、またいだ区間の前後だけ（動画全体を調べると数分かかる）
+    // Search for cars only around the crossing sections (scanning the whole video takes several minutes)
     const keys = this.keyframeIndices().filter((i) => {
       const tv = this.motion.videoTime(i)
       return crossings.some((c) => tv >= c.start - OVERTAKE.margin - 2 && tv <= c.end + OVERTAKE.margin + 2)
     })
-    const sightings = await this.scanVehicles(keys, (f) => onProgress?.(t('車を探しています {p}', { p: pct(f) })), signal)
+    const sightings = await this.scanVehicles(keys, (f) => onProgress?.(t('Looking for vehicles {p}', { p: pct(f) })), signal)
     return { crossings, overtakes: findOvertakes(crossings, sightings, own, keys.length, explain) }
   }
 
-  /** 動画のキーフレームの番号（約 1 秒ごと） */
+  /** Keyframe indices of the video (about every 1 second) */
   keyframeIndices(): number[] {
     const keys: number[] = []
     const kf = this.decoders[0].track.keyframes
@@ -332,7 +332,7 @@ export class Session {
   }
 
   /**
-   * 指定したキーフレームで、前・右・後ろ・左（各 90°）を描いて車を探し、車体から見た向きを返す（core/vehicles.ts）
+   * At the specified keyframes, renders front, right, back, and left (90° each), searches for cars, and returns the direction as seen from the body (core/vehicles.ts)
    */
   async scanVehicles(indices: number[], onProgress?: (frac: number) => void, signal?: AbortSignal): Promise<VehicleSighting[]> {
     const S = DET_SIZE
@@ -370,17 +370,17 @@ export class Session {
   }
 
   /**
-   * フォルダ（とその下のフォルダ）の MotoReco の .dat から、この映像と同じ走行のものを選ぶ。
-   * ファイル名の記録開始時刻と長さで映像の時刻に近いものに絞り、ロールレートと映像のジャイロの相関で決める
+   * From the MotoReco .dat files in a folder (and the folders under it), selects the one from the same ride as this video.
+   * Narrows to those close to the video time by the recording start time and length in the file name, then decides by the correlation between roll rate and the video's gyro
    */
   async findDat(folder: string, ddfPath: string | null, onProgress?: (msg: string) => void): Promise<{ path: string; peakRatio: number } | null> {
-    onProgress?.(t('映像に合う車両ログを探しています'))
+    onProgress?.(t('Looking for a matching bike log'))
     const files = await listDatFiles(folder)
     const durMs = (this.frameCount / this.fps) * 1000
-    const vStart = datStartFromName(window.api.path.basename(this.path)) // VID_YYYYMMDD_HHMMSS（カメラの時計）
+    const vStart = datStartFromName(window.api.path.basename(this.path)) // VID_YYYYMMDD_HHMMSS (camera clock)
     const ddfText = ddfPath ? await window.api.readText(ddfPath).catch(() => null) : null
     const cam = cameraRollRate(this.imu, this.mount, this.meta.firstFrameUs)
-    // 映像との時刻の差（ロガーとカメラの時計は数十分ずれることがある）
+    // Time difference from the video (the logger and camera clocks can be tens of minutes apart)
     const cands: { path: string; gap: number }[] = []
     for (const f of files) {
       const s = datStartFromName(window.api.path.basename(f.path))
@@ -395,7 +395,7 @@ export class Session {
     cands.sort((a, b) => a.gap - b.gap)
     let best: { path: string; peakRatio: number } | null = null
     const tried = new Set<string>()
-    // 近いものから調べる。時刻の近い候補で見つからなければ範囲を広げる
+    // Check the closest first. If none is found among candidates close in time, widen the range
     const passes: [number, number][] = [
       [2 * HOUR_MS, 8],
       [DAY_MS, 12],
@@ -405,14 +405,14 @@ export class Session {
       const batch = cands.filter((c) => c.gap <= maxGap && !tried.has(c.path)).slice(0, maxCount)
       for (const c of batch) {
         tried.add(c.path)
-        onProgress?.(t('車両ログを照合しています: {file}', { file: window.api.path.basename(c.path) }))
+        onProgress?.(t('Checking bike log: {file}', { file: window.api.path.basename(c.path) }))
         try {
           const s = await scoreDatInWorker({ buf: await readBinary(c.path), ddfText, cam })
-          console.log('照合', window.api.path.basename(c.path), s.peakRatio.toFixed(2))
+          console.log('Matching', window.api.path.basename(c.path), s.peakRatio.toFixed(2))
           if (!best || s.peakRatio > best.peakRatio) best = { path: c.path, peakRatio: s.peakRatio }
-          if (s.peakRatio >= 3) return best // ほぼ確実
+          if (s.peakRatio >= 3) return best // almost certain
         } catch (e) {
-          console.warn('照合できない .dat', c.path, e)
+          console.warn('Could not match .dat', c.path, e)
         }
       }
       if (best && best.peakRatio >= 1.5) return best
@@ -432,7 +432,7 @@ const DAY_MS = 24 * HOUR_MS
 
 export const isDatPath = (p: string): boolean => p.toLowerCase().endsWith('.dat')
 
-/** ファイルをまるごと読む */
+/** Reads the whole file */
 async function readBinary(path: string): Promise<Uint8Array> {
   const { id, size } = await window.api.open(path, 'r')
   try {
@@ -442,7 +442,7 @@ async function readBinary(path: string): Promise<Uint8Array> {
   }
 }
 
-/** .dat の記録の長さ [ms]（末尾の数レコードの時刻から） */
+/** Length of the .dat recording [ms] (from the times of the last few records) */
 async function datLengthMs(path: string, size: number): Promise<number> {
   const whole = size - (size % DAT_RECORD)
   const n = Math.min(whole, DAT_RECORD * 8)
@@ -455,7 +455,7 @@ async function datLengthMs(path: string, size: number): Promise<number> {
   }
 }
 
-/** フォルダとその下 2 段までのフォルダにある .dat */
+/** .dat files in the folder and folders up to 2 levels below */
 async function listDatFiles(folder: string, depth = 2): Promise<{ path: string; size: number }[]> {
   const out: { path: string; size: number }[] = []
   let ents: { name: string; dir: boolean; size: number }[]

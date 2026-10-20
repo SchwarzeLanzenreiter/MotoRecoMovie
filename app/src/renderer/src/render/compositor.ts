@@ -1,5 +1,5 @@
-// 1フレームの合成: 視点レイヤーをそれぞれの矩形に描き、重ね表示レイヤーを最後に合成する。
-// プレビューと書き出しの両方がこれを使うので、見たままの結果が書き出される。
+// Compositing one frame: draw each view layer into its own rectangle, then composite the overlay layers last.
+// Preview and export both use this, so what you see is what gets exported.
 import { incidentEvents, incidentLayout, type IncidentEvent } from '../engine/incident'
 import { bodyAt, type BodyTrack } from '../core/bodymap'
 import { isFull } from '../engine/layout'
@@ -16,7 +16,7 @@ import { roadTrack, type RoadTrack } from '../core/sightline'
 import { sampleChannel } from '../core/telemetry'
 import { getLang, tr, type Lang } from '../i18n'
 
-/** 標識の見通しの判定に使う道路の点列（テレメトリーごとに 1 回だけ作る） */
+/** Road polyline used for the sign visibility test (built once per telemetry) */
 const roads = new WeakMap<Telemetry, RoadTrack | null>()
 function roadOf(tel: Telemetry): RoadTrack | null {
   if (!roads.has(tel)) roads.set(tel, roadTrack(tel))
@@ -42,7 +42,7 @@ export function hexToRgb(hex: string): [number, number, number] {
 
 export class Compositor {
   readonly gl: GlReframer
-  /** 自車の継ぎ目の型（Session.body。無ければ null） */
+  /** Seam template of the own bike (Session.body; null if absent) */
   body: BodyTrack | null = null
   private ov: OffscreenCanvas
   private og: OffscreenCanvasRenderingContext2D
@@ -63,7 +63,7 @@ export class Compositor {
 
   private incCache: { key: unknown[]; events: IncidentEvent[] } | null = null
 
-  /** 時刻 t の 2 画面の状態（乱れの検出が無い・オフ・全画面のメインが無いときは null） */
+  /** State of the 2-screen layout at time t (null when there is no disturbance detection, it is off, or there is no full-screen main) */
   private incident(project: Project, telemetry: Telemetry | null, motion: MotionModel, t: number): (ReturnType<typeof incidentLayout> & { mainId: string }) | null {
     const s = project.incident
     const d = telemetry?.disturb
@@ -76,19 +76,19 @@ export class Compositor {
     return { ...incidentLayout(this.incCache.events, s, t), mainId: main.id }
   }
 
-  /** フレーム i を出力サイズ w×h で合成する。各視点レイヤーの補正量を返す */
+  /** Composites frame i at output size w×h. Returns the correction amount of each view layer */
   render(i: number, project: Project, motion: MotionModel, telemetry: Telemetry | null, w: number, h: number): ViewInfo[] {
     const gl = this.gl
     gl.dynamicSeam = project.stab.dynamicSeam !== false
     gl.blendDeg = project.stab.seamBlend ?? 12
-    // 確認用（自動テストの seamDebug / seamCut）: 継ぎ目の表示・つなぎ目をずらす処理の切り替え
+    // For debugging (seamDebug / seamCut in automated tests): switches seam display and the seam-shifting processing
     const dbg = globalThis as { __seamDebug?: number; __seamCut?: boolean }
     gl.debug = dbg.__seamDebug ?? 0
     gl.adaptiveCut = dbg.__seamCut ?? true
     gl.updateSeam(i, gl.dynamicSeam ? motion.downInRig(i) : null)
     gl.begin(w, h)
     const t = motion.videoTime(i)
-    // 自車の部分（トップケース・ナンバープレートなど）は、区間ごとに作った型のつなぎ目で描く
+    // The own-bike parts (top case, license plate, etc.) are drawn with the seam of the template built for each section
     const body = project.stab.bodyStitch === true ? this.body : null
     if (body) {
       const ba = bodyAt(body, t)
@@ -97,11 +97,11 @@ export class Compositor {
     const info: ViewInfo[] = []
     let hasOverlay = false
     const signViews: { l: (typeof project.layers)[number] & { type: 'view' }; v: ReturnType<typeof viewAt>; pr: PixelRect; rot: Mat3 }[] = []
-    // 標識は映像と同じカメラの向きで投影する（地図での向きを MotionModel に渡しておく）
+    // Signs are projected with the same camera direction as the video (the map heading is passed to MotionModel beforehand)
     const nav = telemetry?.nav
     motion.setNav(nav && telemetry ? { rate: telemetry.rate, heading: nav.heading, grade: telemetry.channels.grade ?? null } : null)
-    // 車体挙動の乱れがあった時の 2 画面（全画面のメインを縮め、自車の画面を滑り込ませる）
-    // 動画の IMU から推定したテレメトリー（車両ログ無し）は、標識と画角だけに使い、メーター類・乱れの表示には使わない
+    // 2-screen layout on a vehicle body disturbance (shrinks the full-screen main and slides in the own-bike screen)
+    // Telemetry estimated from the video IMU (no vehicle log) is used only for signs and the FOV, not for the meters or the disturbance display
     const real = telemetry?.source === 'imu' ? null : telemetry
     const inc = this.incident(project, real, motion, t)
     for (const l of project.layers) {
@@ -134,7 +134,7 @@ export class Compositor {
       }
       const g = this.og
       g.clearRect(0, 0, w, h)
-      // 空中の標識（視点ごと。メーターなどの重ね表示より奥に描く）
+      // Floating signs in the air (per view; drawn behind overlays such as the meters)
       if (signViews.length && telemetry?.nav && telemetry.corners) {
         const nav = telemetry.nav
         const k = Math.max(0, Math.min(telemetry.n - 2, t * telemetry.rate))
@@ -160,11 +160,11 @@ export class Compositor {
           )
         }
       }
-      // 動画に入る文字の言語（省略時は画面の言語）
+      // Language of the text that goes into the video (the UI language if omitted)
       const lang = project.export.textLang ?? getLang()
       if (incLabel) drawIncidentLabel(g, toPixels(incLabel.rider, w, h), incLabel.event!, incLabel.w, lang)
       const f = overlayFrame(t, real, w, h, lang)
-      // 重ね表示はレイヤーの順に描く（視点レイヤーより後ろにある重ね表示も、映像の上に出る）
+      // Overlays are drawn in layer order (overlays placed behind a view layer also appear on top of the video)
       for (const l of project.layers) if (l.visible && l.type === 'overlay') drawOverlayLayer(g, l, toPixels(l.rect, w, h), f)
       gl.drawOverlay(this.ov, w, h)
     }
@@ -172,11 +172,11 @@ export class Compositor {
   }
 }
 
-/** 自車の画面の左上に「挙動の乱れ」と、いちばん強かった指標を出す */
+/** Shows "disturbance" at the top left of the own-bike screen, along with the strongest indicator */
 function drawIncidentLabel(g: OffscreenCanvasRenderingContext2D, r: PixelRect, e: IncidentEvent, w: number, lang: Lang): void {
   const fs = Math.max(10, Math.min(r.w, r.h) * 0.045)
   const pad = fs * 0.5
-  const text = tr(lang, '挙動の乱れ') + '  ' + tr(lang, CAUSE_NAMES[e.cause])
+  const text = tr(lang, 'Disturbance') + '  ' + tr(lang, CAUSE_NAMES[e.cause])
   g.save()
   g.globalAlpha = w
   g.font = `700 ${fs.toFixed(1)}px 'Yu Gothic UI', 'Meiryo UI', sans-serif`
@@ -187,7 +187,7 @@ function drawIncidentLabel(g: OffscreenCanvasRenderingContext2D, r: PixelRect, e
   g.beginPath()
   g.roundRect(x, y, tw + pad * 2 + fs * 0.9, fs * 1.6, fs * 0.3)
   g.fill()
-  // 警告の三角
+  // Warning triangle
   const cx = x + pad + fs * 0.4
   const cy = y + fs * 0.8
   g.fillStyle = '#ffb000'

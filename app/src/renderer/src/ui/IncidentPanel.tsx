@@ -5,11 +5,11 @@ import { t } from '../i18n'
 
 interface Props {
   settings: IncidentSettings
-  /** 検出した事象（除外したものも含む） */
+  /** Detected events (including excluded ones) */
   events: IncidentEvent[]
-  /** 乱れの検出に使える車両ログがあるか */
+  /** Whether a vehicle log usable for disturbance detection is loaded */
   available: boolean
-  /** メインの視点が全画面か（2 画面にできるか） */
+  /** Whether the main view is full screen (i.e. can be split into 2 screens) */
   mainFull: boolean
   onChange: (patch: Partial<IncidentSettings>) => void
   onSeekTime: (t: number) => void
@@ -17,7 +17,7 @@ interface Props {
 
 const fmt = (s: number): string => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`
 
-/** 車体挙動の乱れがあった時に自動で 2 画面にする設定と、検出した事象の一覧 */
+/** Setting to split into 2 screens automatically when a bike disturbance occurs, and the list of detected events */
 export function IncidentSection(p: Props): React.JSX.Element {
   const s = p.settings
   const skip = new Set(s.skip.map(roundPeak))
@@ -25,28 +25,28 @@ export function IncidentSection(p: Props): React.JSX.Element {
   return (
     <div className="section">
       <h3>
-        {t('車体挙動の乱れ')}<span className="hint">{s.on && p.available ? t('{n} 回 2 画面に', { n: used.length }) : t('自動で 2 画面にする')}</span>
+        {t('Chassis disturbance')}<span className="hint">{s.on && p.available ? t('Split screen {n} times', { n: used.length }) : t('Auto split screen')}</span>
       </h3>
       <label className="rule">
-        <input type="checkbox" checked={s.on} disabled={!p.available} onChange={(e) => p.onChange({ on: e.target.checked })} /> {t('乱れがあった時は 2 画面にして自車を映す')}
+        <input type="checkbox" checked={s.on} disabled={!p.available} onChange={(e) => p.onChange({ on: e.target.checked })} /> {t('On a disturbance, split the screen and show own bike')}
       </label>
-      {!p.available && <div className="note status">{t('車両ログ（スリップ率・サスペンションのストローク・6 軸センサー）が必要です。')}</div>}
-      {s.on && !p.mainFull && <div className="note warn">{t('メインの視点が全画面のときに働きます（今のレイアウトでは分割しません）。')}</div>}
-      <div className="note">{t('スリップ率の急な変化・空転、角速度や加速度の細かい揺れ（ふらつき・振られ）、サスペンションの急な伸び縮み（突き上げ・底付き）を、その走行の中での強さで判定します。')}</div>
-      <Slider name={t('しきい値')} value={s.threshold} min={1} max={3} step={0.1} unit={t('倍')} disabled={!s.on} onChange={(v) => p.onChange({ threshold: v })} />
-      <div className="note">{t('1.0 倍 = その走行の上位 0.5% の強さ。小さいほど敏感になります。')}</div>
+      {!p.available && <div className="note status">{t('Requires a vehicle log (slip ratio, suspension stroke, 6-axis sensor).')}</div>}
+      {s.on && !p.mainFull && <div className="note warn">{t('Works only when the main view is full screen (the current layout will not split).')}</div>}
+      <div className="note">{t('Detects sudden slip ratio changes and wheelspin, fine shakes in angular velocity and acceleration (wobble, weave), and sudden suspension movement (kicks, bottoming out), judged by their strength within this ride.')}</div>
+      <Slider name={t('Threshold')} value={s.threshold} min={1} max={3} step={0.1} unit={t('×')} disabled={!s.on} onChange={(v) => p.onChange({ threshold: v })} />
+      <div className="note">{t('1.0× = the top 0.5% strength in this ride. Lower is more sensitive.')}</div>
       <div className="row">
-        <span className="name">{t('分け方')}</span>
+        <span className="name">{t('Split')}</span>
         <select value={s.layout} disabled={!s.on} onChange={(e) => p.onChange({ layout: e.target.value as IncidentSettings['layout'] })}>
-          <option value="lr">{t('左に前方・右に自車')}</option>
-          <option value="rl">{t('左に自車・右に前方')}</option>
-          <option value="tb">{t('上に前方・下に自車')}</option>
+          <option value="lr">{t('Ahead left, own bike right')}</option>
+          <option value="rl">{t('Own bike left, ahead right')}</option>
+          <option value="tb">{t('Ahead top, own bike bottom')}</option>
         </select>
       </div>
-      <Slider name={t('前の余白')} value={s.pre} min={0} max={3} step={0.5} unit={t('秒')} disabled={!s.on} onChange={(v) => p.onChange({ pre: v })} />
-      <Slider name={t('後の余白')} value={s.post} min={0} max={6} step={0.5} unit={t('秒')} disabled={!s.on} onChange={(v) => p.onChange({ post: v })} />
+      <Slider name={t('Lead-in')} value={s.pre} min={0} max={3} step={0.5} unit={t('s')} disabled={!s.on} onChange={(v) => p.onChange({ pre: v })} />
+      <Slider name={t('Lead-out')} value={s.post} min={0} max={6} step={0.5} unit={t('s')} disabled={!s.on} onChange={(v) => p.onChange({ post: v })} />
       <label className="rule">
-        <input type="checkbox" checked={s.label} disabled={!s.on} onChange={(e) => p.onChange({ label: e.target.checked })} /> {t('自車の画面に「挙動の乱れ」を表示')}
+        <input type="checkbox" checked={s.label} disabled={!s.on} onChange={(e) => p.onChange({ label: e.target.checked })} /> {t('Show "Disturbance" on the own bike view')}
       </label>
       {s.on && p.available && (
         <div className="event-list">
@@ -58,20 +58,20 @@ export function IncidentSection(p: Props): React.JSX.Element {
                 <input
                   type="checkbox"
                   checked={on}
-                  title={t('この乱れで 2 画面にする')}
+                  title={t('Split screen for this disturbance')}
                   onChange={() => p.onChange({ skip: on ? [...s.skip, k] : s.skip.filter((x) => roundPeak(x) !== k) })}
                 />
-                <button className="time-btn" onClick={() => p.onSeekTime(e.start)} title={t('2 画面になる時刻へ移動')}>
+                <button className="time-btn" onClick={() => p.onSeekTime(e.start)} title={t('Go to the split-screen start')}>
                   {fmt(e.peak)}
                 </button>
                 <span className="kind incident">{t(CAUSE_NAMES[e.cause])}</span>
-                <span className="title">{t('強さ {v} 倍', { v: e.score.toFixed(1) })}</span>
+                <span className="title">{t('Strength {v}×', { v: e.score.toFixed(1) })}</span>
               </div>
             )
           })}
         </div>
       )}
-      {s.on && <div className="note">{t('自車の画面の向き・画角は、レイヤー「自車（挙動の乱れ）」を選んで変えられます。')}</div>}
+      {s.on && <div className="note">{t('To change the own bike view\'s direction and FOV, select the layer "Own bike (disturbance)".')}</div>}
     </div>
   )
 }

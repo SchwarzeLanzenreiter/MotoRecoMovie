@@ -1,110 +1,113 @@
 # MotoRecoMovie
 
-Insta360 X6 / X5 で撮った 360° 動画（.insv）を、バイクの車載映像向けに切り出して（リフレームして）書き出す Windows のアプリです。
+A Windows app that reframes 360° videos (.insv) shot with an Insta360 X6 / X5 into regular videos, made for motorcycle onboard footage.
+The app is available in English and Japanese (switch with the language selector in the toolbar).
 
-動画だけでも、カメラに記録されているジャイロ・加速度から走り方を推定して、次のことができます。
-MotoReco の車両ログ（.dat / CSV）を読み込むと、リーン角・車速などがより正確になり、メーターや地図も出せるようになります。
+Even with the video alone, the app estimates how you rode from the gyro and accelerometer data recorded by the camera, and can do the following.
+If you also load a MotoReco vehicle log (.dat / CSV), the lean angle and speed become more accurate, and meters and maps become available.
 
-| できること | 動画だけ | 車両ログあり |
+| Feature | Video only | With vehicle log |
 |---|---|---|
-| 水平線を固定しないスタビライズ（リーンの傾きを残す割合を選べる） | ○（傾きは動画から推定） | ○ |
-| キーフレームでの視点の切り替え・画面の分割 | ○ | ○ |
-| 前後のレンズのつなぎ目の合わせ込み | ○ | ○ |
-| 画角の自動切り替え（コーナー・巡航・停止・追い越し） | ○（走行状態は動画から推定） | ○ |
-| コーナーの浮遊標識（曲線半径） | ○（位置は動画から推定） | ○ |
-| 走行中の音を整える（音割れの補修・エンジン音以外を抑える・高い音を切る・音圧を抑える） | ○ | ○ |
-| クロノグラフ風・サイバー風のメーター、数値一覧 | － | ○ |
-| 地図・標高・方位（GPS） | － | ○ |
-| 車体挙動の乱れで自動で 2 画面にする | － | ○ |
+| Stabilization without horizon lock (choose how much of the lean to keep) | ✓ (lean estimated from the video) | ✓ |
+| Switch views with keyframes, split screen | ✓ | ✓ |
+| Align the seam between the front and back lenses | ✓ | ✓ |
+| Auto camera (corners, cruise, stops, overtakes) | ✓ (riding state estimated from the video) | ✓ |
+| Floating corner signs (curve radius) | ✓ (position estimated from the video) | ✓ |
+| Clean up the riding sound (repair clipping, suppress non-engine noise, cut highs, compress loud parts) | ✓ | ✓ |
+| Chronograph-style and cyber-style meters, data readout | – | ✓ |
+| Map, elevation and compass (GPS) | – | ✓ |
+| Automatic split screen on chassis disturbances | – | ✓ |
 
-詳しい使い方と仕組みは [docs/app.md](docs/app.md) にあります。
+How to use it and how it works is described in [docs/app.md](docs/app.md).
 
-## インストール
+## Installation
 
-今のところ、できあがったアプリは配っていないので、自分のパソコンでアプリを作ります（一度だけ、20〜30 分ほど）。
-手順どおりに進めれば、プログラミングの知識は要りません。
+There is no ready-made download yet, so you build the app on your own PC (once, about 20–30 minutes).
+If you follow the steps below, no programming knowledge is needed.
 
-### 用意するもの
+### What you need
 
-- Windows 10 / 11（64 ビット）
-- ディスクの空き 4GB ほど（作る途中の物を含む。できあがったアプリは 850MB ほど）
-- インターネット（部品のダウンロードに 1GB ほど）
-- GPU（グラフィック）。ふつうのパソコンなら内蔵のもので動きますが、書き出しや AI の処理は、性能のよい GPU ほど速くなります
+- Windows 10 / 11 (64-bit)
+- About 4 GB of free disk space (including files used while building; the finished app is about 850 MB)
+- An internet connection (about 1 GB of downloads)
+- A GPU. The integrated graphics of an ordinary PC works, but export and the AI processing are faster with a better GPU
 
-### 1. Node.js を入れる
+### 1. Install Node.js
 
-1. [https://nodejs.org/ja](https://nodejs.org/ja) を開き、「LTS」と書かれた方のインストーラー（Windows 用）をダウンロードします
-2. ダウンロードしたファイルを開き、「Next」を押して進めます（設定はすべてそのままで大丈夫です）
+1. Open [https://nodejs.org/](https://nodejs.org/) and download the installer marked "LTS" (for Windows)
+2. Open the downloaded file and click "Next" through the installer (the default settings are fine)
 
-### 2. このアプリのファイルをダウンロードする
+### 2. Download this app's files
 
-1. このページの上にある緑の「Code」ボタンを押し、「Download ZIP」を選びます
-2. ダウンロードした ZIP を右クリックして「すべて展開」を選び、わかりやすい場所（例: `C:\MotoRecoMovie`）に展開します
+1. Click the green "Code" button at the top of this page and choose "Download ZIP"
+2. Right-click the downloaded ZIP, choose "Extract All", and extract it to a place that is easy to find (for example `C:\MotoRecoMovie`)
 
-（Git を使える人は `git clone https://github.com/SchwarzeLanzenreiter/MotoRecoMovie.git` でもかまいません）
+(If you use Git, `git clone https://github.com/SchwarzeLanzenreiter/MotoRecoMovie.git` works too.)
 
-### 3. アプリを作る
+### 3. Build the app
 
-1. 展開したフォルダの中の `app` フォルダを開きます
-2. エクスプローラーの上のアドレス欄（フォルダの場所が出ている所）をクリックし、`cmd` と入力して Enter を押します。黒い画面（コマンドプロンプト）が開きます
-3. 次の 3 つを、1 行ずつ貼り付けて Enter を押します。それぞれ終わるまで（入力できる状態に戻るまで）待ってから次へ進みます
+1. Open the `app` folder inside the extracted folder
+2. Click the address bar at the top of File Explorer (where the folder path is shown), type `cmd` and press Enter. A black window (Command Prompt) opens
+3. Paste the following three commands one at a time and press Enter. Wait until each one finishes (until you can type again) before moving on
 
    ```bat
    npm ci
    ```
 
-   アプリに要る部品を入れます（数分）。
+   Installs the parts the app needs (a few minutes).
 
    ```bat
    npm run fetch-assets
    ```
 
-   AI のモデルと、音声の処理に使う ffmpeg をダウンロードします（合わせて 430MB ほど。最後に「完了」と出ます）。
+   Downloads the AI models and ffmpeg, which is used for audio processing (about 430 MB in total; it ends with "Done.").
 
    ```bat
    npm run dist
    ```
 
-   アプリを作ります（数分）。
+   Builds the app (a few minutes).
 
-   途中で赤い文字の警告が出ても、最後まで進めば大丈夫です。止まってしまったときは、出た文字をコピーして Issues で知らせてください。
+   Warnings in red may appear along the way; that is fine as long as it runs to the end. If it stops, copy the text it printed and let us know in Issues.
 
-### 4. アプリを開く
+### 4. Open the app
 
-`app\dist` フォルダに、次の 2 つができています。好きな方を使ってください。
+The `app\dist` folder now contains two things. Use whichever you like.
 
-- **インストールして使う**: `MotoRecoMovie Setup 0.1.0.exe` を開くと、インストーラーが始まります。終わるとデスクトップとスタートメニューに「MotoRecoMovie」ができます
-- **インストールせずに使う**: `win-unpacked` フォルダの中の `MotoRecoMovie.exe` を開きます。フォルダごと好きな場所に移して使えます
+- **Install it**: open `MotoRecoMovie Setup 0.1.0.exe` to start the installer. When it finishes, "MotoRecoMovie" appears on the desktop and in the Start menu
+- **Use it without installing**: open `MotoRecoMovie.exe` in the `win-unpacked` folder. You can move the whole folder anywhere you like
 
-初めて開くときに「Windows によって PC が保護されました」と出ることがあります（このアプリには配布元の証明書が付いていないため）。
-そのときは「詳細情報」を押してから「実行」を押してください。
+The first time you open it, Windows may show "Windows protected your PC" (the app is not signed with a publisher certificate).
+In that case, click "More info" and then "Run anyway".
 
-### 使い始める
+### Getting started
 
-1. 「ファイル › 開く…」で .insv を開きます（X6 / X5 の動画。ファイル名が `_00_` のもの）
-2. 初めて開いた動画は、レンズのつなぎ目の合わせ込みと音の整えを裏で行います（動画の長さによって 1〜3 分）。その間もプレビューや編集はできます
-3. 車両ログがあれば、右のメニューの「車両ログ（MotoReco）」で読み込みます。動画と同じフォルダの CSV は自動で探します
-4. 右のメニューの各項目は、マウスを載せると説明が出ます
+1. Open an .insv file with "File › Open…" (an X6 / X5 video whose file name contains `_00_`)
+2. For a video opened for the first time, the app aligns the lens seam and cleans up the sound in the background (1–3 minutes depending on the length). You can preview and edit in the meantime
+3. If you have a vehicle log, load it from "Vehicle log (MotoReco)" in the right-hand panel. CSV files in the same folder as the video are found automatically
+4. Hover over an item in the right-hand panel to see what it does
 
-### 新しい版にする
+### Updating to a new version
 
-このページからもう一度ダウンロードして（Git の人は `git pull`）、手順 3 をもう一度行います。
-`npm run fetch-assets` は、すでにあるファイルはダウンロードし直しません。
+Download again from this page (or `git pull` if you use Git) and repeat step 3.
+`npm run fetch-assets` does not download files that are already there.
 
-## 開発する人へ
+## For developers
 
-`app` フォルダで `npm run dev` を実行すると、開発用に起動します（ソースを変えると画面が更新されます）。テストは `app/test` にあります。
+Run `npm run dev` in the `app` folder to start the app in development mode (the window updates when you change the source). Tests are in `app/test`.
 
-| フォルダ | 中身 |
+| Folder | Contents |
 |---|---|
-| `app/` | アプリ（`src/main` Electron の本体、`src/preload`、`src/renderer` 画面と処理）、`test/`、`tools/` |
-| `docs/` | 仕組みと調べた結果。.insv の中身は [insv-x6-format.md](docs/insv-x6-format.md)、MotoReco のログは [telemetry.md](docs/telemetry.md)・[motoreco-dat.md](docs/motoreco-dat.md)・[motoreco-lean.md](docs/motoreco-lean.md) |
-| `proto/` | Python の試作（.insv の読み込み・レンズ・同期・リーン角の融合） |
+| `app/` | The app (`src/main` Electron main process, `src/preload`, `src/renderer` UI and processing), `test/`, `tools/` |
+| `docs/` | How things work and research notes. The .insv contents are in [insv-x6-format.md](docs/insv-x6-format.md); MotoReco logs in [telemetry.md](docs/telemetry.md), [motoreco-dat.md](docs/motoreco-dat.md) and [motoreco-lean.md](docs/motoreco-lean.md) |
+| `proto/` | Python prototypes (.insv reading, lens model, sync, lean angle fusion) |
 
-## ライセンス
+UI strings are written in English in the source and wrapped in `t('…')`; the Japanese translations are in `app/src/renderer/src/i18n/ja-*.ts`. `test/i18n.test.ts` checks for missing translations.
 
-このアプリのソースコードは MIT License（[LICENSE](LICENSE)）です。
+## License
 
-ほかの人が作ったソフトウェアとデータ（ffmpeg、AI のモデル、npm のパッケージ、Electron など）のライセンスは、
-アプリのメニューの「ヘルプ › ライセンス情報…」（`THIRD-PARTY-NOTICES.txt`。`npm run notices` で作り、配布物ではアプリと同じフォルダに置く）にまとめています。
-AI のモデルの学習データには研究・非商用が条件のものが含まれるので、このアプリは無償・非商用で使ってください。
+The source code of this app is under the MIT License ([LICENSE](LICENSE)).
+
+Licenses of software and data made by others (ffmpeg, AI models, npm packages, Electron, etc.) are collected in
+"Help › License information…" in the app's menu (`THIRD-PARTY-NOTICES.txt`, generated by `npm run notices` and placed next to the app in the distribution).
+Some of the AI models were trained on data licensed for research / non-commercial use only, so please use this app free of charge and non-commercially.

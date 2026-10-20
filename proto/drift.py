@@ -1,4 +1,4 @@
-"""区間ごとのラグを推定して、カメラとバイクログの時計のずれ（ドリフト）を確認する。"""
+"""Estimate the lag for each segment to check the clock offset (drift) between the camera and the bike log."""
 import sys
 import numpy as np, pandas as pd
 from insv import Insv
@@ -9,7 +9,7 @@ df = pd.read_csv(sys.argv[2], skiprows=1); df.columns=[c.strip() for c in df.col
 tc = df["time (ms)"].to_numpy()/1000; grid = np.arange(0, tc[-1], 0.01)
 yaw = np.interp(grid, tc, df["YawRate"].to_numpy().astype(float))
 roll = np.interp(grid, tc, df["RollRate"].to_numpy().astype(float))
-up = np.array([-0.972, 0.193, -0.141])  # 重力方向 ≒ ヨー軸
+up = np.array([-0.972, 0.193, -0.141])  # gravity direction ≈ yaw axis
 gy = g100 @ up
 for w0 in range(0, int(grid[-1])-120, 120):
     seg = slice(w0*100, (w0+120)*100)

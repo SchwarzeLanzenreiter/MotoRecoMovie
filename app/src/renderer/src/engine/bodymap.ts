@@ -1,6 +1,6 @@
-// 自車の継ぎ目の型を、動画の区間ごとに作る（core/bodymap.ts）。
-// キーフレームを専用のデコーダーで読み、両レンズの帯の画像を GPU で作って、AI の処理は bodymap.worker.ts に任せる。
-// 作った型は動画の横の .motorecomovie-body.bin に保存し、次に開いたときはそれを読む
+// Builds the own-bike seam template per video section (core/bodymap.ts).
+// Reads keyframes with a dedicated decoder, builds the band images of both lenses on the GPU, and leaves the AI processing to bodymap.worker.ts.
+// The built template is saved next to the video as .motorecomovie-body.bin and read back the next time it is opened
 import { BAND_STEP, BAND_W, decodeBodyTrack, encodeBodyTrack, type BodyTrack } from '../core/bodymap'
 import { TrackDecoder } from './decoder'
 import { GlReframer } from '../render/gl-reframe'
@@ -8,18 +8,18 @@ import type { Session } from './session'
 import type { BodyInitRequest, BodyWindowRequest, BodyWindowResult, InpaintKind } from './bodymap.worker'
 import { t } from '../i18n'
 
-/** 区間の長さ [s]。カメラの台がゆっくり回る動画（1 分に 1〜3°）でも、区間の中では止まっているとみなせる長さ */
+/** Section length [s]. Long enough to be treated as stationary within a section even for videos where the camera mount rotates slowly (1 to 3 degrees per minute) */
 export const BODY_WINDOW_SEC = 30
 
 export const bodyPathFor = (insv: string): string => insv + '.motorecomovie-body.bin'
 
-/** 型が今の動画・レンズの補正（継ぎ目の合わせ込み）のものかを確かめる鍵 */
+/** Key that checks whether a template belongs to the current video and lens correction (seam fitting) */
 export function bodyKey(session: Session): string {
   const L = session.rig[1]
   return [session.file.size, session.frameCount, BAND_W, BAND_STEP, Array.from(L.camFromRig, (v) => v.toFixed(5)).join(','), (L.edge ?? 0).toFixed(5)].join('|')
 }
 
-/** モデルのファイルを読む（アプリとして開いたとき = file: はファイルとして、開発用のサーバーからは fetch で） */
+/** Load the model file (as an app: file: is read as a file; from the dev server, by fetch) */
 async function loadModel(name: string): Promise<Uint8Array> {
   const url = new URL(`./models/${name}`, document.baseURI)
   if (url.protocol === 'file:') {
@@ -58,7 +58,7 @@ function call<T>(req: BodyInitRequest | BodyWindowRequest | { kind: 'reset' }, t
   })
 }
 
-/** AI のモデルを読み込む（1 回だけ。補完のモデルを変えたら読み直す） */
+/** Load the AI model (only once. Reload if the inpainting model changes) */
 function init(kind: InpaintKind): Promise<string> {
   if (initDone && initKind === kind) return initDone
   initKind = kind
@@ -73,19 +73,19 @@ function init(kind: InpaintKind): Promise<string> {
 }
 
 export interface BodyBuildOptions {
-  /** 作る範囲 [s]（省略で動画全体） */
+  /** Range to build [s] (the whole video if omitted) */
   from?: number
   to?: number
   windowSec?: number
   inpaint?: InpaintKind
-  /** 確認用: この矩形（帯の画素）の自車の部分を穴にする */
+  /** For verification: make the own-bike part inside this rectangle (band pixels) a hole */
   forceHole?: number[] | null
-  /** 中止の合図 */
+  /** Cancel signal */
   signal?: { aborted: boolean }
 }
 
 /**
- * 区間ごとに自車の継ぎ目の型を作る。onProgress は 0〜1 の進み具合と表示の文
+ * Builds the own-bike seam template per section. onProgress receives progress 0 to 1 and a message
  */
 export async function buildBodyTrack(session: Session, opts: BodyBuildOptions = {}, onProgress?: (frac: number, msg: string) => void): Promise<BodyTrack> {
   const provider = await init(opts.inpaint ?? 'lama')
@@ -102,11 +102,11 @@ export async function buildBodyTrack(session: Session, opts: BodyBuildOptions = 
   const n = Math.max(1, Math.ceil((to - from) / win))
   try {
     for (let k = 0; k < n; k++) {
-      if (opts.signal?.aborted) throw new Error(t('中止しました'))
+      if (opts.signal?.aborted) throw new Error(t('Cancelled'))
       const t0 = from + k * win
       const t1 = Math.min(to, t0 + win)
-      onProgress?.(k / n, t('自車の継ぎ目を作っています（{k}/{n}、AI: {p}）', { k: k + 1, n, p: provider === 'webgpu' ? 'GPU' : 'CPU' }))
-      // 区間のキーフレーム（多すぎれば間引く）
+      onProgress?.(k / n, t('Building the body seam map ({k}/{n}, AI: {p})', { k: k + 1, n, p: provider === 'webgpu' ? 'GPU' : 'CPU' }))
+      // Keyframes of the section (thinned if too many)
       const i0 = Math.max(0, Math.floor(t0 * session.fps))
       const i1 = Math.min(session.frameCount, Math.ceil(t1 * session.fps))
       let keys: number[] = []
@@ -136,7 +136,7 @@ export async function buildBodyTrack(session: Session, opts: BodyBuildOptions = 
         }
       }
       out.windows.push({ t0, t1, map: idx })
-      console.log(`自車の継ぎ目 ${t0.toFixed(0)}〜${t1.toFixed(0)} 秒: キーフレーム ${keys.length} 枚、${r.reused ? '前の区間と同じ' : r.map ? `型 ${r.map.w} 列` : '自車の部分なし'}、穴 ${r.holes} 画素`, JSON.stringify(r.ms))
+      console.log(`Own-bike seam ${t0.toFixed(0)} to ${t1.toFixed(0)} s: ${keys.length} keyframes, ${r.reused ? 'same as the previous section' : r.map ? `template ${r.map.w} columns` : 'no own-bike part'}, holes ${r.holes} pixels`, JSON.stringify(r.ms))
     }
   } finally {
     for (const d of decs) d.close()
@@ -145,7 +145,7 @@ export async function buildBodyTrack(session: Session, opts: BodyBuildOptions = 
   return out
 }
 
-/** 保存した型を読む（無い・古い・ほかの動画のものなら null） */
+/** Load a saved template (null if missing, outdated, or from another video) */
 export async function loadBodyTrack(session: Session): Promise<BodyTrack | null> {
   const p = bodyPathFor(session.path)
   if (!(await window.api.exists(p))) return null
@@ -160,12 +160,12 @@ export async function loadBodyTrack(session: Session): Promise<BodyTrack | null>
     const raw = new Uint8Array(await new Response(new Blob([gz as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer())
     return decodeBodyTrack(raw, bodyKey(session))
   } catch (e) {
-    console.warn('自車の継ぎ目の型を読めない', e)
+    console.warn('Cannot read the own-bike seam template', e)
     return null
   }
 }
 
-/** 型を動画の横に保存する（gzip） */
+/** Save the template next to the video (gzip) */
 export async function saveBodyTrack(session: Session, track: BodyTrack): Promise<void> {
   const raw = encodeBodyTrack(track, bodyKey(session))
   const gz = new Uint8Array(await new Response(new Blob([raw as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer())

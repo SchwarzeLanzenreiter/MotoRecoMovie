@@ -1,5 +1,5 @@
-// 重い解析を UI と別のスレッドで行う Web Worker。
-// 車両ログの読み込み → 映像との同期 → リーン角の融合 → GPS の遅れ推定 → 統一テレメトリー
+// Web Worker that does the heavy analysis on a thread separate from the UI.
+// Load the vehicle log -> sync with the video -> fuse the lean angle -> estimate the GPS delay -> unified telemetry
 import { disturbTrack } from '../core/disturb'
 import type { Imu } from '../core/insv'
 import { bikeLogFromColumns, cameraRollRate, cameraYawRate, fuseLean, logMatchScore, parseMotoReco, syncLog, type LeanTrack, type SyncResult } from '../core/motoreco'
@@ -14,7 +14,7 @@ import type { LensModel } from '../core/lens'
 import { fitSeam, type SeamFrame } from '../core/seamfit'
 
 export interface AnalyzeLogRequest {
-  /** MotoRecoViewer の CSV、または MotoReco の .dat とその変換規則（.ddf） */
+  /** A MotoRecoViewer CSV, or a MotoReco .dat with its conversion rules (.ddf) */
   csvText?: string
   dat?: { buf: Uint8Array; ddfText: string }
   imu: Imu
@@ -29,13 +29,13 @@ export interface AnalyzeLogResult {
   telemetry: Telemetry
   gpsDelay: { delay: number; corr: number }
   timingMs: Record<string, number>
-  /** .ddf にあったが変換できなかった組み込みの規則 */
+  /** Built-in rules that were in the .ddf but could not be converted */
   unsupported: string[]
-  /** ログで詰めた取り付け姿勢（core/mount.ts の refineMountWithLog） */
+  /** Mount orientation refined with the log (refineMountWithLog in core/mount.ts) */
   mount: MountTrack
 }
 
-/** 車両ログが無いときの、動画の IMU からの推定（core/imu-telemetry.ts） */
+/** Estimate from the video IMU when there is no vehicle log (core/imu-telemetry.ts) */
 export interface ImuTelemetryRequest {
   imu: Imu
   mount: MountTrack
@@ -43,7 +43,7 @@ export interface ImuTelemetryRequest {
   durationSec: number
 }
 
-/** .dat が映像と同じ走行のものかの目安（フォルダから自動で選ぶとき） */
+/** A measure of whether the .dat is from the same ride as the video (when choosing automatically from a folder) */
 export interface ScoreDatRequest {
   buf: Uint8Array
   ddfText: string | null
@@ -65,12 +65,12 @@ self.onmessage = (e: MessageEvent<Msg>) => {
   const { id } = e.data
   try {
     if (e.data.type === 'seamFit') {
-      // レンズの継ぎ目の合わせ込み（数秒かかる計算なので UI と別のスレッドで）
+      // Lens seam fitting (a calculation that takes several seconds, so it runs on a thread separate from the UI)
       self.postMessage({ id, result: fitSeam(e.data.req.rig, e.data.req.frames) })
       return
     }
     if (e.data.type === 'imuTelemetry') {
-      // 車両ログが無いとき: 動画の IMU からリーン角・車速・前後 G・走った道の形を推定し、走行状態とコーナーを求める
+      // With no vehicle log: estimate the lean angle, vehicle speed, front/rear G and the shape of the road traveled from the video IMU, and derive the riding state and corners
       const r = e.data.req
       const result: ImuTelemetry = buildImuTelemetry(r.imu, r.mount, r.firstFrameUs, r.durationSec)
       const tel = result.telemetry
@@ -96,7 +96,7 @@ self.onmessage = (e: MessageEvent<Msg>) => {
         t = now
       }
       const progress = (msg: string): void => self.postMessage({ id, progress: msg })
-      progress('ログを読み込んでいます')
+      progress('Loading log')
       let unsupported: string[] = []
       let log
       if (req.dat) {
@@ -105,18 +105,18 @@ self.onmessage = (e: MessageEvent<Msg>) => {
         log = bikeLogFromColumns(table.t, table.columns)
       } else log = parseMotoReco(req.csvText ?? '')
       lap('parse')
-      progress('映像とログを同期しています')
+      progress('Syncing video and log')
       let cam = cameraRollRate(req.imu, req.mount, req.firstFrameUs)
       const sync = syncLog(log, cam)
       lap('sync')
-      // 同期が取れたら、ログ（直立して走っている間の加速度・車体のロール角速度）で取り付け姿勢を詰め、カメラのロール角速度を求め直す
+      // Once synced, refine the mount orientation with the log (acceleration while riding upright, body roll rate) and recompute the camera roll rate
       const mount = log.rollRate.some(Number.isFinite) ? refineMountWithLog(req.mount, req.imu, log, sync, req.firstFrameUs) : req.mount
       cam = cameraRollRate(req.imu, mount, req.firstFrameUs)
       lap('mount')
-      progress('リーン角を推定しています')
+      progress('Estimating lean angle')
       const lean = fuseLean(log, cam, sync)
       lap('lean')
-      progress('テレメトリーを整えています')
+      progress('Preparing telemetry')
       const yaw = cameraYawRate(req.imu, mount, req.firstFrameUs)
       const gpsDelay = estimateGpsDelay(buildTelemetry(log, sync, lean, req.durationSec, 0), yaw)
       const telemetry = buildTelemetry(log, sync, lean, req.durationSec, gpsDelay.delay)
@@ -131,7 +131,7 @@ self.onmessage = (e: MessageEvent<Msg>) => {
       telemetry.disturb = disturbTrack(telemetry) ?? undefined
       lap('disturb')
       const result: AnalyzeLogResult = { sync, lean, telemetry, gpsDelay, timingMs: timing, unsupported, mount }
-      // 大きな配列は所有権ごと渡してコピーを避ける
+      // Transfer large arrays by ownership to avoid copies
       const transfer: Transferable[] = [lean.t.buffer, lean.lean.buffer, lean.sd.buffer]
       for (const v of Object.values(telemetry.channels)) if (v) transfer.push(v.buffer)
       if (telemetry.disturb) transfer.push(telemetry.disturb.score.buffer, telemetry.disturb.cause.buffer)

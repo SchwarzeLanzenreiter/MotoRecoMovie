@@ -1,9 +1,9 @@
-// 取り付け姿勢（core/mount.ts）を、車両ログから求めた正解と 1 分ごとに比べる（実データ）。
-//   正解の上 = 走っていて（20km/h 以上）リーンしていない間の加速度の平均
-//   正解の前 = 上に垂直な面で、カメラのジャイロのうち車体のロール角速度（ログ）に最も合う向き
-// IMU だけの推定（estimateMountTrack）と、ログで詰めたもの（REFINE=1 で refineMountWithLog）を確かめる。
-// 実行: npx tsx test/mount-log.test.ts <insv> <.dat> <.ddf>
-//   例: VID_20261011_092151_00_002.insv（走行中にカメラの向きが 80° 近く変わる）↔ 20261011_094441.dat
+// Compares the mount orientation (core/mount.ts) every minute against the ground truth derived from the vehicle log (real data).
+//   Truth up = mean acceleration while riding (20 km/h or more) and not leaning
+//   Truth forward = within the plane perpendicular to up, the direction of the camera gyro that best matches the vehicle roll rate (log)
+// Checks the IMU-only estimate (estimateMountTrack) and the log-refined one (refineMountWithLog with REFINE=1).
+// Run: npx tsx test/mount-log.test.ts <insv> <.dat> <.ddf>
+//   e.g. VID_20261011_092151_00_002.insv (the camera direction changes by nearly 80° while riding) <-> 20261011_094441.dat
 import assert from 'node:assert/strict'
 import { open, readFile } from 'node:fs/promises'
 import { InsvTrailer } from '../src/renderer/src/core/insv'
@@ -20,12 +20,12 @@ const imu = await tr.imu()
 const whole = estimateMount(imu)
 const t0 = performance.now()
 let track = estimateMountTrack(imu)
-console.log(`取り付け姿勢の時間変化: ${(performance.now() - t0).toFixed(0)}ms ${track.fixed ? '1 つの姿勢' : '時間で変わる'} 最大の変化 ${track.maxDeg.toFixed(1)}° 前後の決め方 ${track.by}`)
+console.log(`mount orientation over time: ${(performance.now() - t0).toFixed(0)}ms ${track.fixed ? 'a single orientation' : 'varies over time'} max change ${track.maxDeg.toFixed(1)}° forward determined by ${track.by}`)
 const tb = decodeDat(new Uint8Array(await readFile(logPath)), parseDdf(await readFile(ddf, 'utf-8')))
 const log = bikeLogFromColumns(tb.t, tb.columns)
 const sync = syncLog(log, cameraRollRate(imu, whole.R, tr.meta.firstFrameUs))
-console.log(`同期のピーク比 ${sync.peakRatio.toFixed(2)}`)
-if (process.env.REFINE) { const t1 = performance.now(); track = refineMountWithLog(track, imu, log, sync, tr.meta.firstFrameUs); console.log(`ログで詰めた: ${(performance.now() - t1).toFixed(0)}ms ${track.fixed ? '1 つ' : '時刻ごと'} 変化 ${track.maxDeg.toFixed(1)}°`) }
+console.log(`sync peak ratio ${sync.peakRatio.toFixed(2)}`)
+if (process.env.REFINE) { const t1 = performance.now(); track = refineMountWithLog(track, imu, log, sync, tr.meta.firstFrameUs); console.log(`refined with log: ${(performance.now() - t1).toFixed(0)}ms ${track.fixed ? 'single' : 'per time'} change ${track.maxDeg.toFixed(1)}°`) }
 const col = (k: string): Float64Array => tb.columns.get(k)!
 const LG = [col('X_Axis_G'), col('Y_Axis_G'), col('Z_Axis_G')]
 const RR = col('RollRate')
@@ -44,7 +44,7 @@ const logAt = (arr: Float64Array, tv: number): number => {
 const dot = (a: number[], b: number[]): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const unit = (a: number[]): number[] => { const k = Math.hypot(a[0], a[1], a[2]); return a.map((v) => v / k) }
 const deg = (r: number): number => (r * 180) / Math.PI
-// 10Hz のカメラの加速度・ジャイロ（リグ座標）
+// Camera acceleration and gyro at 10Hz (rig coordinates)
 const n = imu.ts.length
 const B = Math.round(((n - 1) / ((imu.ts[n - 1] - imu.ts[0]) / 1e6)) / 10)
 const m = Math.floor(n / B)
@@ -56,7 +56,7 @@ for (let b = 0; b < m; b++) {
   for (let i = b * B; i < (b + 1) * B; i++) { const x = rig(imu.acc, i), y = rig(imu.gyro, i); for (let r = 0; r < 3; r++) { a[r] += x[r] / B; g[r] += y[r] / B }; t += imu.ts[i] / B }
   S.ts[b] = t; S.acc.push(a); S.gyr.push(g)
 }
-// 正解（1 分ごと）: 上 = 直立して走っている間の加速度の平均。前 = 上に垂直な面で、カメラのジャイロのうちログのロール角速度に最も合う向き
+// Truth (every minute): up = mean acceleration while riding upright. forward = within the plane perpendicular to up, the direction of the camera gyro that best matches the log roll rate
 const lines: string[] = []
 let sumUp = 0, sumF = 0, cnt = 0
 for (let w0 = 0; w0 + 600 <= m; w0 += 600) {
@@ -69,7 +69,7 @@ for (let w0 = 0; w0 + 600 <= m; w0 += 600) {
   }
   if (cu < 100) continue
   const up = unit(su)
-  // ロール角速度との回帰で前方（上に垂直な成分）
+  // Forward (the component perpendicular to up) from regression against the roll rate
   const c = [0, 0, 0]
   for (let b = w0; b < w0 + 600; b++) {
     const tv = (S.ts[b] - tr.meta.firstFrameUs) / 1e6
@@ -78,19 +78,19 @@ for (let w0 = 0; w0 + 600 <= m; w0 += 600) {
     for (let k = 0; k < 3; k++) c[k] += S.gyr[b][k] * r
   }
   const kk = dot(c, up)
-  const fT = unit(c.map((v, k) => -(v - kk * up[k]))) // ログのロール角速度は右へ倒れるのが負
+  const fT = unit(c.map((v, k) => -(v - kk * up[k]))) // in the log, the roll rate is negative when leaning right
   const tc = S.ts[w0 + 300]
   const fE = mountFwdAt(track, tc), uE = mountUpAt(track, tc)
   const eUp = deg(Math.acos(Math.min(1, dot(up, uE))))
   const eF = deg(Math.acos(Math.max(-1, Math.min(1, dot(fT, fE)))))
   sumUp += eUp; sumF += eF; cnt++
-  lines.push(`${((tc - tr.meta.firstFrameUs) / 6e7).toFixed(0)}分: 上のずれ ${eUp.toFixed(1)}°  前のずれ ${eF.toFixed(1)}°  （全体で 1 つの推定なら 上 ${deg(Math.acos(Math.min(1, dot(up, [-whole.R[1], -whole.R[4], -whole.R[7]])))).toFixed(1)}° 前 ${deg(Math.acos(Math.max(-1, Math.min(1, dot(fT, [whole.R[2], whole.R[5], whole.R[8]]))))).toFixed(1)}°）`)
+  lines.push(`${((tc - tr.meta.firstFrameUs) / 6e7).toFixed(0)}min: up error ${eUp.toFixed(1)}°  forward error ${eF.toFixed(1)}°  (if estimated as one for the whole ride: up ${deg(Math.acos(Math.min(1, dot(up, [-whole.R[1], -whole.R[4], -whole.R[7]])))).toFixed(1)}° forward ${deg(Math.acos(Math.max(-1, Math.min(1, dot(fT, [whole.R[2], whole.R[5], whole.R[8]]))))).toFixed(1)}°)`)
 }
 console.log(lines.join('\n'))
-console.log(`平均: 上のずれ ${(sumUp / cnt).toFixed(1)}°  前のずれ ${(sumF / cnt).toFixed(1)}°`)
-// 正解の側にも 2〜4° のばらつきがある
-assert.ok(sync.peakRatio > 2, 'ログと映像の同期が取れていない（別の走行のログ）')
-assert.ok(sumUp / cnt < 3, '上のずれが大きい')
-assert.ok(sumF / cnt < (process.env.REFINE ? 6 : 8), '前のずれが大きい')
+console.log(`mean: up error ${(sumUp / cnt).toFixed(1)}°  forward error ${(sumF / cnt).toFixed(1)}°`)
+// The truth itself also has 2-4° of scatter
+assert.ok(sync.peakRatio > 2, 'the log and the video are not in sync (log from a different ride)')
+assert.ok(sumUp / cnt < 3, 'up error is large')
+assert.ok(sumF / cnt < (process.env.REFINE ? 6 : 8), 'forward error is large')
 console.log('mount-log.test: OK')
 await fh.close()

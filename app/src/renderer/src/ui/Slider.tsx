@@ -1,4 +1,4 @@
-/** 名前・スライダー・数値入力・単位の 1 行 */
+/** One row: name, slider, number input, unit */
 export function Slider(props: { name: string; value: number; min: number; max: number; step: number; unit?: string; disabled?: boolean; onChange: (v: number) => void }): React.JSX.Element {
   const { name, value, min, max, step, unit, disabled, onChange } = props
   return (

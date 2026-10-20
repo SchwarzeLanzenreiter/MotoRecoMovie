@@ -1,99 +1,99 @@
-# 統一テレメトリー
+# Unified telemetry
 
-実装: `app/src/renderer/src/core/telemetry.ts`（解析は `engine/analysis.worker.ts` の Web Worker で行う）
+Implementation: `app/src/renderer/src/core/telemetry.ts` (the analysis runs in the Web Worker in `engine/analysis.worker.ts`)
 
-車両ログ（MotoReco "TO Custom v1"）の列と、ジャイロと融合したリーン角を、**動画の時刻にそろえた 100Hz の等間隔チャンネル**にまとめる。メーター表示（重ね表示レイヤー）と、走行状態の判定（画角の自動切り替え）の両方がこれを使う。
+The vehicle log columns (MotoReco "TO Custom v1") and the lean angle fused with the gyro are combined into **evenly spaced 100 Hz channels aligned to video time**. Both the gauges (overlay layers) and riding state detection (auto camera) use them.
 
-## チャンネル
+## Channels
 
-| キー | 内容 | 元の列 | 元の更新 | 処理 |
+| Key | Content | Source column | Source update rate | Processing |
 |---|---|---|---|---|
-| speed | 速度 km/h | **FrSpeed1**（前輪速） | 10ms | 9点メディアンでスパイク（最大 469 km/h など）を除く。`Speed` 列は 1 秒更新で遅れるので使わない（前輪速との比は 1.00） |
-| rpm | エンジン回転数 | RPM | 20ms | |
-| gear | ギア（0 = N） | Gear | 変化時 | 段階値。補間しない |
-| lean | リーン角（実際の角度） | 融合済み | 100Hz | [motoreco-lean.md](motoreco-lean.md) |
-| airTemp | 外気温 ℃ | AirTemp | 数十秒〜 | 0.75℃刻み |
-| accelG | 前後加速度 G | **前輪速の変化率** | | 速度を σ=0.15秒で平滑化して微分し、σ=0.1秒で平滑化。ログの X_Axis_G は坂の重力成分を含み（残差と勾配の回帰 0.94）、−0.45G で頭打ちになる（強いブレーキ中の平均 −0.455）ので使わない |
-| latG | 横加速度 G | Y_Axis_G | 10ms | 先頭の無効値（−3.7 付近）を除き、σ=50ms で平滑化 |
-| throttle | スロットル % | ThrottelPosition | 10ms | |
-| brakeFront / brakeRear | ブレーキ圧 bar | max(FrBrakeUp, FrBrakeDown) / RrBrake1 | 20ms | |
-| lat / lon | 緯度・経度 | lat (deg) / lon (deg) | **1秒** | 平面座標へ変換し、3次エルミート補間 |
-| heading | 方位（北 = 0°, 東 = 90°） | GPS の軌跡 | | 前後 0.5 秒の差から。止まっているときは直前の値を保つ |
-| alt | 標高 m | alt (m) | 1秒 | 補間後、σ=1秒で平滑化 |
-| grade | 勾配 % | alt と走行距離 | | 前後 3 秒の標高差 ÷ 距離（20m 未満なら 0） |
-| distance | 走行距離 km | GPS の軌跡 | | |
-| gpsX / gpsY | 平面座標 m（東 / 北、原点 = 最初の測位点） | GPS の軌跡 | | 地図の描画用。緯度経度を Float32 で持つと約 0.4m 刻みになるため |
+| speed | Speed km/h | **FrSpeed1** (front wheel speed) | 10 ms | 9-point median removes spikes (up to 469 km/h and so on). The `Speed` column updates once a second and lags, so it is not used (ratio to front wheel speed 1.00) |
+| rpm | Engine rpm | RPM | 20 ms | |
+| gear | Gear (0 = N) | Gear | on change | Stepped value; not interpolated |
+| lean | Lean angle (actual angle) | fused | 100 Hz | [motoreco-lean.md](motoreco-lean.md) |
+| airTemp | Air temperature °C | AirTemp | tens of seconds or more | 0.75 °C steps |
+| accelG | Longitudinal acceleration G | **rate of change of front wheel speed** | | Speed smoothed with σ = 0.15 s, differentiated, then smoothed with σ = 0.1 s. The log's X_Axis_G includes the gravity component on slopes (regression of residual on grade 0.94) and saturates at −0.45 G (mean −0.455 during hard braking), so it is not used |
+| latG | Lateral acceleration G | Y_Axis_G | 10 ms | Invalid values at the start (around −3.7) removed, smoothed with σ = 50 ms |
+| throttle | Throttle % | ThrottelPosition | 10 ms | |
+| brakeFront / brakeRear | Brake pressure bar | max(FrBrakeUp, FrBrakeDown) / RrBrake1 | 20 ms | |
+| lat / lon | Latitude, longitude | lat (deg) / lon (deg) | **1 s** | Converted to plane coordinates, cubic Hermite interpolation |
+| heading | Heading (north = 0°, east = 90°) | GPS track | | From the difference over ±0.5 s. Holds the previous value while stopped |
+| alt | Elevation m | alt (m) | 1 s | Smoothed with σ = 1 s after interpolation |
+| grade | Grade % | alt and distance | | Elevation difference over ±3 s ÷ distance (0 if under 20 m) |
+| distance | Distance ridden km | GPS track | | |
+| gpsX / gpsY | Plane coordinates m (east / north, origin = first fix) | GPS track | | For drawing the map. Storing latitude and longitude as Float32 would give steps of about 0.4 m |
 
-地図の描画用に、1 秒ごとの軌跡（東・北の m）とその範囲も持つ。
+For drawing the map, the track at 1 s intervals (east and north in m) and its extent are also kept.
 
-ログが存在しない時間帯（録画がログより先に始まった部分など）と、ログの起動直後 0.5 秒（不正な値が入る。例: 前輪速 469 km/h）は「データなし」（NaN）として扱い、メーターは表示しない。リーン角だけはジャイロで全区間ある。
+Times with no log (for example where the recording started before the log) and the first 0.5 s after the logger starts (it writes bad values, e.g. a front wheel speed of 469 km/h) are treated as "no data" (NaN), and the gauges are not shown there. Only the lean angle covers the whole video, thanks to the gyro.
 
-## 走行状態（`core/riding.ts`）
+## Riding state (`core/riding.ts`)
 
-メーターの見た目の切り替えと、画角の自動切り替えに使う。
+Used to switch the look of the gauges and by auto camera.
 
-| 状態 | 入る条件 | 出る条件 |
+| State | Enter when | Leave when |
 |---|---|---|
-| 停止 | 速度 < 3 km/h | 速度 > 6 km/h |
-| 減速 | ブレーキ圧 > 4 bar、または前後G < −0.18 | ブレーキ圧 < 1.5 bar かつ 前後G > −0.08 |
-| コーナリング | リーン角 > 15° | リーン角 < 10° |
-| 加速 | 前後G > +0.08 かつ スロットル > 25% | 前後G < +0.03 または スロットル < 15% |
-| 巡航 | 上のどれでもない | |
+| Stopped | speed < 3 km/h | speed > 6 km/h |
+| Braking | brake pressure > 4 bar, or longitudinal G < −0.18 | brake pressure < 1.5 bar and longitudinal G > −0.08 |
+| Cornering | lean angle > 15° | lean angle < 10° |
+| Accelerating | longitudinal G > +0.08 and throttle > 25% | longitudinal G < +0.03 or throttle < 15% |
+| Cruise | none of the above | |
 
-- **優先順位**：停止 ＞ 減速 ＞ コーナリング ＞ 加速 ＞ 巡航（コーナー手前のブレーキは減速を優先する）
-- **ちらつき対策**：0.6 秒より短い区間は、前の状態に吸収させる
-- **重み**：状態ごとに0〜1の重みを持ち、切り替わりから 0.4 秒かけて一定の速さで入れ替わる。メーターの配置はこの重みで補間する
-- **コーナーごとの最大リーン角**：区間中のそこまでの最大値を持つ。メーターの「MAX」表示に使う
+- **Priority**: Stopped > Braking > Cornering > Accelerating > Cruise (braking before a corner takes priority as braking)
+- **Anti-flicker**: stretches shorter than 0.6 s are absorbed into the previous state
+- **Weights**: each state has a weight from 0 to 1, and the weights cross over at a constant rate over 0.4 s from the change. The gauge layout is interpolated with these weights
+- **Max lean per corner**: holds the maximum so far within the stretch. Used for the gauges' "MAX" display
 
-このサンプル（25分）での割合は、巡航 27%・加速 10%・減速 17%・コーナリング 44%・停止 2%で、切り替わりは1分あたり約12回。ブレーキ圧が 4 bar を超えるのは全体の1%程度なので、「減速」の多くはエンジンブレーキによるもの。
+In this sample (25 min) the shares are cruise 27%, accelerating 10%, braking 17%, cornering 44% and stopped 2%, with about 12 changes per minute. Brake pressure exceeds 4 bar only about 1% of the time, so most "braking" is engine braking.
 
-## GPS の遅れ
+## GPS delay
 
-ログに載る GPS は、測位から約 **1 秒**遅れている。GPS の方位の変化率と、カメラのジャイロのヨーレート（車体の上軸まわり）の相関が、補正量 0.95〜1.0 秒で最大（0.93）になることで確認した（`app/test/telemetry.test.ts`）。
+The GPS in the log lags the actual fix by about **1 s**. This was confirmed by the correlation between the rate of change of the GPS heading and the camera gyro's yaw rate (about the bike's up axis), which peaks (0.93) at a correction of 0.95–1.0 s (`app/test/telemetry.test.ts`).
 
-この遅れは機器によって変わる可能性があるので、決め打ちにせず、ログごとに同じ方法で自動推定している（`estimateGpsDelay`）。ログのない区間（NaN）は相関の計算から除く（混ざると推定が常に 0 になる。`telemetry.test.ts` で推定値が 0.85〜1.15 秒に入ることを確認している）。
+The delay may vary between devices, so it is not hard-coded but estimated automatically for each log with the same method (`estimateGpsDelay`). Stretches with no log (NaN) are excluded from the correlation (mixing them in makes the estimate always 0; `telemetry.test.ts` checks that the estimate falls within 0.85–1.15 s).
 
-## 処理時間（25分のログ、Web Worker 内）
+## Processing time (25-min log, inside the Web Worker)
 
-CSV の読み込み 0.35 秒、同期 1.2 秒、リーン角の融合 0.03 秒、テレメトリーの構築（GPS の遅れ推定を含む）0.6〜0.7 秒。UI のスレッドは止まらない。
+CSV loading 0.35 s, sync 1.2 s, lean angle fusion 0.03 s, building the telemetry (including GPS delay estimation) 0.6–0.7 s. The UI thread is never blocked.
 
-## 方位と位置の融合（`core/nav.ts`）
+## Heading and position fusion (`core/nav.ts`)
 
-空中の標識を地図上の地点に固定して描くために、GPS（1Hz・約1秒遅れ）より滑らかで遅れのない位置と方位を作る。
+To pin floating signs to points on the map, this produces a position and heading that are smoother than GPS (1 Hz, about 1 s late) and have no lag.
 
-- **方位**：ジャイロのヨーレートを積分した方位を、GPSの方位で低い周波数だけ補正する。ヨーレートは車体の上軸まわりの値なので、リーン中は cos(リーン角) で割って鉛直軸まわりに直す。補正は σ=3秒の前後対称の平滑化
-- **位置**：前輪速と上の方位で積み上げた位置（推測航法）を、GPSの位置で同じく補正する
-- **結果**（このサンプル）：GPSとの差は位置 RMS 2.4m・方位 RMS 2.0°。位置の細かいぶれ（2階差分）はGPSの約1/12
+- **Heading**: the heading from integrating the gyro yaw rate is corrected by the GPS heading at low frequencies only. The yaw rate is about the bike's up axis, so while leaned over it is divided by cos(lean angle) to get the rate about the vertical axis. The correction is a forward-backward symmetric smoothing with σ = 3 s
+- **Position**: the position accumulated from front wheel speed and the heading above (dead reckoning) is corrected by the GPS position in the same way
+- **Result** (this sample): difference from GPS is 2.4 m RMS in position and 2.0° RMS in heading. Fine jitter in position (second difference) is about 1/12 of GPS
 
-## コーナーと曲線半径（`core/corners.ts`）
+## Corners and curve radius (`core/corners.ts`)
 
-- **コーナー**：走行状態のコーナリング区間（リーン角 > 15°）
-- **曲線半径**：R = 速度 ÷ 鉛直軸まわりの旋回角速度。旋回がいちばん強い部分（最大の8割以上）の中央値を5m単位に丸める。旋回角速度はスティックの振動（±20°/s 程度）を含むので σ=0.3秒で平滑化してから使う（平滑化しないと振動の山を拾い、半径が約1/5になる）
-- **検証**：GPSの軌跡の曲率からの半径との比の中央値は 1.00。R = v²/(g·tan L) との比は 1.16（ライダーの体の入れ方の分だけ、車体のリーン角が実際の旋回とずれると考えられる）
-- **このルートの結果**：110本、半径の中央値 175m、多くは 125〜230m
-- **標識の位置**：進入地点の前後（手前 120m 〜 先 60m）の経路を 2m ごとに持っておき、視点レイヤーの「標識の位置」（入口からの経路に沿った距離。初期値 −25m）の地点に置く（距離は前輪速の積分で測る）
+- **Corner**: a cornering stretch of the riding state (lean angle > 15°)
+- **Curve radius**: R = speed ÷ turn rate about the vertical axis. The median over the part where the turn is strongest (80% of the maximum or more) is rounded to 5 m. The turn rate includes mount vibration (around ±20°/s), so it is smoothed with σ = 0.3 s first (without smoothing it picks up vibration peaks and the radius comes out about 1/5)
+- **Validation**: the median ratio to the radius from the curvature of the GPS track is 1.00. The ratio to R = v²/(g·tan L) is 1.16 (presumably because the rider's body position makes the bike's lean angle differ from the actual turn)
+- **Results on this route**: 110 corners, median radius 175 m, most between 125 and 230 m
+- **Sign position**: the route around the entry point (from 120 m before to 60 m after) is stored every 2 m, and the sign is placed at the point given by the view layer's "Sign position" (distance along the route from the entry; default −25 m) (distance is measured by integrating front wheel speed)
 
-## 標識の投影（`engine/motion-model.ts` の `cameraInMap`）
+## Sign projection (`cameraInMap` in `engine/motion-model.ts`)
 
-標識は、映像を描いたのと同じ仮想カメラの向き（ジャイロの座標での向き）を地図の座標（東・下・北）へ移して投影する。
-ジャイロの座標 → 地図の座標の回転 M は本来ほぼ一定（ジャイロのドリフトでゆっくり変わるだけ）なので、
+Signs are projected by transferring the same virtual camera orientation used to render the video (orientation in gyro coordinates) into map coordinates (east, down, north).
+The rotation M from gyro coordinates to map coordinates is ideally almost constant (it only changes slowly with gyro drift), so
 
-  M(t) = 地図での車体（融合した方位・勾配）· (ジャイロでの車体（リーンを戻したもの）)⁻¹
+  M(t) = bike in the map (fused heading and grade) · (bike in the gyro frame (with the lean removed))⁻¹
 
-を 10Hz で求め、σ=2秒で平滑化して使う。
+is computed at 10 Hz and smoothed with σ = 2 s.
 
-- 以前は「融合した方位・勾配 + 理想の視点」で投影していた。融合した方位はジャイロの細かい振動を含む一方、映像は平滑化した姿勢で描くので、標識だけが細かく震えて見えた（このサンプルで映像に対して 横 1.7〜2.3px・縦 1px の RMS、1920 幅・画角 110°）
-- いまの方法では映像の細かい揺れがそのまま標識にも乗るので、標識は景色に貼り付いて見える。ゆっくりした成分は以前の方法と 0.1° 以内で一致する（`test/signview.test.ts`）
+- Signs used to be projected with "fused heading and grade + ideal view". The fused heading contains fine gyro vibration while the video is rendered with the smoothed attitude, so the signs alone seemed to jitter (in this sample, 1.7–2.3 px horizontal and 1 px vertical RMS relative to the video, at 1920 px width and 110° FOV)
+- With the current method the fine shake in the video carries over to the signs as well, so they look stuck to the scenery. The slow component agrees with the old method to within 0.1° (`test/signview.test.ts`)
 
-## 車体挙動の乱れ（`core/disturb.ts`）
+## Chassis disturbance (`core/disturb.ts`)
 
-車両ログの次の列をそのまま 100Hz のチャンネルにして使う: `SlipRate`（slip）、`FrStroke` / `RrStroke`（frStroke / rrStroke）、`RollRate` / `YawRate`（rollRate / yawRate）、`X_Axis_G` / `Y_Axis_G` / `Z_Axis_G`（xG / latG / zG）。
+The following vehicle log columns are turned directly into 100 Hz channels: `SlipRate` (slip), `FrStroke` / `RrStroke` (frStroke / rrStroke), `RollRate` / `YawRate` (rollRate / yawRate), `X_Axis_G` / `Y_Axis_G` / `Z_Axis_G` (xG / latG / zG).
 
-| 指標 | 計算 | 下限 |
+| Indicator | Computation | Floor |
 |---|---|---|
-| スリップ率 | σ=1 秒の平滑からのずれの絶対値。走行全体の中央値から 6% ずれると下限と同じ扱い（空転・ロック）。25km/h 以上 | 1.5 % |
-| ロール・ヨー角速度 | 1.5〜12Hz の成分の 0.4 秒の実効値 | 3.5 / 2.0 °/s |
-| 前後・横・上下 G | 同上（ログでは強く平滑化されているので補助的） | 0.008 / 0.003 / 0.025 G |
-| サスのストローク | 15Hz で平滑して微分した速さの 0.3 秒の実効値 | 前 350 / 後 450 mm/s |
+| Slip ratio | Absolute deviation from a σ = 1 s smoothing. A deviation of 6% from the median of the whole ride counts the same as the floor (wheelspin, lock-up). Above 25 km/h | 1.5 % |
+| Roll and yaw rate | 0.4 s RMS of the 1.5–12 Hz component | 3.5 / 2.0 °/s |
+| Longitudinal, lateral and vertical G | Same as above (heavily smoothed in the log, so secondary) | 0.008 / 0.003 / 0.025 G |
+| Suspension stroke | 0.3 s RMS of the velocity, differentiated after smoothing at 15 Hz | front 350 / rear 450 mm/s |
 
-各指標を max(その走行の 99.5 パーセンタイル, 下限) で割り、いちばん大きいものをその時刻の強さとする。このサンプルの結果は Python での解析（proto）と同じ場面がいちばん強い（ログ時刻 1281.8s = 動画 21:28。フロントのストロークが 20mm まで伸び切り、ロール・ヨーの揺れが上位 0.5% の約 3〜4 倍）。
+Each indicator is divided by max(the ride's 99.5th percentile, floor), and the largest becomes the strength at that time. In this sample, the strongest scene is the same as in the Python analysis (proto): log time 1281.8 s = video 21:28, where the front stroke tops out at 20 mm and the roll and yaw shake is about 3–4 times the top 0.5% level.

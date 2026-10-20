@@ -1,4 +1,4 @@
-// 音の処理（core/audiofx.ts の suppressNoise）を画面と別のスレッドで行う
+// Runs the audio processing (suppressNoise in core/audiofx.ts) on a thread separate from the UI
 import { suppressNoise } from '../core/audiofx'
 
 self.onmessage = (e: MessageEvent<{ id: number; x: Float32Array; fs: number; noiseDb: number; margin: number }>) => {

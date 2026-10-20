@@ -1,12 +1,12 @@
-// Insta360 .insv 末尾のトレーラー（メタデータ・IMU・フレーム時刻・レンズキャリブレーション）の読み込み。
-// 構造は docs/insv-x6-format.md を参照。
+// Reads the trailer at the end of an Insta360 .insv (metadata, IMU, frame times, lens calibration).
+// See docs/insv-x6-format.md for the structure.
 import type { FileReader } from './mp4'
 
 const MAGIC = '8db42d694ccc418790edff439fe026bf'
 
 export type Proto = Map<number, (number | Uint8Array)[]>
 
-/** スキーマなしで protobuf を {field番号: [値...]} に展開（入れ子は Uint8Array のまま） */
+/** Expands protobuf into {field number: [values...]} without a schema (nested messages stay as Uint8Array) */
 export function parseProtobuf(b: Uint8Array): Proto {
   const out: Proto = new Map()
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength)
@@ -37,7 +37,7 @@ export function parseProtobuf(b: Uint8Array): Proto {
       const n = varint()
       v = b.subarray(i, i + n)
       i += n
-    } else throw new Error(`未対応の wire type ${wt}`)
+    } else throw new Error(`Unsupported wire type ${wt}`)
     if (!out.has(fn)) out.set(fn, [])
     out.get(fn)!.push(v)
   }
@@ -51,10 +51,10 @@ export interface LensCalib {
   cx: number
   cy: number
   yprDeg: [number, number, number]
-  /** レンズの位置 [m]（キャリブレーション空間。継ぎ目の視差の補正に使う） */
+  /** Lens position [m] (calibration space; used for seam parallax correction) */
   tM: [number, number, number]
-  d: number[] // RadtanPro の13項
-  width: number // 左右並びの全体幅
+  d: number[] // 13 RadtanPro terms
+  width: number // overall width of the side-by-side layout
   height: number
   lensType: number
 }
@@ -65,14 +65,14 @@ export interface Calibration {
   lenses: LensCalib[]
 }
 
-/** field 111 のキャリブレーション文字列（offset V6）を分解する */
+/** Parses the field 111 calibration string (offset V6) */
 export function parseCalibration(s: string): Calibration {
   const tok = s.split('_')
   const n = parseInt(tok[0])
   const tail = parseInt(tok[tok.length - 1])
   const version = tail >> 16
   const x = (tail >> 8) & 0xff
-  if (version !== 6) throw new Error(`未対応のキャリブレーション形式 V${version}（V6のみ対応）`)
+  if (version !== 6) throw new Error(`Unsupported calibration format V${version} (only V6 is supported)`)
   const per = 27
   const lenses: LensCalib[] = []
   for (let i = 0; i < n; i++) {
@@ -96,7 +96,7 @@ export function parseCalibration(s: string): Calibration {
 
 export interface Imu {
   ts: Float64Array // us
-  acc: Float32Array // g, [x,y,z]×N（IMU座標）
+  acc: Float32Array // g, [x,y,z]×N (IMU coordinates)
   gyro: Float32Array // deg/s
 }
 
@@ -106,9 +106,9 @@ export interface InsvMeta {
   fps: number
   frameCount: number
   firstFrameUs: number
-  readoutMs: number // ローリングシャッターの読み出し時間
-  gyroOffsetMs: number // field 28: フレーム時刻→ジャイロ時間軸の補正
-  streamType: number // 4 = トラックがレンズの逆順
+  readoutMs: number // rolling shutter readout time
+  gyroOffsetMs: number // field 28: correction from frame time to the gyro time axis
+  streamType: number // 4 = tracks are in reverse lens order
   accRangeG: number
   gyroRangeDps: number
   calibration: Calibration
@@ -132,7 +132,7 @@ export class InsvTrailer {
     const f = this.f
     const tail = await f.read(f.size - 72, 72)
     const magic = new TextDecoder().decode(tail.subarray(40))
-    if (magic !== MAGIC) throw new Error('Insta360 のトレーラーが見つかりません（.insv ではない可能性があります）')
+    if (magic !== MAGIC) throw new Error('Insta360 trailer not found (this may not be an .insv file)')
     const dv = new DataView(tail.buffer, tail.byteOffset, tail.byteLength)
     const trailerSize = dv.getUint32(32, true)
     this.trailerStart = f.size - trailerSize
@@ -168,11 +168,11 @@ export class InsvTrailer {
 
   async record(id: number): Promise<Uint8Array> {
     const r = this.records.get(id)
-    if (!r) throw new Error(`レコード 0x${id.toString(16)} がありません`)
+    if (!r) throw new Error(`Record 0x${id.toString(16)} is missing`)
     return await this.f.read(this.trailerStart + r.offset, r.size)
   }
 
-  /** IMU（20B/サンプル: u64 ts_us + u16×6 オフセットバイナリ） */
+  /** IMU (20 B/sample: u64 ts_us + 6 × u16 offset binary) */
   async imu(): Promise<Imu> {
     const raw = await this.record(0x3)
     const n = Math.floor(raw.length / 20)
@@ -193,7 +193,7 @@ export class InsvTrailer {
     return { ts, acc, gyro }
   }
 
-  /** 各フレームの時刻（us、読み出し中央）。lens 0 → 0x4, lens 1 → 0xc */
+  /** Time of each frame (us, readout center). lens 0 → 0x4, lens 1 → 0xc */
   async frameTimes(lens: 0 | 1): Promise<Float64Array> {
     const raw = await this.record(lens === 0 ? 0x4 : 0xc)
     const n = Math.floor(raw.length / 16)
@@ -204,10 +204,10 @@ export class InsvTrailer {
   }
 
   /**
-   * フレームの時刻をジャイロの時間軸で（us）。最初のフレームを firstFrameUs（field 24）に置き、あとはフレームの時刻の記録（0x4 / 0xc）の間隔のまま。
-   * X6 の普通の動画では記録の最初の時刻がそのまま firstFrameUs だが、X5 は記録が 767.5ms（ときに 166.8ms）早く、
-   * 分割された 2 本目以降の動画（_002 など）は X5・X6 とも 7〜18 秒ずれている。記録の時刻のままジャイロを引くと、
-   * その分だけ前の揺れで補正してしまい、スタビライズで手振れがかえってひどくなっていた（docs/insv-x6-format.md）
+   * Frame times on the gyro time axis (us). The first frame is placed at firstFrameUs (field 24), and the rest keep the intervals of the frame time record (0x4 / 0xc).
+   * On a normal X6 video the first recorded time is firstFrameUs as is, but on the X5 the record is 767.5 ms early (sometimes 166.8 ms),
+   * and the second and later videos of a split recording (_002 etc.) are off by 7-18 seconds on both X5 and X6. Looking up the gyro with the recorded times as they are
+   * corrected using shake from earlier by that amount, and stabilization actually made hand shake worse (docs/insv-x6-format.md)
    */
   async gyroFrameTimes(lens: 0 | 1): Promise<Float64Array> {
     const out = await this.frameTimes(lens)

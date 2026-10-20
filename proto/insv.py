@@ -1,6 +1,6 @@
-"""Insta360 X6 .insv のトレーラー（メタデータ・IMU・フレーム時刻）を読むモジュール。
+"""Module that reads the trailer (metadata, IMU, frame timestamps) of an Insta360 X6 .insv.
 
-構造の詳細は docs/insv-x6-format.md を参照。
+See docs/insv-x6-format.md for the structure in detail.
 """
 import os
 import struct
@@ -22,7 +22,7 @@ def _varint(b, i):
 
 
 def parse_protobuf(b):
-    """スキーマなしで protobuf を {field番号: [値,...]} に展開する（入れ子は bytes のまま）。"""
+    """Expand a protobuf without a schema into {field number: [values, ...]} (nested messages stay as bytes)."""
     out = {}
     i = 0
     while i < len(b):
@@ -41,7 +41,7 @@ def parse_protobuf(b):
             v = b[i:i + n]
             i += n
         else:
-            raise ValueError(f"未対応の wire type {wt}")
+            raise ValueError(f"Unsupported wire type {wt}")
         out.setdefault(fn, []).append(v)
     return out
 
@@ -54,10 +54,10 @@ class Insv:
         self.f.seek(self.size - 72)
         tail = self.f.read(72)
         if tail[40:] != MAGIC:
-            raise ValueError("Insta360 のトレーラーが見つかりません")
+            raise ValueError("Insta360 trailer not found (this may not be an .insv file)")
         trailer_size, self.version = struct.unpack("<II", tail[32:40])
         self.trailer_start = self.size - trailer_size
-        # 末尾直前の id=0 レコードが目次（u16 id | u32 size | u32 offset の10バイト×N）
+        # The id=0 record just before the end is the table of contents (u16 id | u32 size | u32 offset, 10 bytes x N)
         self.f.seek(self.size - 72 - 6)
         h = self.f.read(6)
         idx_size = struct.unpack("<I", h[2:6])[0]
@@ -75,7 +75,7 @@ class Insv:
         self.f.seek(self.trailer_start + off)
         return self.f.read(size)
 
-    # ---- メタデータ ----
+    # ---- Metadata ----
     @property
     def model(self):
         return self.meta[2][0].decode()
@@ -86,7 +86,7 @@ class Insv:
 
     @property
     def first_frame_us(self):
-        """field 24: 先頭フレームの時刻（IMUと同じ時間軸、us）と推定。"""
+        """field 24: estimated time of the first frame (same time axis as the IMU, us)."""
         return self.meta[24][0]
 
     @property
@@ -95,7 +95,7 @@ class Insv:
         return r[1][0], r[2][0]  # (acc g, gyro dps)
 
     def calibration(self):
-        """field 111 のレンズキャリブレーション文字列を分解する。"""
+        """Parse the lens calibration string of field 111."""
         vals = self.meta[111][0].decode().split("_")
         n = int(vals[0])
         per = (len(vals) - 2) // n
@@ -115,7 +115,7 @@ class Insv:
 
     # ---- IMU ----
     def imu(self):
-        """IMU を返す: (ts_us[N], acc_g[N,3], gyro_dps[N,3])。軸は生のまま。"""
+        """Return the IMU: (ts_us[N], acc_g[N,3], gyro_dps[N,3]). Axes are raw."""
         raw = self.read_record(0x3)
         dt = np.dtype([("ts", "<u8"), ("v", "<u2", 6)])
         a = np.frombuffer(raw, dtype=dt)
@@ -126,7 +126,7 @@ class Insv:
         return a["ts"].astype(np.int64), acc, gyro
 
     def frame_times(self, lens=0):
-        """各フレームの時刻（us）。露出レコード（0x4=レンズ1, 0xc=レンズ2）のtsを使う。"""
+        """Time of each frame (us). Uses ts of the exposure records (0x4 = lens 1, 0xc = lens 2)."""
         return self.exposure(0x4 if lens == 0 else 0xC)[0]
 
     def exposure(self, rid=0x4):
@@ -138,16 +138,16 @@ class Insv:
 if __name__ == "__main__":
     import sys
     x = Insv(sys.argv[1])
-    print(x.model, x.fps, "fps", "IMUレンジ", x.imu_range)
+    print(x.model, x.fps, "fps", "IMU range", x.imu_range)
     for rid, (s, o) in sorted(x.records.items()):
         print(f"  id=0x{rid:x} size={s}")
     ts, acc, gyro = x.imu()
-    print("IMU", len(ts), "samples", "dt中央値", np.median(np.diff(ts)), "us")
-    print("acc ノルム中央値", np.median(np.linalg.norm(acc, axis=1)))
+    print("IMU", len(ts), "samples", "dt median", np.median(np.diff(ts)), "us")
+    print("acc norm median", np.median(np.linalg.norm(acc, axis=1)))
     for lens in (0, 1):
         ft = x.frame_times(lens)
         print(f"frame lens{lens}", len(ft), ft[:3], "dt", np.median(np.diff(ft)))
     for rid in (0x4, 0xC):
         et, ev = x.exposure(rid)
         print(f"exposure 0x{rid:x}", et[:3], ev[:3])
-    print("first_frame_us", x.first_frame_us, "IMU先頭", ts[0])
+    print("first_frame_us", x.first_frame_us, "IMU first", ts[0])

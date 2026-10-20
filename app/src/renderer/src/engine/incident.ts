@@ -1,27 +1,27 @@
-// 車体挙動の乱れがあった時に、自動で 2 画面に分割して自車を映す。
+// When a body disturbance occurs, automatically split into 2 screens and show the own bike.
 //
-//   乱れの事象（core/disturb.ts）の前後に余白を付けた区間だけ、全画面の視点（メイン）を半分に縮め、
-//   空いた半分に「自車」の視点レイヤー（role = 'incident'。後ろ向き・水平固定）を滑り込ませる。
-//   切り替えは transition 秒かけてなめらかに動かす。書き出しとプレビューの両方で同じ計算を使う。
+//   Only in the section around a disturbance event (core/disturb.ts) with margins added, shrink the full-screen view (main) to half
+//   and slide a view layer of the "own bike" (role = 'incident'; facing back, horizon-locked) into the freed half.
+//   The switch moves smoothly over transition seconds. Export and preview use the same calculation.
 import { disturbEvents, type DisturbCause, type DisturbTrack } from '../core/disturb'
 import type { Rect } from './project'
 
 export interface IncidentSettings {
   on: boolean
-  /** 乱れの強さのしきい値（1.0 = その走行の上位 0.5% 相当）。小さいほど敏感 */
+  /** Disturbance strength threshold (1.0 = the top 0.5% of that ride). Smaller is more sensitive */
   threshold: number
-  /** lr = 左に前方・右に自車、rl = 左に自車・右に前方、tb = 上に前方・下に自車 */
+  /** lr = front on the left and own bike on the right, rl = own bike on the left and front on the right, tb = front on top and own bike on the bottom */
   layout: 'lr' | 'rl' | 'tb'
-  /** 乱れの前後に付ける余白 [s] */
+  /** Margin added before and after a disturbance [s] */
   pre: number
   post: number
-  /** 2 画面にする最短の長さ [s] */
+  /** Shortest duration to switch to 2 screens [s] */
   minDur: number
-  /** 切り替えにかける時間 [s] */
+  /** Time taken to switch [s] */
   transition: number
-  /** 2 画面にしない事象（いちばん強かった時刻を 0.1 秒に丸めたもの） */
+  /** Events not to switch to 2 screens for (the time of the strongest moment, rounded to 0.1 s) */
   skip: number[]
-  /** 自車の画面に「挙動の乱れ」の表示を出す */
+  /** Show the "disturbance" indicator on the own-bike screen */
   label: boolean
 }
 
@@ -31,16 +31,16 @@ export function mergeIncident(saved: Partial<IncidentSettings> | undefined): Inc
   return { ...DEFAULT_INCIDENT, ...saved, skip: saved?.skip ?? [] }
 }
 
-/** 自車の視点（後ろ向き・広角・水平固定: 車体の傾きや揺れがそのまま見える） */
+/** View of the own bike (facing back, wide angle, horizon-locked: the body lean and shake are visible as they are) */
 export const RIDER_VIEW = { yaw: 180, pitch: 5, fov: 165, leanRatio: 0 }
-/** 以前の自車の画角（この値のままのキーフレームは、開いたときに新しい画角にする） */
+/** Previous FOV of the own bike (keyframes still at this value get the new FOV when opened) */
 export const OLD_RIDER_FOV = 120
 
 export interface IncidentEvent {
-  /** 2 画面にする範囲 [s]（余白込み） */
+  /** Range to switch to 2 screens [s] (including margins) */
   start: number
   end: number
-  /** いちばん強かった時刻・強さ・指標 */
+  /** Time of the strongest moment, strength, and metric */
   peak: number
   score: number
   cause: DisturbCause
@@ -48,7 +48,7 @@ export interface IncidentEvent {
 
 export const roundPeak = (t: number): number => Math.round(t * 10) / 10
 
-/** 乱れの事象から、2 画面にする区間を作る（重なる・近いものはまとめる。除外したものは除く） */
+/** Build the 2-screen sections from the disturbance events (merge overlapping or close ones; excluded ones are left out) */
 export function incidentEvents(d: DisturbTrack, s: IncidentSettings, duration: number): IncidentEvent[] {
   const out: IncidentEvent[] = []
   const skip = new Set(s.skip.map(roundPeak))
@@ -62,7 +62,7 @@ export function incidentEvents(d: DisturbTrack, s: IncidentSettings, duration: n
       end = Math.min(duration, start + s.minDur)
     }
     const prev = out[out.length - 1]
-    // 切り替えが落ち着かないので、間が短いものはつなぐ
+    // Switching would not settle, so join the ones with a short gap
     if (prev && start - prev.end < s.transition * 2 + 1) {
       prev.end = Math.max(prev.end, end)
       if (e.score > prev.score) Object.assign(prev, { peak: e.peak, score: e.score, cause: e.cause })
@@ -75,8 +75,8 @@ const ease = (x: number): number => x * x * (3 - 2 * x)
 const lerp = (a: Rect, b: Rect, w: number): Rect => ({ x: a.x + (b.x - a.x) * w, y: a.y + (b.y - a.y) * w, w: a.w + (b.w - a.w) * w, h: a.h + (b.h - a.h) * w })
 
 /**
- * 時刻 t の分割の度合い w（0 = 全画面、1 = 2 画面）と、メイン・自車の矩形。
- * 自車の画面は外から滑り込む
+ * Split degree w at time t (0 = full screen, 1 = 2 screens), and the rectangles of main and own bike.
+ * The own-bike screen slides in from outside
  */
 export function incidentLayout(events: IncidentEvent[], s: IncidentSettings, t: number): { w: number; main: Rect; rider: Rect; event: IncidentEvent | null } {
   let w = 0

@@ -1,10 +1,10 @@
-// 車の検出モデル（YOLOX-Nano）を onnxruntime-web で動かす。モデルは public/models/yolox_nano.onnx（ビルドで out/renderer/models へ）
+// Runs the car detection model (YOLOX-Nano) with onnxruntime-web. The model is public/models/yolox_nano.onnx (copied to out/renderer/models by the build)
 import * as ort from 'onnxruntime-web'
 import { DET_SIZE, decodeVehicles, toModelInput, type Detection } from '../core/vehicles'
 
 let session: Promise<ort.InferenceSession> | null = null
 
-/** モデルのファイルを読む（アプリとして開いたとき = file: はファイルとして、開発用のサーバーからは fetch で） */
+/** Load the model file (as an app: file: is read as a file; from the dev server, by fetch) */
 async function loadModel(): Promise<Uint8Array> {
   const url = new URL('./models/yolox_nano.onnx', document.baseURI)
   if (url.protocol === 'file:') {
@@ -21,7 +21,7 @@ async function loadModel(): Promise<Uint8Array> {
 
 function getSession(): Promise<ort.InferenceSession> {
   if (!session) {
-    // 複数スレッドは SharedArrayBuffer（クロスオリジン分離）が要るので 1 スレッドで動かす
+    // Multiple threads need SharedArrayBuffer (cross-origin isolation), so run with 1 thread
     ort.env.wasm.numThreads = 1
     session = loadModel().then((m) => ort.InferenceSession.create(m, { executionProviders: ['wasm'] }))
     session.catch(() => (session = null))
@@ -29,7 +29,7 @@ function getSession(): Promise<ort.InferenceSession> {
   return session
 }
 
-/** DET_SIZE 四方の RGBA 画像（上の行から）から車を探す */
+/** Find cars in a DET_SIZE-square RGBA image (from the top row) */
 export async function detectVehicles(rgba: Uint8Array | Uint8ClampedArray): Promise<Detection[]> {
   const s = await getSession()
   const input = new ort.Tensor('float32', toModelInput(rgba), [1, 3, DET_SIZE, DET_SIZE])

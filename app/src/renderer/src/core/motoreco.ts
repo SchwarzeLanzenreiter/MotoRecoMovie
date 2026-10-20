@@ -1,5 +1,5 @@
-// MotoReco の車両ログ（CSV "TO Custom v1"）の読み込み・映像との同期・リーン角の融合。
-// proto/motoreco.py と proto/leanfusion.py の移植。仕組みは docs/motoreco-lean.md を参照。
+// Loading the MotoReco vehicle log (CSV "TO Custom v1"), syncing it with the video, and fusing the lean angle.
+// A port of proto/motoreco.py and proto/leanfusion.py. See docs/motoreco-lean.md for how it works.
 import type { Imu } from './insv'
 import { crossCorrelate, interpSorted, lowpassFiltfilt } from './dsp'
 import { matVec, type Mat3 } from './quat'
@@ -7,14 +7,14 @@ import { IMU_TO_RIG } from './motion'
 import { mountFwdAt, mountUpAt, type MountTrack } from './mount'
 
 export interface BikeLog {
-  t: Float64Array // 秒（ログ先頭から）
+  t: Float64Array // seconds (from the start of the log)
   lean: Float64Array // LeanAngle [deg]
-  leanUpdated: Uint8Array // その行で値が更新されたか
-  rollRate: Float64Array // 無効値は NaN
+  leanUpdated: Uint8Array // whether the value was updated on that row
+  rollRate: Float64Array // invalid values are NaN
   speed: Float64Array
   lat: Float64Array
   lon: Float64Array
-  /** すべての数値列（列名 → 値）。テレメトリー表示に使う */
+  /** All numeric columns (column name → values). Used for the telemetry display */
   columns: Map<string, Float64Array>
 }
 
@@ -24,10 +24,10 @@ export function parseMotoReco(text: string): BikeLog {
   const lines = text.split(/\r?\n/)
   let h = 0
   while (h < lines.length && !lines[h].startsWith('time')) h++
-  if (h >= lines.length) throw new Error('MotoReco の CSV ではありません（time 列が見つかりません）')
+  if (h >= lines.length) throw new Error('Not a MotoReco CSV (no time column)')
   const cols = lines[h].split(',').map((c) => c.trim())
   const it = cols.indexOf('time (ms)')
-  if (it < 0) throw new Error('列 time (ms) がありません')
+  if (it < 0) throw new Error('Not a MotoReco CSV (no time column)')
   const rows = lines.length - h - 1
   const all = cols.map(() => new Float64Array(rows))
   let n = 0
@@ -42,16 +42,16 @@ export function parseMotoReco(text: string): BikeLog {
   return bikeLogFromColumns(t, new Map(cols.map((c, i) => [c, all[i].slice(0, n)])))
 }
 
-/** 列名 → 値の表（CSV または .dat をデコードしたもの）から BikeLog を作る。t は秒 */
+/** Build a BikeLog from a table of column name → values (a decoded CSV or .dat). t is in seconds */
 export function bikeLogFromColumns(t: Float64Array, columns: Map<string, Float64Array>): BikeLog {
   const need = (name: string): Float64Array => {
     const v = columns.get(name)
-    if (!v) throw new Error(`列 ${name} がありません`)
+    if (!v) throw new Error(`Column ${name} is missing`)
     return v
   }
   const n = t.length
   const lean = need('LeanAngle')
-  const rr = need('RollRate').map((r) => (r <= -124.9 ? NaN : r)) // ロガーの無効値は -125
+  const rr = need('RollRate').map((r) => (r <= -124.9 ? NaN : r)) // the logger's invalid value is -125
   const opt = (name: string): Float64Array => columns.get(name) ?? new Float64Array(n).fill(NaN)
   const upd = new Uint8Array(n)
   upd[0] = 1
@@ -59,22 +59,22 @@ export function bikeLogFromColumns(t: Float64Array, columns: Map<string, Float64
   return { t, lean, leanUpdated: upd, rollRate: rr, speed: opt('Speed'), lat: opt('lat (deg)'), lon: opt('lon (deg)'), columns }
 }
 
-/** カメラのジャイロを車体ロール軸へ射影し、100Hz（動画時刻[s], deg/s）にする */
+/** Project the camera gyro onto the body roll axis and make it 100 Hz (video time [s], deg/s) */
 export function cameraRollRate(imu: Imu, mount: Mat3 | MountTrack, firstFrameUs: number, M: Mat3 = IMU_TO_RIG): { t: Float64Array; r: Float64Array } {
   if (!(mount instanceof Float64Array)) return cameraRate(imu, (t) => mountFwdAt(mount, t), firstFrameUs, M)
-  return cameraRate(imu, [mount[2], mount[5], mount[8]], firstFrameUs, M) // R_mount の第3列 = 前方向
+  return cameraRate(imu, [mount[2], mount[5], mount[8]], firstFrameUs, M) // 3rd column of R_mount = forward direction
 }
 
-/** カメラのジャイロを車体のヨー軸（上方向）へ射影し、100Hz にする */
+/** Project the camera gyro onto the body yaw axis (up direction) and make it 100 Hz */
 export function cameraYawRate(imu: Imu, mount: Mat3 | MountTrack, firstFrameUs: number, M: Mat3 = IMU_TO_RIG): { t: Float64Array; r: Float64Array } {
   if (!(mount instanceof Float64Array)) return cameraRate(imu, (t) => mountUpAt(mount, t), firstFrameUs, M)
-  return cameraRate(imu, [-mount[1], -mount[4], -mount[7]], firstFrameUs, M) // R_mount の第2列（下）の逆
+  return cameraRate(imu, [-mount[1], -mount[4], -mount[7]], firstFrameUs, M) // the opposite of the 2nd column (down) of R_mount
 }
 
-/** カメラのジャイロを指定した軸（リグ座標）へ射影し、100Hz（動画時刻[s], deg/s）にする */
+/** Project the camera gyro onto the given axis (rig coordinates) and make it 100 Hz (video time [s], deg/s) */
 export function cameraRate(imu: Imu, axis: number[] | ((tUs: number) => number[]), firstFrameUs: number, M: Mat3 = IMU_TO_RIG): { t: Float64Array; r: Float64Array } {
-  // 動画時刻で 10ms ごとの区間に分けて平均する（t は等間隔）。以前は 10 サンプルずつまとめていたが、X5 の IMU は 1000Hz ではなく
-  // 約 996Hz なので、等間隔とみなして使う所（粗同期の相互相関・リーン角の融合）で時間の尺度が 0.4% ずれ、13 分の動画で 2 秒ずれて同期できなかった
+  // Split by video time into 10 ms bins and average (t is evenly spaced). It used to group 10 samples at a time, but the X5 IMU is not 1000 Hz but
+  // about 996 Hz, so where it is treated as evenly spaced (cross-correlation in coarse sync, lean angle fusion) the time scale was off by 0.4%, and a 13-minute video was off by 2 s and could not be synced
   const n = imu.ts.length
   if (!n) return { t: new Float64Array(0), r: new Float64Array(0) }
   const t0 = Math.ceil(((imu.ts[0] - firstFrameUs) / 1e6) * FS) / FS
@@ -87,7 +87,7 @@ export function cameraRate(imu: Imu, axis: number[] | ((tUs: number) => number[]
   for (let i = 0; i < n; i++) {
     const b = Math.floor(((imu.ts[i] - firstFrameUs) / 1e6 - t0) * FS + 0.5)
     if (b < 0 || b >= m) continue
-    // 軸が時刻で変わるとき（取り付け姿勢の時間変化）は、区間ごとの軸
+    // When the axis changes with time (time variation of the mount orientation), use the axis of each bin
     if (typeof axis === 'function' && b !== fb) {
       f = axis(firstFrameUs + (t0 + b / FS) * 1e6)
       fb = b
@@ -96,7 +96,7 @@ export function cameraRate(imu: Imu, axis: number[] | ((tUs: number) => number[]
     r[b] += g[0] * f[0] + g[1] * f[1] + g[2] * f[2]
     cnt[b]++
   }
-  // 空の区間（サンプルの抜け）は前後から補う
+  // Fill empty bins (missing samples) from the neighbors
   let last = -1
   for (let b = 0; b < m; b++) {
     t[b] = t0 + b / FS
@@ -111,10 +111,10 @@ export function cameraRate(imu: Imu, axis: number[] | ((tUs: number) => number[]
 }
 
 export interface SyncResult {
-  a: number // ログ時刻 = a·動画時刻 + b
+  a: number // log time = a·video time + b
   b: number
   sign: number
-  peakRatio: number // 主ピーク / 第2ピーク（同期の信頼度。2以上なら概ね確実）
+  peakRatio: number // main peak / second peak (sync confidence. 2 or more is generally reliable)
   windows: { t: number; offset: number; corr: number }[]
   residualMs: number
 }
@@ -146,7 +146,7 @@ function corr(a: Float64Array, b: Float64Array, mask: Uint8Array): number {
   return sab / Math.sqrt(saa * sbb + 1e-12)
 }
 
-/** 粗同期: ログのロールレートとカメラのロール角速度（平滑化済み）の全範囲の相互相関 */
+/** Coarse sync: cross-correlation over the full range between the log roll rate and the camera roll rate (smoothed) */
 function coarseSync(logT: Float64Array, rollRate: Float64Array, cr: Float64Array, camT0: number): { coarse: number; sign: number; peakRatio: number; peak: number } {
   const ng = Math.floor(logT[logT.length - 1] * FS)
   const grid = new Float64Array(ng).map((_, i) => i / FS)
@@ -174,8 +174,8 @@ function coarseSync(logT: Float64Array, rollRate: Float64Array, cr: Float64Array
 }
 
 /**
- * ログが映像と同じ走行のものかの目安（粗同期の主ピーク / 第2ピーク。2 以上なら概ね確実）。
- * フォルダの中から映像に合う .dat を選ぶのに使う
+ * A measure of whether the log is from the same ride as the video (coarse sync main peak / second peak. 2 or more is generally reliable).
+ * Used to choose the .dat that matches the video from a folder
  */
 export function logMatchScore(logT: Float64Array, rollRate: Float64Array, cam: { t: Float64Array; r: Float64Array }): { peakRatio: number; peak: number; offset: number } {
   if (logT.length < FS * 10) return { peakRatio: 0, peak: 0, offset: 0 }
@@ -183,21 +183,21 @@ export function logMatchScore(logT: Float64Array, rollRate: Float64Array, cam: {
   return { peakRatio: r.peakRatio, peak: r.peak, offset: r.coarse }
 }
 
-// 窓ごとに探すずれの範囲 [s]（粗同期のずれから）。カメラの時計とログの時計の進み方が違うと、ずれが動画の中で変わっていく
-// （X5 の 2026-08-13 の動画: 13 分で 2.9 秒、0.37%。X6 では 0）。25 分の動画で 0.5% までなら届くように
+// Range of the shift to search per window [s] (from the coarse sync shift). If the camera clock and the log clock run at different rates, the shift changes within the video
+// (X5 video of 2026-08-13: 2.9 s over 13 minutes, 0.37%. 0 on the X6). Chosen so a 25-minute video is reachable up to 0.5%
 const SYNC_SEARCH_S = 4
 
 export function syncLog(log: BikeLog, cam: { t: Float64Array; r: Float64Array }, windowS = 30): SyncResult {
-  const cr = lowpassFiltfilt(cam.r, 3, FS) // スティックの振動を落とす
+  const cr = lowpassFiltfilt(cam.r, 3, FS) // remove stick vibration
   const rrClean = log.rollRate.map((v) => (Number.isNaN(v) ? 0 : v))
   const validF = log.rollRate.map((v) => (Number.isNaN(v) ? 0 : 1))
-  // ---- 1. 粗同期（全範囲のFFT相互相関）----
+  // ---- 1. Coarse sync (full-range FFT cross-correlation) ----
   const { coarse, sign, peakRatio } = coarseSync(log.t, log.rollRate, cr, cam.t[0])
 
-  // ---- 2. 窓ごとに精密化 ----
-  // まず粗同期のずれ ±SYNC_SEARCH_S を 50ms 刻み（間引いた点）で探し、窓のずれを直線に当てはめる（時計の進み方の違い）。
-  // その直線の ±60ms を 10ms 刻み → 1ms 刻みで詰める。以前は粗同期のずれ ±0.3 秒だけを探していたので、
-  // 時計の進み方が違うカメラ（X5）では、ほとんどの窓が見つからず同期できなかった（リーン角が ±120° になり、浮遊標識が傾いた）
+  // ---- 2. Refine per window ----
+  // First search the coarse sync shift ±SYNC_SEARCH_S in 50 ms steps (decimated points), and fit a line to the window shifts (difference in clock rate).
+  // Then refine ±60 ms around that line in 10 ms steps → 1 ms steps. It used to search only ±0.3 s around the coarse sync shift,
+  // so with a camera whose clock runs at a different rate (X5), most windows were not found and sync failed (the lean angle became ±120° and the floating sign tilted)
   type Win = { t: number; tc: Float64Array; rc: Float64Array }
   const wins: Win[] = []
   for (let w0 = cam.t[0]; w0 + windowS < cam.t[cam.t.length - 1]; w0 += windowS / 2) {
@@ -210,7 +210,7 @@ export function syncLog(log: BikeLog, cam: { t: Float64Array; r: Float64Array },
     mean /= rc.length
     let sd = 0
     for (const v of rc) sd += (v - mean) ** 2
-    if (Math.sqrt(sd / rc.length) < 2) continue // 直線ばかりの区間は手がかりがない
+    if (Math.sqrt(sd / rc.length) < 2) continue // a section that is all straight has no cues
     wins.push({ t: w0 + windowS / 2, tc, rc })
   }
   const evalOff = (w: Win, off: number, step = 1): number => {
@@ -225,7 +225,7 @@ export function syncLog(log: BikeLog, cam: { t: Float64Array; r: Float64Array },
     if (cnt < 0.9 * ok.length) return -2
     return corr(lv, rc, mask) * sign
   }
-  // 広く探す
+  // Wide search
   const rough: { t: number; off: number; c: number }[] = []
   for (const w of wins) {
     let best = { c: -2, off: coarse }
@@ -235,7 +235,7 @@ export function syncLog(log: BikeLog, cam: { t: Float64Array; r: Float64Array },
     }
     if (best.c > 0.5) rough.push({ t: w.t, off: best.off, c: best.c })
   }
-  // 窓のずれ = 傾き·t + 切片 をロバストに（中央値の傾き）
+  // Robustly fit window shift = slope·t + intercept (median slope)
   let predict = (_t: number): number => coarse
   if (rough.length >= 3) {
     const slopes: number[] = []
@@ -246,7 +246,7 @@ export function syncLog(log: BikeLog, cam: { t: Float64Array; r: Float64Array },
     const ic = ics[ics.length >> 1]
     predict = (t) => slope * t + ic
   }
-  // 詰める
+  // Refine
   const windows: SyncResult['windows'] = []
   for (const w of wins) {
     const p0 = predict(w.t)
@@ -262,7 +262,7 @@ export function syncLog(log: BikeLog, cam: { t: Float64Array; r: Float64Array },
     }
     if (best.c > 0.5) windows.push({ t: w.t, offset: best.off, corr: best.c })
   }
-  // t_log = t_v + off(t_v), off = (a-1)·t_v + b をロバストに当てはめ
+  // Robustly fit t_log = t_v + off(t_v), off = (a-1)·t_v + b
   let a = 1
   let b = coarse
   let residualMs = NaN
@@ -298,18 +298,18 @@ export function syncLog(log: BikeLog, cam: { t: Float64Array; r: Float64Array },
 }
 
 export interface LeanTrack {
-  t: Float64Array // 動画時刻 [s]（100Hz）
-  lean: Float64Array // 実際のリーン角 [deg]（ジャイロの尺度）
+  t: Float64Array // video time [s] (100 Hz)
+  lean: Float64Array // actual lean angle [deg] (gyro scale)
   sd: Float64Array
-  k: number // d(LeanAngle)/dt = k·ω_roll（ログの尺度の補正）
+  k: number // d(LeanAngle)/dt = k·ω_roll (correction of the log's scale)
   rateCorr: number
 }
 
-/** ジャイロとログのリーン角を融合（カルマンフィルタ + RTS平滑化） */
+/** Fuse the gyro and the log's lean angle (Kalman filter + RTS smoothing) */
 export function fuseLean(log: BikeLog, cam: { t: Float64Array; r: Float64Array }, sync: SyncResult): LeanTrack {
   const n = cam.t.length
   const logOnVideo = log.t.map((t) => (t - sync.b) / sync.a)
-  // ---- 尺度 k: d(Lean)/dt ≈ k·ω_roll ----
+  // ---- Scale k: d(Lean)/dt ≈ k·ω_roll ----
   const L = interpSorted(cam.t, logOnVideo, log.lean)
   const Lf = lowpassFiltfilt(L, 1, FS)
   const wf = lowpassFiltfilt(cam.r, 1, FS)
@@ -326,7 +326,7 @@ export function fuseLean(log: BikeLog, cam: { t: Float64Array; r: Float64Array }
   const k = swd / sww
   const rateCorr = swd / Math.sqrt(sww * sdd)
 
-  // ---- 観測（ログの値が更新された時刻だけ、1/k 倍して実際の角度へ）----
+  // ---- Observations (only at times when the log value was updated, multiplied by 1/k to get the actual angle) ----
   const z = new Float64Array(n).fill(NaN)
   for (let i = 0; i < log.t.length; i++) {
     if (!log.leanUpdated[i]) continue
@@ -338,7 +338,7 @@ export function fuseLean(log: BikeLog, cam: { t: Float64Array; r: Float64Array }
   const q0 = (3 * dt) ** 2
   const q1 = (0.05 * dt) ** 2
   const R = (0.6 / k) ** 2
-  // 状態 [L, bias]、F = [[1,-dt],[0,1]]
+  // State [L, bias], F = [[1,-dt],[0,1]]
   const xs = new Float64Array(n * 2)
   const Ps = new Float64Array(n * 4)
   const xp = new Float64Array(n * 2)
@@ -351,7 +351,7 @@ export function fuseLean(log: BikeLog, cam: { t: Float64Array; r: Float64Array }
   let p01 = 0
   let p11 = 1
   for (let i = 0; i < n; i++) {
-    // 予測
+    // Predict
     x0 = x0 - dt * x1 + u[i] * dt
     const n00 = p00 - 2 * dt * p01 + dt * dt * p11 + q0
     const n01 = p01 - dt * p11
@@ -362,7 +362,7 @@ export function fuseLean(log: BikeLog, cam: { t: Float64Array; r: Float64Array }
     xp[i * 2] = x0
     xp[i * 2 + 1] = x1
     Pp.set([p00, p01, p01, p11], i * 4)
-    // 観測
+    // Update
     if (!Number.isNaN(z[i])) {
       const S = p00 + R
       const K0 = p00 / S
@@ -381,7 +381,7 @@ export function fuseLean(log: BikeLog, cam: { t: Float64Array; r: Float64Array }
     xs[i * 2 + 1] = x1
     Ps.set([p00, p01, p01, p11], i * 4)
   }
-  // RTS 平滑化
+  // RTS smoothing
   for (let i = n - 2; i >= 0; i--) {
     const P = Ps.subarray(i * 4, i * 4 + 4)
     const Pn = Pp.subarray((i + 1) * 4, (i + 1) * 4 + 4)

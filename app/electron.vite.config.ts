@@ -5,7 +5,7 @@ export default defineConfig({
   main: {},
   preload: {
     build: {
-      // サンドボックスなしの preload は CommonJS で出力する
+      // A preload without the sandbox is output as CommonJS
       rollupOptions: { output: { format: 'cjs', entryFileNames: '[name].cjs' } }
     }
   },

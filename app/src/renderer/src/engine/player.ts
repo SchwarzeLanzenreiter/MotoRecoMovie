@@ -1,4 +1,4 @@
-// プレビューの再生制御。表示要求は最新のものだけを処理し、視点の変更だけならデコードせず描き直す。
+// Preview playback control. Handles only the latest display request, and redraws without decoding when only the view changed.
 import type { Telemetry } from '../core/telemetry'
 import { Compositor, type ViewInfo } from '../render/compositor'
 import { AudioPlayer } from './audio'
@@ -9,7 +9,7 @@ import type { Session } from './session'
 export interface PlayerStatus {
   frame: number
   playing: boolean
-  fps: number // 再生中の実効フレームレート
+  fps: number // effective frame rate during playback
   correctionDeg: number
   leanDeg: number | null
   views: ViewInfo[]
@@ -18,7 +18,7 @@ export interface PlayerStatus {
 export class Player {
   private comp: Compositor
   private telemetry: Telemetry | null = null
-  private uploaded = -1 // テクスチャに載っているフレーム
+  private uploaded = -1 // frame currently in the texture
   private wanted = 0
   private busy = false
   private playing = false
@@ -41,7 +41,7 @@ export class Player {
     this.audio = this.makeAudio()
   }
 
-  /** 音声の再生（整えた音声があればそれ。高い音を切る・音圧を抑えるは再生しながらかける） */
+  /** Audio playback (the tidied audio if available; cutting high sounds and reducing loudness are applied during playback) */
   private makeAudio(): AudioPlayer | null {
     const s = this.session
     const a = s.fxAudio ? new AudioPlayer(s.fxAudio.file, s.fxAudio.track, 1 / FX_BUILD_GAIN) : s.audioTrack ? new AudioPlayer(s.file, s.audioTrack) : null
@@ -49,7 +49,7 @@ export class Player {
     return a
   }
 
-  /** 音声の元を差し替える（整えた音声ができたとき・設定を変えたとき）。再生中なら同じ位置から鳴らし直す */
+  /** Replace the audio source (when the tidied audio is ready or the settings changed). If playing, restart from the same position */
   updateAudioSource(): void {
     const s = this.session
     const want = s.fxAudio ? s.fxAudio.track : s.audioTrack
@@ -61,7 +61,7 @@ export class Player {
     if (this.playing) void this.audio?.start(this.mediaTime(this.status.frame))
   }
 
-  /** フレーム i の表示時刻 [s]（映像トラックの時刻。音声と同じ時間軸） */
+  /** Display time of frame i [s] (video track time; the same time axis as the audio) */
   private mediaTime(i: number): number {
     const t = this.session.decoders[0].track
     return t.cts[i] / t.timescale
@@ -88,7 +88,7 @@ export class Player {
 
   setProject(p: Project): void {
     this.project = p
-    // 高い音を切る・音圧を抑えるは、すぐに（次にデコードする音から）
+    // Cutting high sounds and reducing loudness take effect immediately (from the next decoded audio)
     this.audio?.setFx(p.audioFx.on ? p.audioFx : null)
     this.session.motion.setStab(p.stab)
     if (this.session.applySeam(p.stab)) this.comp.setLenses(this.session.rig)
@@ -100,7 +100,7 @@ export class Player {
     this.redraw()
   }
 
-  /** 表示サイズ（キャンバスの画素数） */
+  /** Display size (canvas pixels) */
   private size(): [number, number] {
     const r = this.canvas.getBoundingClientRect()
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
@@ -141,7 +141,7 @@ export class Player {
 
   private draw(i: number): void {
     const [w, h] = this.size()
-    // 書き出しと同じ合成処理で描く（キャンバスは書き出しの縦横比に合わせてある）
+    // Draw with the same compositing as export (the canvas matches the export aspect ratio)
     this.comp.body = this.session.body
     const views = this.comp.render(i, this.project, this.session.motion, this.telemetry, w, h)
     this.status = { ...this.status, frame: i, views, correctionDeg: views[0]?.correctionDeg ?? 0, leanDeg: this.session.motion.leanAt(i) }
@@ -161,12 +161,12 @@ export class Player {
         if (this.playing) {
           const pos = this.audio?.position()
           if (pos !== null && pos !== undefined) {
-            // 音声の時計に合わせる。遅れたフレームは飛ばす（デコーダーは間のフレームも順に処理するので連続性は保たれる）
+            // Sync to the audio clock. Late frames are skipped (the decoder still processes the frames in between in order, so continuity is kept)
             target = Math.min(this.session.frameCount - 1, Math.max(this.playStart.frame, this.frameAt(pos)))
           } else {
             const el = (performance.now() - this.playStart.t) / 1000
             target = Math.min(this.session.frameCount - 1, this.playStart.frame + Math.floor(el * this.session.fps))
-            // 音声がない場合は、処理が追いつかなければ飛ばさず1枚ずつ進める
+            // Without audio, if processing cannot keep up, advance one frame at a time instead of skipping
             if (target > this.uploaded + 1 && this.uploaded >= 0 && target - this.uploaded < 50) target = this.uploaded + 1
           }
           if (target === this.uploaded) {
@@ -209,7 +209,7 @@ export class Player {
     }
   }
 
-  /** 再生中の映像と音声のずれ [ms]（正 = 映像が遅れている）。検証用 */
+  /** Offset between video and audio during playback [ms] (positive = video is late). For verification */
   avOffsetMs(): number | null {
     const pos = this.audio?.position()
     if (pos == null || this.uploaded < 0) return null

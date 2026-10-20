@@ -11,7 +11,7 @@ interface Props {
   onOpenDialog: () => void
 }
 
-/** ファイル名（VID_20260919_140847_...）から撮影日時を読み取る */
+/** Read the recording date and time from the file name (VID_20260919_140847_...) */
 function recordedAt(name: string): string | null {
   const m = /(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/.exec(name)
   return m ? `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}` : null
@@ -19,10 +19,10 @@ function recordedAt(name: string): string | null {
 
 function ago(ms: number): string {
   const s = (Date.now() - ms) / 1000
-  if (s < 60) return t('たった今')
-  if (s < 3600) return t('{n} 分前', { n: Math.floor(s / 60) })
-  if (s < 86400) return t('{n} 時間前', { n: Math.floor(s / 3600) })
-  if (s < 86400 * 30) return t('{n} 日前', { n: Math.floor(s / 86400) })
+  if (s < 60) return t('Just now')
+  if (s < 3600) return t('{n} min ago', { n: Math.floor(s / 60) })
+  if (s < 86400) return t('{n} h ago', { n: Math.floor(s / 3600) })
+  if (s < 86400 * 30) return t('{n} d ago', { n: Math.floor(s / 86400) })
   return new Date(ms).toLocaleDateString(getLang() === 'en' ? 'en-US' : 'ja-JP')
 }
 
@@ -32,22 +32,22 @@ const dur = (sec?: number): string => {
   return `${m}:${String(Math.round(sec - m * 60)).padStart(2, '0')}`
 }
 
-/** 起動画面: 最近開いた動画の一覧 */
+/** Start screen: list of recently opened videos */
 export function Recent({ items, onOpen, onRemove, onOpenDialog }: Props): React.JSX.Element {
   useLang()
   return (
     <div className="recent">
       <div className="recent-head">
-        <h2>{t('最近開いた動画')}</h2>
+        <h2>{t('Recent videos')}</h2>
         <button className="primary" onClick={onOpenDialog}>
-          {t('開く…')}
+          {t('Open…')}
         </button>
       </div>
       {items.length === 0 ? (
         <div className="empty">
-          {t('まだ履歴はありません。')}
+          {t('No history yet.')}
           <br />
-          {t('Insta360 X6 の .insv を「開く…」から選ぶか、ウィンドウへドラッグ＆ドロップしてください。')}
+          {t('Choose an Insta360 X6 .insv file with "Open…", or drag and drop it onto the window.')}
         </div>
       ) : (
         <div className="recent-grid">
@@ -68,19 +68,19 @@ export function Recent({ items, onOpen, onRemove, onOpenDialog }: Props): React.
                   <div className="name">{it.name}</div>
                   <div className="sub">{window.api.path.basename(window.api.path.dirname(it.path))}</div>
                   <div className="sub">
-                    {rec ? t('撮影 {date}', { date: rec }) + '　' : ''}
+                    {rec ? t('Recorded {date}', { date: rec }) + '\u2003' : ''}
                     {it.model ?? ''}
                   </div>
                   <div className="badges">
-                    {!it.exists && <span className="badge warn">{t('ファイルが見つかりません')}</span>}
-                    {it.exists && it.hasLog && <span className="badge ok">{t('車両ログ')}</span>}
-                    {it.exists && it.edited && <span className="badge">{t('編集あり')}</span>}
+                    {!it.exists && <span className="badge warn">{t('File not found')}</span>}
+                    {it.exists && it.hasLog && <span className="badge ok">{t('Vehicle log')}</span>}
+                    {it.exists && it.edited && <span className="badge">{t('Edited')}</span>}
                     <span className="when">{ago(it.openedAt)}</span>
                   </div>
                 </div>
                 <button
                   className="remove"
-                  title={t('履歴から消す（動画は消えません）')}
+                  title={t('Remove from history (the video is not deleted)')}
                   onClick={(e) => {
                     e.stopPropagation()
                     onRemove(it.path)

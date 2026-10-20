@@ -1,65 +1,65 @@
-// 継ぎ目の距離の選び方（動的なつなぎ合わせ）。
+// How the seam distance is chosen (dynamic stitching).
 //
-// GPU で求めた「方位のビン × 距離の候補」ごとの不一致（0 = 完全に一致）から、各ビンの距離を選ぶ。
-//   ・模様の少ないビン（空・のっぺりした路面）は一致の度合いが当てにならないので、隣と前のフレームに任せる
-//   ・隣どうしで距離が急に変わらないように（継ぎ目に沿って滑らか）
-//   ・前のフレームから急に変わらないように（ちらつき防止）。連続したフレームでは少しずつ近づける
-//   ・同じくらい一致するなら遠い方（視差の補正が小さい方）を選ぶ
-//   ・ただし水平より下を向く方位は、地面より遠くは見えない。地面までの距離（カメラの高さ ÷ 見下ろす角の sin）を
-//     その方位の候補に加え、目安にする（地面より遠い候補は強く嫌い、近い候補は一致度がはっきり良いときだけ選ぶ）。
-//     カメラを横倒しに付けて継ぎ目が路面を斜めに横切るとき、模様の少ないアスファルトで距離がビンごとにばらつき、
-//     白線がギザギザに折れるのを防ぐ
-//   ・どの距離でも一致が悪いビンは、一致度の差をその分だけ当てにしない（隣と前のフレームに任せる）。
-//     明るい空との境目や、模様の弱いコンクリートなどで、いちばん近い候補だけがたまたま少し良くなることがある。
-//     そのビンだけ近い距離になると、継ぎ目から少し離れた所（片方のレンズだけが見える所）の景色がそのビンの幅だけ引っ張られ、
-//     壁の縁などのまっすぐな線に小さな三角の段差ができる（そこでは継ぎ目に沿ってぼかした距離を使う。blurSeamQ）
+// From the GPU-computed mismatch (0 = perfect match) for each "azimuth bin x distance candidate", choose the distance of each bin.
+//   - Bins with little texture (sky, featureless road) have an unreliable match score, so they defer to their neighbors and the previous frame
+//   - Distances should not change abruptly between neighbors (smooth along the seam)
+//   - Distances should not change abruptly from the previous frame (flicker prevention). Over consecutive frames, approach the new value gradually
+//   - If matches are about equally good, prefer the farther one (the one with less parallax correction)
+//   - However, for azimuths that point below the horizon, nothing can be seen farther than the ground. The distance to the ground (camera height / sin of the downward angle)
+//     is added to that azimuth's candidates as a guide (candidates farther than the ground are strongly disfavored, and nearer candidates are chosen only when the match is clearly better).
+//     This prevents the distance from scattering from bin to bin on low-texture asphalt when the camera is mounted sideways and the seam crosses the road diagonally,
+//     which would break the white lines into a zigzag
+//   - For bins where the match is poor at every distance, the difference in match scores is trusted less accordingly (defer to neighbors and the previous frame).
+//     Near a boundary with bright sky, or on weakly textured concrete, only the nearest candidate can happen to be a little better.
+//     If only that bin gets a near distance, the scenery a little away from the seam (where only one lens sees it) is pulled by the width of that bin,
+//     leaving a small triangular step on straight lines such as the edge of a wall (there, a distance blurred along the seam is used; blurSeamQ)
 
 export interface SeamDepthState {
-  /** 前のフレームの距離の逆数（ビンごと） */
+  /** Inverse of the previous frame's distance (per bin) */
   q: Float32Array
   frame: number
 }
 
-const LAMBDA = 0.025 // 隣のビンとの差の重み（ビンが細かいので弱め。欄干の横木など細いものにも距離を合わせられるように）
-const MU = 0.04 // 前のフレームとの差の重み
-const FAR_BIAS = 0.01 // 遠い方を好む重み（候補の番号あたり）
-const MIN_TEXTURE = 0.04 // これより模様が弱いビンは一致度を使わない
-const FOLLOW = 0.15 // 連続したフレームで新しい値へ近づける割合（小さいほどゆっくり変わる。50fps で約 0.3 秒）
-/** 路面からカメラまでの高さ [m]（おおよそ。地面までの距離の目安に使う） */
+const LAMBDA = 0.025 // weight of the difference from neighboring bins (weak because the bins are fine, so that thin things like railing crossbars can still get a matching distance)
+const MU = 0.04 // weight of the difference from the previous frame
+const FAR_BIAS = 0.01 // weight that favors the far side (per candidate index)
+const MIN_TEXTURE = 0.04 // bins with weaker texture than this do not use the match score
+const FOLLOW = 0.15 // fraction by which the value approaches the new one over consecutive frames (the smaller, the slower it changes; about 0.3 s at 50fps)
+/** Height from the road surface to the camera [m] (approximate; used as a guide for the distance to the ground) */
 export const SEAM_CAM_HEIGHT = 1.5
-const BEYOND_GROUND = 0.5 // 地面より遠い候補の重み（距離の逆数の差あたり。坂や高さの誤差を見込み、地面の 0.8 倍までは許す）
-const NEARER_THAN_GROUND = 0.15 // 地面より近い候補の重み（自車・ライダー・すぐ横の物は一致度がはっきり良ければ選ばれる）
-// 地面が見えるビンで一致度を使うのは、いちばん良い候補の不一致がこれより小さいときだけ。
-// 路面（アスファルト）はレンズの縁で細かい模様がぼけ、どの距離でも一致が悪く（0.3〜0.6）、その差はばらつきでしかない
+const BEYOND_GROUND = 0.5 // weight of candidates farther than the ground (per difference in inverse distance; allows up to 0.8 times the ground distance to allow for slopes and height error)
+const NEARER_THAN_GROUND = 0.15 // weight of candidates nearer than the ground (the own bike, rider and things right beside are chosen if the match is clearly good)
+// In bins where the ground is visible, the match score is used only when the best candidate's mismatch is smaller than this.
+// On the road surface (asphalt), fine texture blurs at the lens edge and the match is poor at every distance (0.3-0.6), so the differences are just scatter
 const GROUND_TRUST = 0.2
-/** 継ぎ目から離れた所で使う、継ぎ目に沿ったぼかしの幅（σ、ビンの数。1 ビン = 1.4°） */
+/** Width of the blur along the seam used away from the seam (sigma, in bins. 1 bin = 1.4°) */
 export const SEAM_BLUR_SIGMA = 3
-// 一致度を当てにする度合い: いちばん良い候補の不一致が TRUST_LO 以下なら全部、TRUST_HI 以上なら使わない（間は直線）。
-// 実データでは、はっきり写っている物は 0.2 未満（0919 の欄干 0.05〜0.18、自車 0.01〜0.06）、
-// たまたまの一致は 0.24〜0.4（0830 3:04.66 のトンネルの壁の縁）
+// How much the match score is trusted: fully if the best candidate's mismatch is TRUST_LO or below, not at all at TRUST_HI or above (linear in between).
+// In real data, clearly visible things are under 0.2 (railing in 0919 0.05-0.18, own bike 0.01-0.06),
+// and accidental matches are 0.24-0.4 (the tunnel wall edge at 0830 3:04.66)
 const TRUST_LO = 0.1
 const TRUST_HI = 0.35
 
 /**
- * 方位のビンごとの、地面までの距離の逆数 [1/m]（水平より上は 0）。
- * e1・e2 は継ぎ目の方位の基準（リグ座標）、down は重力の下向き（リグ座標）
+ * Per azimuth bin, the inverse of the distance to the ground [1/m] (0 above the horizon).
+ * e1 and e2 are the reference of the seam azimuth (rig coordinates), down is gravity pointing down (rig coordinates)
  */
 export function groundPrior(e1: ArrayLike<number>, e2: ArrayLike<number>, down: ArrayLike<number>, bins: number, camHeight = SEAM_CAM_HEIGHT): Float32Array {
   const out = new Float32Array(bins)
   const c1 = e1[0] * down[0] + e1[1] * down[1] + e1[2] * down[2]
   const c2 = e2[0] * down[0] + e2[1] * down[1] + e2[2] * down[2]
   for (let b = 0; b < bins; b++) {
-    const ph = ((b + 0.5) / bins) * Math.PI * 2 // シェーダーのビンの中心と同じ
+    const ph = ((b + 0.5) / bins) * Math.PI * 2 // same as the center of the shader bin
     out[b] = Math.max(0, Math.cos(ph) * c1 + Math.sin(ph) * c2) / camHeight
   }
   return out
 }
 
 /**
- * @param cost ビン b・候補 k の不一致（cost[k * bins + b]、0〜1）
- * @param texture ビンごとの模様の強さ（0〜1）
- * @param cand 候補の距離の逆数 [1/m]（小さい順）
- * @param ground ビンごとの地面までの距離の逆数（groundPrior。null なら使わない）
+ * @param cost mismatch of bin b, candidate k (cost[k * bins + b], 0-1)
+ * @param texture texture strength per bin (0-1)
+ * @param cand inverse distance of the candidates [1/m] (in ascending order)
+ * @param ground per-bin inverse distance to the ground (groundPrior; not used if null)
  */
 export function chooseSeamDepth(
   cost: Float32Array,
@@ -71,12 +71,12 @@ export function chooseSeamDepth(
   ground: Float32Array | null = null
 ): SeamDepthState {
   const K0 = cand.length
-  // 候補: 共通の K0 個 + （地面が見えるビンは）地面までの距離
+  // Candidates: the common K0 plus (for bins where the ground is visible) the distance to the ground
   const K = K0 + 1
   const candQ = (b: number, k: number): number => (k < K0 ? cand[k] : ground ? ground[b] : 0)
   const continuous = !!prev && Math.abs(frame - prev.frame) === 1
   const qPrev = continuous ? prev!.q : null
-  // ビンごとの評価（一致度 + 遠さ・地面の好み + 前のフレームとの差）
+  // Per-bin evaluation (match score + preference for farther / ground + difference from the previous frame)
   const unary = new Float32Array(bins * K)
   for (let b = 0; b < bins; b++) {
     const g = ground ? ground[b] : 0
@@ -87,14 +87,14 @@ export function chooseSeamDepth(
     for (let k = 0; k < K; k++) {
       const q = candQ(b, k)
       if (k === K0 && !(g > 0)) {
-        unary[b * K + k] = Infinity // 水平より上: 地面の候補は無い
+        unary[b * K + k] = Infinity // above the horizon: there is no ground candidate
         continue
       }
       let c: number
       if (!textured || trust === 0) c = 0.5
       else if (k < K0) c = 0.5 + (cost[k * bins + b] - 0.5) * trust
       else {
-        // 地面の候補の一致度は、前後の候補から補間する
+        // The match score of the ground candidate is interpolated from the candidates before and after it
         let j = 0
         while (j < K0 - 2 && cand[j + 1] < q) j++
         const f = Math.max(0, Math.min(1, (q - cand[j]) / (cand[j + 1] - cand[j])))
@@ -107,7 +107,7 @@ export function chooseSeamDepth(
       unary[b * K + k] = u
     }
   }
-  // 最初はビンごとの最小、その後は隣との滑らかさを入れて数回見直す（環状）
+  // First take the per-bin minimum, then review a few times with smoothness against neighbors (circular)
   const pick = new Int32Array(bins)
   for (let b = 0; b < bins; b++) {
     let best = 0
@@ -142,9 +142,9 @@ export function chooseSeamDepth(
 }
 
 /**
- * 継ぎ目に沿ってぼかした距離の逆数（環状。ガウスの重み、σ はビンの数）。
- * 継ぎ目から少し離れた所（片方のレンズだけが見える所）の補正に使う。そこではビンごとの距離の差は位置合わせに要らず、
- * そのまま使うと、1 ビンだけ近い距離のとき（細い近い物・たまたまの一致）にまっすぐな線が三角に折れる
+ * Inverse distance blurred along the seam (circular; Gaussian weights, sigma in bins).
+ * Used to correct areas a little away from the seam (where only one lens sees them). There, per-bin distance differences are not needed for alignment,
+ * and using them as they are would fold a straight line into a triangle when one bin has a near distance (a thin near object, an accidental match)
  */
 export function blurSeamQ(q: Float32Array, sigma = SEAM_BLUR_SIGMA): Float32Array {
   const n = q.length
@@ -164,53 +164,53 @@ export function blurSeamQ(q: Float32Array, sigma = SEAM_BLUR_SIGMA): Float32Arra
   return out
 }
 
-// ---- つなぎ目の位置と切り替えの幅 ----
+// ---- Seam position and blend width ----
 //
-// 2 つのレンズの像は、近い物（ナンバープレート・トップケース・すぐ横の物）では距離をどう合わせても重ならないことがある
-// （物によって距離が違う・片方のレンズにだけ写る物がある）。幅の広いクロスフェードのままだと、その物が二重に透けて見える。
-// そこで、像が合わない方位では
-//   ・切り替えの幅を狭め（二重に見えるのは切り替えの間だけなので）
-//   ・つなぎ目の位置を ±8° の範囲で、両レンズの像の差が小さい所（路面など、切り替わっても目立たない所）へずらす
-// 像がよく合う方位は、これまでどおり幾何学的な継ぎ目で、幅の広いなめらかな切り替えのまま（明るさや細部の違いが目立たないように）
+// The images of the two lenses may not overlap no matter how the distance is adjusted for near things (license plate, top case, things right beside)
+// (distances differ per object, and some things appear in only one lens). With a wide crossfade left as is, such things look doubled and see-through.
+// So at azimuths where the images do not match,
+//   - narrow the blend width (the doubling is visible only during the blend)
+//   - shift the seam position within ±8° to where the difference between the two lenses is small (the road etc., where a switch is not noticeable)
+// Azimuths where the images match well keep the geometric seam and the wide, smooth blend as before (so differences in brightness and detail are not noticeable)
 
-/** つなぎ目の位置の候補 [deg]（幾何学的な継ぎ目からレンズ0の側へ） */
+/** Candidate seam positions [deg] (from the geometric seam toward lens 0) */
 export const CUT_OFFS = [-8, -6, -4, -2, 0, 2, 4, 6, 8]
 
 export interface SeamCutState {
-  /** ビンごとのつなぎ目の位置 [deg] */
+  /** Seam position per bin [deg] */
   off: Float32Array
-  /** ビンごとの切り替えの幅の倍率（1 = 通常） */
+  /** Blend width multiplier per bin (1 = normal) */
   width: Float32Array
-  /** ビンごとの「像が合わない」度合い（0〜1。確認用） */
+  /** Per-bin degree of "images do not match" (0-1; for checking) */
   ghost: Float32Array
-  /** 時間でならした像の差（avgDiff[j * bins + b]）と、ならす前の合わない度合い（次のフレームでならすため） */
+  /** Image difference smoothed over time (avgDiff[j * bins + b]) and the unsmoothed mismatch degree (for smoothing in the next frame) */
   avgDiff?: Float32Array
   avgG0?: Float32Array
   frame: number
 }
 
-// 像が合わない度合い: 選んだ距離での不一致（相関から。0〜1）と、継ぎ目の位置での像の差（0〜1）の両方が大きいとき
+// Degree of mismatch: when both the mismatch at the chosen distance (from correlation, 0-1) and the image difference at the seam position (0-1) are large
 const CUT_M_LO = 0.2
 const CUT_M_HI = 0.4
 const CUT_D_LO = 0.12
 const CUT_D_HI = 0.3
-const NARROW = 0.25 // 合わない所の幅の倍率（12° → 3°）
-const CUT_CENTER = 0.06 // ずらすほど嫌う重み（8° あたり）
-const CUT_KEEP = 0.6 // 像が合う方位を幾何学的な継ぎ目に留める重み（8° あたり）
-const CUT_SMOOTH = 0.1 // 隣のビンとの位置の差の重み（2° あたり）。小さいとつなぎ目がジグザグに折れて、物の縁に段差ができる
-const CUT_FOLLOW = 0.25 // 連続したフレームで新しい値へ近づける割合
-// 像の差と合わない度合いを時間でならす割合（1 フレームに 3%、50fps で約 0.7 秒）。
-// つなぎ目の上の近い物（トップケース・ナンバープレート・カメラの台）はカメラと一緒に動くので、良いつなぎ目の位置はほとんど変わらない。
-// フレームごとの像の差は、後ろへ流れる路面で揺れ、離れた候補（−8° と +6° など）の間で選び直してしまう。
-// 出力の位置だけをならしても、候補の間を行き来する途中でケースの縁やプレートを横切り、走行中にケースの角やプレートの一部がパラパラと欠けて見えた
+const NARROW = 0.25 // width multiplier for non-matching areas (12° to 3°)
+const CUT_CENTER = 0.06 // weight that dislikes shifting (per 8°)
+const CUT_KEEP = 0.6 // weight that keeps well-matching azimuths on the geometric seam (per 8°)
+const CUT_SMOOTH = 0.1 // weight of the position difference from neighboring bins (per 2°). If small, the seam zigzags and leaves steps on object edges
+const CUT_FOLLOW = 0.25 // fraction by which the value approaches the new one over consecutive frames
+// Fraction by which the image difference and the mismatch degree are smoothed over time (3% per frame, about 0.7 s at 50fps).
+// Near things on the seam (top case, license plate, camera mount) move together with the camera, so the good seam position hardly changes.
+// The per-frame image difference fluctuates on the road flowing backward and reselects between distant candidates (such as −8° and +6°).
+// Even when only the output position was smoothed, on the way back and forth between candidates the seam crossed the edge of the case or the plate, and while riding parts of the case corners or the plate seemed to flicker in and out
 const CUT_AVG = 0.03
 
 const ramp = (x: number, lo: number, hi: number): number => Math.max(0, Math.min(1, (x - lo) / (hi - lo)))
 
 /**
- * @param diff ビン b・位置の候補 j の像の差（diff[j * bins + b]、0〜1。1 = 写る範囲の外）
- * @param cost 距離の候補ごとの不一致（chooseSeamDepth と同じ）
- * @param q ビンごとに選んだ距離の逆数
+ * @param diff image difference of bin b, position candidate j (diff[j * bins + b], 0-1. 1 = outside the visible range)
+ * @param cost mismatch per distance candidate (same as chooseSeamDepth)
+ * @param q inverse distance chosen per bin
  */
 export function chooseSeamCut(
   diff: Float32Array,
@@ -225,17 +225,17 @@ export function chooseSeamCut(
   const J = CUT_OFFS.length
   const j0 = CUT_OFFS.indexOf(0)
   const continuous = !!prev && Math.abs(frame - prev.frame) === 1
-  // 像の差は時間でならす（写る範囲の外 = 1 は、ならさずにそのフレームの値で判定する）
+  // Smooth the image difference over time (outside the visible range = 1 is judged by this frame's value without smoothing)
   const raw = diff
   if (continuous && prev!.avgDiff && prev!.avgDiff.length === raw.length) {
     const a = new Float32Array(raw.length)
     for (let i = 0; i < raw.length; i++) a[i] = prev!.avgDiff[i] + (raw[i] - prev!.avgDiff[i]) * CUT_AVG
     diff = a
   }
-  // 像が合わない度合い（ビンごと）
+  // Degree of image mismatch (per bin)
   const g0 = new Float32Array(bins)
   for (let b = 0; b < bins; b++) {
-    // 選んだ距離での不一致（候補の間は補間）
+    // Mismatch at the chosen distance (interpolated between candidates)
     let k = 0
     while (k < cand.length - 2 && cand[k + 1] < q[b]) k++
     const f = Math.max(0, Math.min(1, (q[b] - cand[k]) / (cand[k + 1] - cand[k])))
@@ -243,7 +243,7 @@ export function chooseSeamCut(
     g0[b] = texture[b] >= MIN_TEXTURE ? ramp(m, CUT_M_LO, CUT_M_HI) * ramp(diff[j0 * bins + b], CUT_D_LO, CUT_D_HI) : 0
     if (continuous && prev!.avgG0) g0[b] = prev!.avgG0[b] + (g0[b] - prev!.avgG0[b]) * CUT_AVG
   }
-  // 物の端まで狭くなるよう、隣の 2 ビンへ広げてからぼかす
+  // Spread to the 2 neighboring bins so that it narrows all the way to the object edge, then blur
   const gMax = new Float32Array(bins)
   for (let b = 0; b < bins; b++) {
     let v = 0
@@ -251,7 +251,7 @@ export function chooseSeamCut(
     gMax[b] = v
   }
   const ghost = blurSeamQ(gMax, 1.5)
-  // つなぎ目の位置: ビンの並びに沿った最短経路（像の差 + ずらす量 + 隣との差）
+  // Seam position: shortest path along the bins (image difference + shift amount + difference from neighbor)
   const unary = (b: number, j: number): number => {
     const o = Math.abs(CUT_OFFS[j]) / 8
     return ghost[b] * diff[j * bins + b] + (CUT_CENTER + CUT_KEEP * (1 - ghost[b])) * o + (raw[j * bins + b] >= 1 ? 10 : 0)
@@ -264,8 +264,8 @@ export function chooseSeamCut(
       let best = Infinity
       let bj = 0
       for (let i = 0; i < J; i++) {
-        // 隣のビンへ位置を変えるとき、つなぎ目の線はその間の位置を斜めに横切る。その位置の像の差も数える
-        // （差の小さい位置が物の上と下に分かれているとき、その間で乗り換えると物（ナンバープレート）を横切って欠けて見えた）
+        // When the position changes to a neighboring bin, the seam line crosses the positions in between diagonally. Count the image difference at those positions too
+        // (when the low-difference positions were split above and below an object, switching between them crossed the object (license plate) and made it look chipped)
         let cross = 0
         for (let k = Math.min(i, j) + 1; k < Math.max(i, j); k++) cross += 0.5 * (diff[k * bins + b - 1] + diff[k * bins + b])
         const v = acc[(b - 1) * J + i] + (CUT_SMOOTH * Math.abs(CUT_OFFS[j] - CUT_OFFS[i])) / 2 + 0.5 * (ghost[b - 1] + ghost[b]) * cross
@@ -283,7 +283,7 @@ export function chooseSeamCut(
   for (let j = 1; j < J; j++) if (acc[(bins - 1) * J + j] < acc[(bins - 1) * J + last]) last = j
   pick[bins - 1] = last
   for (let b = bins - 1; b > 0; b--) pick[b - 1] = from[b * J + pick[b]]
-  // 選んだ位置を方位に沿って少しならす（つなぎ目の線がなめらかに曲がるように）
+  // Smooth the chosen position a little along the azimuth (so that the seam line curves smoothly)
   const picked = new Float32Array(bins)
   for (let b = 0; b < bins; b++) picked[b] = CUT_OFFS[pick[b]]
   const offS = blurSeamQ(picked, 1.5)

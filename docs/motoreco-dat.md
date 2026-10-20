@@ -1,79 +1,79 @@
-# MotoReco の .dat を直接読む（.ddf の変換規則）
+# Reading MotoReco .dat files directly (the .ddf conversion rules)
 
-MotoRecoViewer で CSV に変換しなくても、ロガーが記録した `.dat` をそのまま読める。
-変換規則は MotoRecoViewer と同じ `.ddf` を指定する。デコード結果は MotoRecoViewer の CSV（"TO Custom v1"）と同じ列名・同じ 10ms 刻みの表になり、
-その後の同期・リーン角の融合・テレメトリーは CSV のときと同じ処理を通る。
+The `.dat` recorded by the logger can be read as is, without converting it to CSV in MotoRecoViewer.
+Specify the same `.ddf` that MotoRecoViewer uses for the conversion rules. The decoded result is a table with the same column names and the same 10ms steps as MotoRecoViewer's CSV ("TO Custom v1"),
+and from there synchronization, lean angle fusion and telemetry go through the same processing as with CSV.
 
-実装: `app/src/renderer/src/core/motoreco-dat.ts`。組み込みの規則の式と、表にするまでの手順は MotoRecoViewer のソース（`E:\Claude\MotoRecoViewer`）の移植:
+Implementation: `app/src/renderer/src/core/motoreco-dat.ts`. The built-in rule formulas and the steps up to the table are ported from the MotoRecoViewer source (`E:\Claude\MotoRecoViewer`):
 
-| MotoRecoViewer | 内容 |
+| MotoRecoViewer | contents |
 |---|---|
-| `DecodeRule.cs`（`FixedFormula`・`DecodeFormula`） | 組み込みの規則の式、手書きの式の置き換え |
-| `FormMain.Data.cs`（`ReadCANData`） | レコードごとのデコード → 並べ替え → 平滑化 → 後処理 |
-| `Model/ChData.cs`（`Sort`・`FilterData`・`Butterworth`・`FindLeftIndex`） | 並べ替え・平滑化・時刻の検索 |
-| `Analysis/ChannelAnalyzer.cs` | 積算距離・消費燃料・燃費・走行可能距離 |
-| `FormMain.Export.cs`（`ConvertDecodeData`） | 10ms ごとの CSV の表 |
+| `DecodeRule.cs` (`FixedFormula`, `DecodeFormula`) | Built-in rule formulas, substitution in hand-written formulas |
+| `FormMain.Data.cs` (`ReadCANData`) | Per-record decoding → sorting → smoothing → post-processing |
+| `Model/ChData.cs` (`Sort`, `FilterData`, `Butterworth`, `FindLeftIndex`) | Sorting, smoothing, time lookup |
+| `Analysis/ChannelAnalyzer.cs` | Accumulated distance, fuel consumed, fuel economy, range |
+| `FormMain.Export.cs` (`ConvertDecodeData`) | The CSV table at every 10ms |
 
-確認: `app/test/motoreco-dat.test.ts`。2026-09-19 の 25 分の走行（`20260919_143356.dat` を BMW.ddf で変換した CSV）で、**40 列 × 150,093 行がすべて一致**（差は小数の丸めの 1e-13 程度）。
+Verification: `app/test/motoreco-dat.test.ts`. On the 25-minute ride of 2026-09-19 (the CSV converted from `20260919_143356.dat` with BMW.ddf), **all 40 columns × 150,093 rows match** (the differences are decimal rounding of about 1e-13).
 
-## .dat の形式
+## .dat format
 
-16 バイトのレコードが並んでいるだけ（ヘッダーなし）。数値はすべてリトルエンディアン。
+Just a sequence of 16-byte records (no header). All numbers are little-endian.
 
-| バイト | 内容 |
+| bytes | contents |
 |---|---|
-| 0–3 | 記録開始からの秒（u32） |
-| 4–5 | ミリ秒（u16） |
-| 6–7 | CAN ID（u16）。GPS は疑似 ID の 7FE（速度・標高）と 7FF（緯度・経度） |
-| 8–15 | データ 8 バイト（Data1〜Data8） |
+| 0–3 | Seconds since the start of recording (u32) |
+| 4–5 | Milliseconds (u16) |
+| 6–7 | CAN ID (u16). GPS uses the pseudo IDs 7FE (speed, altitude) and 7FF (latitude, longitude) |
+| 8–15 | 8 bytes of data (Data1 to Data8) |
 
-- 記録開始の時刻はファイル名（`YYYYMMDD_HHMMSS.dat`、ロガーの時計）
-- GPS のレコードだけは少し遅れて書き込まれ、前のレコードより時刻が戻ることがある（最大 1.9 秒）
-- ID ごとの周期: 10C・110・120・174・178・17C・290・293・29C・2D0 が 10ms、2BC・2B0 などが 100ms、3F8・3FA が 1 秒、GPS が 1 秒
+- The recording start time is in the file name (`YYYYMMDD_HHMMSS.dat`, the logger's clock)
+- Only GPS records are written a little late, so the time can go backward relative to the previous record (up to 1.9 seconds)
+- Period per ID: 10C, 110, 120, 174, 178, 17C, 290, 293, 29C and 2D0 are 10ms; 2BC, 2B0 and others are 100ms; 3F8 and 3FA are 1 second; GPS is 1 second
 
-## 表にするまでの手順（MotoRecoViewer と同じ）
+## Steps up to the table (same as MotoRecoViewer)
 
-1. レコードごとに、その CAN ID の規則（.ddf の行）で値を求める。時刻 = 秒 + ミリ秒/1000
-2. 列ごとに時刻順に並べる（同じ時刻はファイルの順のまま。GPS の遅れたレコードもここで正しい位置に入る）
-3. `.ddf` の 9 列目が True の列は、10 列目のカットオフ周波数 [Hz] で平滑化する（下記）
-4. 積算距離・消費燃料・燃費・走行可能距離を、デコードした値から求める（下記）
-5. ファイルの**最初のレコードの時刻**から 0.01 秒ずつ足した時刻ごとに（ファイルの最後のレコードの時刻の手前まで）、
-   その時刻以下で最も新しいレコードの値を並べる。最初のレコードより前の行は最初の値。データの来ない ID の列は作らない
-   - 時刻は 0.01 を足し続けるので、浮動小数の誤差で少しずつ小さくなる（200 秒の行は 199.99999…）。そのため行の時刻ちょうどのレコードは次の行から反映される。これも同じにしている
-   - CSV の `time (ms)` は「時刻 × 1000 の整数」
+1. For each record, compute the value with the rule for its CAN ID (a row of the .ddf). Time = seconds + milliseconds/1000
+2. Sort each column by time (equal times keep the file order; late GPS records also fall into the right place here)
+3. Columns whose 9th field in the `.ddf` is True are smoothed with the cutoff frequency [Hz] in the 10th field (see below)
+4. Compute accumulated distance, fuel consumed, fuel economy and range from the decoded values (see below)
+5. For each time obtained by adding 0.01 seconds at a time from the time of the **first record** in the file (up to just before the time of the last record in the file),
+   list the value of the latest record at or before that time. Rows before the first record take the first value. Columns for IDs that never send data are not created
+   - Since the time is built by repeatedly adding 0.01, floating-point error makes it slightly smaller (the 200-second row is 199.99999…). So a record at exactly a row's time is reflected from the next row. This is reproduced too
+   - The CSV's `time (ms)` is "an integer of time × 1000"
 
-### 平滑化
+### Smoothing
 
-2 次バターワースを前向き・後ろ向きの 2 回かける（位相の遅れなし）。`ChData.Butterworth` の移植で、
+A 2nd-order Butterworth applied twice, forward and backward (no phase delay). A port of `ChData.Butterworth`:
 
-- サンプルの間隔は、その列の先頭 100 レコードの間隔の平均
-- 両端は端の値で 2 点ずつ延ばしてからかける。最後の 1 点は平滑化しない
-- 10ms の表ではなく、レコードの列にかける
+- The sample interval is the average interval of the first 100 records of that column
+- Both ends are extended by 2 points with the end values before filtering. The last point is not smoothed
+- It is applied to the record sequence, not to the 10ms table
 
-BMW.ddf では X/Y/Z の G とスリップ率が 1Hz。
+In BMW.ddf, the X/Y/Z G values and the slip rate are at 1Hz.
 
-## .ddf の形式
+## .ddf format
 
-1 行が 1 列（CSV の列）。カンマ区切り。
+One line is one column (a CSV column). Comma-separated.
 
 ```
-名前, CAN ID（16進）, 規則, 色, 最小, 最大, サブチャートに表示, メインチャートに表示, 平滑化 True/False, カットオフ [Hz]
-例: X_Axis_G,178,#BMW_XAxisG,-8355840,-2,2,False,True,True,1
+name, CAN ID (hex), rule, color, min, max, show in sub chart, show in main chart, smoothing True/False, cutoff [Hz]
+Example: X_Axis_G,178,#BMW_XAxisG,-8355840,-2,2,False,True,True,1
 ```
 
-古い .ddf は 8 列（平滑化の列なし）で、その場合は平滑化しない。
+Old .ddf files have 8 columns (no smoothing column), in which case no smoothing is applied.
 
-規則は 2 種類:
+There are two kinds of rules:
 
-- **式**: `Data1`〜`Data8`（そのバイト）、`LoData1`〜`LoData8`（下位 4 ビット）、`HiData1`〜`HiData8`（上位 4 ビット）、数、`+ - * /`、括弧
-  （例: `(LoData4*255+Data3)*4`、`Data5*90/128`）。割り算は実数（MotoRecoViewer の `DataTable.Compute` と同じ）
-- **組み込み**: `#` で始まる名前（下の表）。`#Data1`〜`#Data8`・`#HiData1`〜・`#LoData1`〜 もある
+- **Formula**: `Data1` to `Data8` (that byte), `LoData1` to `LoData8` (low 4 bits), `HiData1` to `HiData8` (high 4 bits), numbers, `+ - * /`, parentheses
+  (e.g. `(LoData4*255+Data3)*4`, `Data5*90/128`). Division is real-valued (same as MotoRecoViewer's `DataTable.Compute`)
+- **Built-in**: a name starting with `#` (table below). `#Data1` to `#Data8`, `#HiData1` and up, and `#LoData1` and up also exist
 
-## 組み込みの規則
+## Built-in rules
 
-`D1`〜`D8` はバイト、`Lo`/`Hi` は下位/上位 4 ビット、`U32(n)` は Dn から 4 バイトのリトルエンディアン。
+`D1` to `D8` are bytes, `Lo`/`Hi` are the low/high 4 bits, and `U32(n)` is 4 little-endian bytes starting at Dn.
 
-| 規則 | ID | 式 |
+| rule | ID | formula |
 |---|---|---|
 | `#BMW_RPM` | 10C | (Lo4·256 + D3)·5 |
 | `#BMW_ThrottelValvePosition` | 10C | D6/255·100 |
@@ -87,9 +87,9 @@ BMW.ddf では X/Y/Z の G とスリップ率が 1Hz。
 | `#BMW_FrSpeed1` | 293 | (Lo5·256 + D4)/8 |
 | `#BMW_FrSpeed2` | 293 | (D3·16 + Hi2)/8 |
 | `#BMW_RrSpeed` | 293 | (Lo2·256 + D1)/8 |
-| `#BMW_SlipRate` | 293 | RrSpeed/FrSpeed1·100 − 100（前輪速 0 のときは 0） |
-| `#BMW_Gear` | 2BC | Hi6 が 1, 4, 7, 8, 11, 13 → 1〜6 速、それ以外は 0 |
-| `#BMW_RollRate` / `#BMW_YawRate` | 178 / 174 | D2·125/127 + D1/255 − 125 [deg/s]（−125 は無効値） |
+| `#BMW_SlipRate` | 293 | RrSpeed/FrSpeed1·100 − 100 (0 when the front wheel speed is 0) |
+| `#BMW_Gear` | 2BC | Hi6 of 1, 4, 7, 8, 11, 13 → gears 1 to 6; anything else is 0 |
+| `#BMW_RollRate` / `#BMW_YawRate` | 178 / 174 | D2·125/127 + D1/255 − 125 [deg/s] (−125 is an invalid value) |
 | `#BMW_XAxisG` / `#BMW_YAxisG` / `#BMW_ZAxisG` | 178 / 174 / 17C | (D6 + D5/255 − 128)/32 [G] |
 | `#BMW_AirTemp` | 3FA | D1·0.75 − 48 |
 | `#BMW_OilTemp` | 3FA | D2 − 25 |
@@ -101,55 +101,56 @@ BMW.ddf では X/Y/Z の G とスリップ率が 1Hz。
 | `#BMW_FuelCount` | 2BC | D5·256 + D4 |
 | `#GPS_Latitude` | 7FF | (U32(5) − 90000000)/10⁶ |
 | `#GPS_Longitude` | 7FF | (U32(1) − 180000000)/10⁶ |
-| `#GPS_Speed` | 7FE | U32(5)/10⁶·3.6 [km/h]（ロガーは m/s の 10⁶ 倍で記録） |
-| `#GPS_Altitude` | 7FE | (U32(1) − 10000000)/10⁴ [m]（旧仕様の「標高·10⁶ + 10⁹」で記録した .dat は正しく読めない） |
+| `#GPS_Speed` | 7FE | U32(5)/10⁶·3.6 [km/h] (the logger records m/s × 10⁶) |
+| `#GPS_Altitude` | 7FE | (U32(1) − 10000000)/10⁴ [m] (a .dat recorded with the old spec "altitude·10⁶ + 10⁹" can't be read correctly) |
 
-### 後処理で求める規則（積算など）
+### Rules computed in post-processing (accumulations etc.)
 
-デコードの時点では 0 で、全レコードを並べた後に、同じ .ddf にある元の列から求める（元の列が .ddf に無ければ 0 のまま）。
-いずれもレコードごと（10ms の表にする前）に計算する。
+At decode time they are 0; after all the records are lined up, they are computed from the source columns in the same .ddf (if the source column is not in the .ddf they stay 0).
+All of them are computed per record (before building the 10ms table).
 
-| 規則 | 元の列 | 計算 |
+| rule | source column | calculation |
 |---|---|---|
-| `#GPS_Distance` | `#GPS_Speed` | レコードごとに「その速度 × 前のレコードからの時間」を足す [km] |
-| `#BMW_DistFrSpeed1` | `#BMW_FrSpeed1` | 同上 [km] |
-| `#BMW_AccumulatedDistCountFr` | `#BMW_DistCountFr` | カウンタの増分を足して ×0.000255 [km]。増分が −3900 未満なら 1 周（+3951）、それ以外の減少は 0 |
-| `#BMW_AccumulatedDistCountRr` | `#BMW_DistCountRr` | 同様に ×0.004 [km]。−250 未満なら +255 |
-| `#BMW_AccumulatedFuelCount` | `#BMW_FuelCount` | 同様に ÷10⁶ [L]。−65000 未満なら +65536 |
-| `#BMW_FuelConsumption` | 上の 2 つ | 積算燃料のレコードの時刻ごとに、積算距離（前輪のカウンタ）/ 積算燃料 [km/L]（燃料 0 なら 0） |
-| `#BMW_Range` | 燃費・`#BMW_FuelLevel` | 燃費のレコードの時刻ごとに、30L × 燃料残量/100 × 燃費 [km]（燃費 0 なら 0） |
+| `#GPS_Distance` | `#GPS_Speed` | For each record, add "that speed × time since the previous record" [km] |
+| `#BMW_DistFrSpeed1` | `#BMW_FrSpeed1` | Same [km] |
+| `#BMW_AccumulatedDistCountFr` | `#BMW_DistCountFr` | Add the counter increments and multiply by 0.000255 [km]. If the increment is below −3900 it is a wraparound (+3951); any other decrease is 0 |
+| `#BMW_AccumulatedDistCountRr` | `#BMW_DistCountRr` | Same, ×0.004 [km]. +255 if below −250 |
+| `#BMW_AccumulatedFuelCount` | `#BMW_FuelCount` | Same, ÷10⁶ [L]. +65536 if below −65000 |
+| `#BMW_FuelConsumption` | the two above | At each time of an accumulated fuel record, accumulated distance (front wheel counter) / accumulated fuel [km/L] (0 if fuel is 0) |
+| `#BMW_Range` | fuel economy, `#BMW_FuelLevel` | At each time of a fuel economy record, 30L × fuel remaining/100 × fuel economy [km] (0 if fuel economy is 0) |
 
-### MotoRecoViewer との違い（意図したもの）
+### Intentional differences from MotoRecoViewer
 
-- `#K51_*` は `#BMW_*` と同じに扱う（古い .ddf の書き方。今の MotoRecoViewer では知らない規則として 0 になる）
-- 知らない組み込みの規則は、0 の列を作らずに飛ばし、画面に「変換できない規則が n 個あります」と出す
-- 後処理で求める列に平滑化を指定した場合、MotoRecoViewer では平滑化が後処理より前に行われるので 0 になるが、こちらは後処理の後の値を平滑化する
-- 同じ名前の列が .ddf に 2 つあると、2 つ目以降は「名前 (2)」のように別の列にする
-- `LeanAngle`（10C）と `RollRate`（178）は、映像との同期に必ず使うので、.ddf に無くても組み込みの規則で読む
-- 組み込みの規則の列は、.ddf での名前が違っても BMW.ddf の列名（`lat (deg)`・`Speed` など）でも引けるようにしている（アプリはその名前で読む）
+- `#K51_*` is treated the same as `#BMW_*` (an old way of writing .ddf; the current MotoRecoViewer doesn't know it and gives 0)
+- Unknown built-in rules are skipped without creating a column of 0s, and the screen shows "{n} rules cannot be decoded (those columns are skipped)"
+- If smoothing is specified for a column computed in post-processing, MotoRecoViewer smooths before post-processing and gets 0, but here the value after post-processing is smoothed
+- If the .ddf has two columns with the same name, the second and later ones become separate columns such as "name (2)"
+- `LeanAngle` (10C) and `RollRate` (178) are always needed for synchronizing with the video, so they are read with the built-in rules even if the .ddf lacks them
+- Columns of built-in rules can be looked up both by the name in the .ddf and by the BMW.ddf column names (`lat (deg)`, `Speed`, etc.) (the app reads them by those names)
 
-## 映像に合う .dat をフォルダから選ぶ
+## Choosing the .dat that matches the video from a folder
 
-サイドパネルの「車両ログ」の「フォルダから探す」、または動画を開いたとき（プロジェクトにログが無く、動画と同じフォルダに CSV も無く、.dat のフォルダと .ddf が設定してあるとき）に自動で行う。
+Done with "Find in folder" under "Vehicle log (MotoReco)" in the side panel, or automatically when a video is opened (the project has no log, there is no CSV in the same folder as the video, and the .dat folder and .ddf are set).
 
-1. フォルダとその下 2 段までのフォルダの `.dat` を集める（`CAN Log\2026\…` のような年ごとのフォルダもそのまま指定できる）
-2. 時刻で絞る: 動画のファイル名（`VID_YYYYMMDD_HHMMSS`、カメラの時計）の時刻と長さ、.dat のファイル名の時刻と長さ（ファイル末尾のレコードの時刻）から、時間の重なりのすき間を求め、近い順に並べる。
-   ロガーとカメラの時計は数十分ずれることがある（実例: 25 分）ので、まず 2 時間以内の 8 件、見つからなければ 1 日以内の 12 件、さらに 6 件と広げる
-3. 照合: 各 .dat のロールレートだけを読み、映像のジャイロのロール角速度との全範囲の相互相関をとる。目安は「主ピーク / 第 2 ピーク」（同期の信頼度と同じ）。
-   3 以上ならその場で決め、それ以外は候補の中で最大のものを、1.5 以上なら採用する
+1. Collect the `.dat` files in the folder and in folders up to 2 levels below it (a per-year folder such as `CAN Log\2026\…` can be specified as is)
+2. Narrow by time: from the time and length of the video file name (`VID_YYYYMMDD_HHMMSS`, the camera's clock) and the time and length of the .dat file name (the time of the last record in the file),
+   compute the gap in time overlap and order by closeness.
+   The logger and camera clocks can differ by tens of minutes (an actual case: 25 minutes), so first take 8 within 2 hours, then 12 within 1 day if none is found, and widen by another 6
+3. Matching: read only the roll rate of each .dat and take the full-range cross-correlation with the roll angular velocity of the video's gyro. The guide is "main peak / second peak" (same as the sync confidence).
+   If it is 3 or more, decide on the spot; otherwise take the largest among the candidates and accept it if it is 1.5 or more
 
-実例（`VID_20260919_140847`、25 分の動画）: 同じ走行の `20260919_143356.dat` は 3.56、同じ日の別の走行は 1.00〜1.16、翌日の走行は 1.07。
-この例では 2 件目で決まり、読み込みまで約 1 秒だった。
+Actual example (`VID_20260919_140847`, a 25-minute video): `20260919_143356.dat` of the same ride gives 3.56, other rides on the same day 1.00 to 1.16, and the next day's ride 1.07.
+In this example it was decided at the 2nd file, and loading took about 1 second.
 
-設定（.dat のフォルダと .ddf）はこのパソコンに覚えておく（localStorage の `reframe.logPrefs`）。
-.dat を読んだときに使った .ddf はプロジェクトにも記録し（`ddfPath`）、次に開いたときはそれで読み直す。
+The settings (the .dat folder and .ddf) are remembered on this PC (localStorage `reframe.logPrefs`).
+The .ddf used when the .dat was read is also recorded in the project (`ddfPath`) and used to read it again the next time it is opened.
 
-## 確認の方法
+## How to verify
 
 ```bash
 cd app
-npx tsx test/motoreco-dat.test.ts                                 # 式の確認 + 既定の実データ（あれば）で CSV と全列・全行を突き合わせ
-npx tsx test/motoreco-dat.test.ts <dat> <ddf> <csv> <insv> [別の dat…]   # 照合の目安も出す
+npx tsx test/motoreco-dat.test.ts                                 # checks the formulas + compares CSV on every column and row against the default real data (if present)
+npx tsx test/motoreco-dat.test.ts <dat> <ddf> <csv> <insv> [other dat…]   # also prints the matching guide
 ```
 
-`proto/motoreco_check.py` は、ソースを見る前に CSV から式を推定したときの道具（`check(列名, ID, 式)` で一致率を出す）。
+`proto/motoreco_check.py` is a tool from when the formulas were inferred from the CSV before looking at the source (`check(column name, ID, formula)` prints the match rate).

@@ -1,50 +1,50 @@
-// プロジェクト（編集内容）のデータ構造。JSON で保存する。
+// Data structure of a project (the edits). Saved as JSON.
 import type { SeamFix } from '../core/seamfit'
 import { DEFAULT_AUDIO_FX, OLD_DEFAULT_LOWPASS_HZ, type AudioFx } from '../core/audiofx'
 import { DEFAULT_INCIDENT, mergeIncident, OLD_RIDER_FOV, RIDER_VIEW, type IncidentSettings } from './incident'
 import { t } from '../i18n'
 import { DEFAULT_DIRECTOR, mergeDirector, type DirectorSettings, type Marker, type OvertakeSpan } from './director'
 
-/** キーフレームの印（自動生成のショットの種類） */
+/** Shot-kind marker (for auto-generated shots) */
 export type KeyTag = 'front' | 'corner' | 'side' | 'rear' | 'overtake'
 
 export interface Keyframe {
-  t: number // 動画時刻 [s]
-  yaw: number // 車体座標の視点 [deg]（0 = 前、正 = 右）
-  pitch: number // [deg]（正 = 下）
-  fov: number // 水平画角 [deg]
-  leanRatio: number // 画面に残すリーンの割合（1 = 車体と一緒に傾く, 0 = 水平固定）。ログがあるときのみ有効
-  /** 次のキーフレームまでを等速で補間する（名所を追いかけるときなど、細かく置いたキーフレームを滑らかにつなぐ） */
+  t: number // video time [s]
+  yaw: number // view in body coordinates [deg] (0 = front, positive = right)
+  pitch: number // [deg] (positive = down)
+  fov: number // horizontal FOV [deg]
+  leanRatio: number // fraction of the lean kept on screen (1 = tilts with the bike, 0 = horizon locked). Only effective when a log is present
+  /** Interpolate at constant speed up to the next keyframe (smoothly joins closely spaced keyframes, e.g. when following a landmark) */
   linear?: boolean
   /**
-   * 自動生成で作ったときのショットの種類（タイムラインで色分けする）: 前方・コーナー入口・側方・後方・追い越し（黄色）。
-   * 手で置いたもの・注目ポイントには付けない
+   * Shot kind when generated automatically (color-coded on the timeline): front, corner entry, side, rear, overtake (yellow).
+   * Not set on manually placed keyframes or markers
    */
   tag?: KeyTag
 }
 
 export interface StabSettings {
   enabled: boolean
-  sigma: [number, number, number] // ピッチ・ヨー・ロールの平滑化 [s]
+  sigma: [number, number, number] // smoothing of pitch, yaw and roll [s]
   rollingShutter: boolean
-  rollComp: boolean // ログのリーン角でロールの「なまり」を補完
+  rollComp: boolean // compensate the roll "lag" using the log lean angle
   /**
-   * レンズの継ぎ目の合わせ込み（core/seamfit.ts）: レンズ1の補正（回転と縁の角度）。
-   * undefined = まだ推定していない（開いたときに推定する）、null = 推定できなかった
+   * Lens seam fitting (core/seamfit.ts): correction for lens 1 (rotation and edge angle).
+   * undefined = not estimated yet (estimated when opened), null = could not be estimated
    */
   seam?: SeamFix | null
-  /** 継ぎ目の合わせ込みを使う（既定 true） */
+  /** Use seam fitting (default true) */
   seamFix?: boolean
-  /** 動的なつなぎ合わせ: 継ぎ目の付近の景色の距離をフレームごとに求め、レンズの位置の差による視差を補正する（既定 true） */
+  /** Dynamic stitching: per frame, estimate the distance of the scenery near the seam and correct the parallax caused by the lens position difference (default true) */
   dynamicSeam?: boolean
-  /** 継ぎ目のぼかし幅 [deg]（既定 12） */
+  /** Seam blur width [deg] (default 12) */
   seamBlend?: number
   /**
-   * 自車の継ぎ目の型（core/bodymap.ts）: トップケース・ナンバープレートなどカメラと一緒に動く物を、動画の区間ごとに AI で作り込んだ
-   * つなぎ目で描く（既定 false: 試験的。場面によって良くも悪くもなる）。型は動画の横の .motorecomovie-body.bin に保存する
+   * Own-bike seam template (core/bodymap.ts): things that move with the camera, such as the top case and license plate, are drawn with a seam
+   * built by AI per video section (default false: experimental; can help or hurt depending on the scene). The template is saved next to the video as .motorecomovie-body.bin
    */
   bodyStitch?: boolean
-  /** 穴を埋める AI のモデル（既定 lama） */
+  /** AI model that fills the holes (default lama) */
   bodyInpaint?: 'lama' | 'migan'
 }
 
@@ -54,12 +54,12 @@ export interface ExportSettings {
   codec: 'hevc' | 'avc'
   bitrateMbps: number
   inSec: number
-  outSec: number // 負なら最後まで
-  /** 動画に入る文字（挙動の乱れの表示・字幕の見出しなど）の言語。省略時は画面の言語と同じ */
+  outSec: number // negative = to the end
+  /** Language of the text burned into the video (disturbance display, subtitle headings, etc.). Defaults to the UI language when omitted */
   textLang?: 'ja' | 'en'
 }
 
-/** 出力画面に対する割合（0〜1）。左上が原点 */
+/** Fractions of the output screen (0 to 1). The origin is the top left */
 export interface Rect {
   x: number
   y: number
@@ -76,33 +76,33 @@ interface LayerBase {
   visible: boolean
 }
 
-/** 枠線。太さは出力の短辺に対する割合 */
+/** Border. The thickness is a fraction of the output short side */
 export interface Border {
   width: number
   color: string
 }
 
-/** 360°映像を切り出して表示する画面。それぞれが自分のキーフレーム（視点）を持つ */
+/** A screen that shows a crop of the 360-degree video. Each one has its own keyframes (view) */
 export interface ViewLayer extends LayerBase {
   type: 'view'
   keyframes: Keyframe[]
   border?: Border
-  /** これから進入するコーナーの曲線半径を、空中に浮かぶ標識として描く（車両ログが必要） */
+  /** Draw the radius of the upcoming corner as a sign floating in the air (needs a vehicle log) */
   signs?: boolean
-  /** 標識の見た目: real = 現実の道路標識風、cyber = AR 風 */
+  /** Sign look: real = like a real road sign, cyber = AR style */
   signStyle?: 'real' | 'cyber'
-  /** 標識の位置: コーナーの進入地点から経路に沿って何 m 先か（負 = 手前。既定 signs.ts の DEFAULT_SIGN_AHEAD） */
+  /** Sign position: how many meters ahead along the route from the corner entry point (negative = before it; default DEFAULT_SIGN_AHEAD in signs.ts) */
   signAhead?: number
-  /** incident = 車体挙動の乱れがあった時だけ、2 画面の片側に出る「自車」の画面（engine/incident.ts） */
+  /** incident = a screen of the "own bike" shown on one side of a 2-screen layout only while a body disturbance occurs (engine/incident.ts) */
   role?: 'incident'
 }
 
 export type WidgetKind = 'chrono' | 'cyber' | 'map' | 'elevation' | 'compass' | 'readout'
 
-/** 削除した重ね表示（メーター一式・速度計・回転計・ギア・リーンアングル・前後 G・外気温）。保存されていたら読み込むときに外す */
+/** Removed overlays (meter set, speedometer, tachometer, gear, lean angle, front/rear G, outside temperature). Removed on load if found in a saved project */
 export const REMOVED_WIDGETS = ['dashboard', 'speed', 'gear', 'rpm', 'lean', 'gforce', 'temp']
 
-/** テレメトリーなどを重ねて表示するレイヤー */
+/** A layer that overlays telemetry and the like */
 export interface OverlayLayer extends LayerBase {
   type: 'overlay'
   widget: WidgetKind
@@ -115,29 +115,29 @@ export interface Project {
   version: 2
   insvPath: string
   logPath: string | null
-  /** logPath が MotoReco の .dat のとき、デコードに使った変換規則（.ddf） */
+  /** When logPath is a MotoReco .dat, the conversion rules (.ddf) used for decoding */
   ddfPath?: string | null
   logEnabled: boolean
   stab: StabSettings
-  /** 描画順（先頭が一番下） */
+  /** Draw order (first is the bottom) */
   layers: Layer[]
   export: ExportSettings
-  /** 注目ポイント（画角の自動切り替えで、その時刻にその方向を見せる） */
+  /** Markers (auto camera shows that direction at that time) */
   markers: Marker[]
-  /** 画角の自動切り替えの設定 */
+  /** Auto camera settings */
   director: DirectorSettings
-  /** 追い越しの区間（動画を調べた結果。まだ調べていなければ無し） */
+  /** Overtake sections (result of scanning the video; absent if not scanned yet) */
   overtakes?: OvertakeSpan[]
-  /** overtakes を求めた判定の版（OVERTAKE_SCAN_VERSION と違えば調べ直す） */
+  /** Version of the detection that produced overtakes (rescan if it differs from OVERTAKE_SCAN_VERSION) */
   overtakesVersion?: number
-  /** 車体挙動の乱れがあった時に自動で 2 画面にする設定 */
+  /** Settings for automatically switching to 2 screens when a body disturbance occurs */
   incident: IncidentSettings
-  /** 走行中の音を整える（音割れの補修・エンジン音以外を抑える・音圧を抑える。core/audiofx.ts） */
+  /** Tidy the audio while riding (declip, suppress non-engine sound, reduce loudness; core/audiofx.ts) */
   audioFx: AudioFx
   /**
-   * 時刻の基準の版。1 = 動画時刻の 0 が最初のフレーム（ジャイロの時間軸の firstFrameUs）。
-   * 無い（以前の版）ものは、フレームの時刻の記録をそのまま使っていたので、X5 の動画では 0.77 秒、分割された 2 本目以降の動画では 7〜18 秒、
-   * 時刻がずれている（開いたときに shiftProjectTimes で直す。core/insv.ts の gyroFrameTimes）
+   * Version of the time base. 1 = video time 0 is the first frame (firstFrameUs of the gyro time axis).
+   * Projects without it (older versions) used the recorded frame times as-is, so for X5 videos the times are off by 0.77 s, and for the 2nd and later videos of a split recording by 7 to 18 s
+   * (fixed on open by shiftProjectTimes; see gyroFrameTimes in core/insv.ts)
    */
   timeBase?: 1
 }
@@ -157,7 +157,7 @@ export function newProject(insvPath: string): Project {
     logPath: null,
     logEnabled: true,
     stab: { enabled: true, sigma: [0.6, 0.3, 0.2], rollingShutter: true, rollComp: true },
-    layers: [newViewLayer(t('メイン'))],
+    layers: [newViewLayer(t('Main'))],
     export: { width: 1920, height: 1080, codec: 'hevc', bitrateMbps: 40, inSec: 0, outSec: -1 },
     markers: [],
     director: structuredClone(DEFAULT_DIRECTOR),
@@ -167,7 +167,7 @@ export function newProject(insvPath: string): Project {
   }
 }
 
-/** プロジェクトの中の動画時刻（キーフレーム・注目ポイント・書き出し範囲・追い越しの区間・2 画面にしない事象）をすべて dt [s] ずらす */
+/** Shift all video times in the project (keyframes, markers, export range, overtake sections, events excluded from 2-screen) by dt [s] */
 export function shiftProjectTimes(p: Project, dt: number): Project {
   if (!dt) return p
   const sh = (x: number): number => Math.round((x + dt) * 1e6) / 1e6
@@ -181,31 +181,31 @@ export function shiftProjectTimes(p: Project, dt: number): Project {
   }
 }
 
-/** 保存されたプロジェクトを最新の形式にする（v1: 視点が1つだけの形式） */
+/** Bring a saved project to the latest format (v1: single-view format) */
 export function migrateProject(raw: Record<string, unknown>, insvPath: string): Project {
   const base = newProject(insvPath)
   if (raw.version === 1 || (raw.keyframes && !raw.layers)) {
     const { keyframes, ...rest } = raw as { keyframes: Keyframe[] } & Record<string, unknown>
-    const main = newViewLayer(t('メイン'))
+    const main = newViewLayer(t('Main'))
     main.keyframes = keyframes?.length ? keyframes : main.keyframes
     return { ...base, ...(rest as Partial<Project>), version: 2, insvPath, layers: [main] }
   }
   const p = { ...base, ...(raw as Partial<Project>), version: 2 as const, insvPath }
-  // 時刻の基準: 保存されたものに無ければ以前の版（開いたときに動画に合わせて直す）
+  // Time base: if absent in the saved project it is an older version (fixed to match the video when opened)
   if (raw.timeBase === undefined) delete p.timeBase
-  // 後から増えた設定項目は既定値で補う
+  // Fill settings added later with defaults
   p.director = mergeDirector(p.director)
   p.markers = p.markers ?? []
-  // 走行地点の解説（字幕）は別のツールで入れることになり、このアプリから外した。古いプロジェクトの内容は読み捨てる
+  // Riding-location commentary (subtitles) is now added by a separate tool and was removed from this app. Contents of old projects are discarded
   delete (p as Record<string, unknown>).commentary
   delete (p as Record<string, unknown>).commentaryLang
   p.layers = p.layers.filter((l) => !(l.type === 'overlay' && (l.widget as string) === 'caption'))
-  // 削除した重ね表示（メーター一式・速度計〜外気温）のレイヤーは外す
+  // Drop layers of the removed overlays (meter set, speedometer to outside temperature)
   p.layers = p.layers.filter((l) => !(l.type === 'overlay' && REMOVED_WIDGETS.includes(l.widget as string)))
   p.incident = mergeIncident(p.incident)
   p.audioFx = { ...DEFAULT_AUDIO_FX, ...p.audioFx }
   if (p.audioFx.lowpassHz === OLD_DEFAULT_LOWPASS_HZ) p.audioFx.lowpassHz = DEFAULT_AUDIO_FX.lowpassHz
-  // 「自車」の画面の画角を以前の既定値から広げた（手で変えていなければ新しい画角に）
+  // The "own bike" screen FOV was widened from its old default (new FOV unless changed by hand)
   p.layers = p.layers.map((l) =>
     l.type === 'view' && l.role === 'incident' ? { ...l, keyframes: l.keyframes.map((k) => (k.fov === OLD_RIDER_FOV ? { ...k, fov: RIDER_VIEW.fov } : k)) } : l
   )
@@ -222,9 +222,9 @@ export function findLayer(p: Project, id: string | null): Layer | undefined {
 
 const ease = (x: number): number => x * x * (3 - 2 * x)
 
-/** 時刻 t の視点をキーフレームから補間する（区間ごとに ease-in-out、ヨーは近い向きへ回る） */
+/** Interpolate the view at time t from the keyframes (ease-in-out per section; yaw turns the short way) */
 export function viewAt(keys: Keyframe[], t: number): Omit<Keyframe, 't'> {
-  // 戻り値に時刻 t を含めない（含めると、これを元に作ったキーフレームの時刻が上書きされる）
+  // Do not include time t in the return value (otherwise the time of keyframes built from it gets overwritten)
   const strip = ({ yaw, pitch, fov, leanRatio }: Keyframe): Omit<Keyframe, 't'> => ({ yaw, pitch, fov, leanRatio })
   if (keys.length === 0) return { ...DEFAULT_KEY }
   const k = [...keys].sort((a, b) => a.t - b.t)

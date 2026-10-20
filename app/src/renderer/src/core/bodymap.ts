@@ -1,62 +1,62 @@
-// 自車の継ぎ目の型（自車の部分を AI で作り込んだ、動画の区間ごとのつなぎ合わせ）。
+// Template for the own-bike seam (the own-bike part refined with AI, stitched together per video segment).
 //
-// カメラをトップケースの後ろなどに付けると、トップケース・ナンバープレート・カメラの台が継ぎ目の真上に来る。
-// これらは 0.3〜1m と近く、片方のレンズにしか写らない物（カメラの台）もあるので、2 つのレンズの像はどの距離でも合わない。
-// フレームごとにつなぎ目の位置や距離を選ぶと、物の一部が欠けたり、走行中にパラパラ動いたりする（docs/insv-x6-format.md）。
+// When the camera is mounted behind the top case, the top case, license plate and camera mount end up right on the seam.
+// These are only 0.3-1 m away, and some of them (the camera mount) are visible to only one lens, so the images from the two lenses never match at any distance.
+// Choosing the seam position or distance per frame makes parts of objects go missing or flicker while riding (docs/insv-x6-format.md).
 //
-// ただし、これらはカメラと一緒に動くので、レンズの画像の中では止まっている。そこで区間（約 30 秒）ごとに 1 回だけ時間をかけて:
-//   1. 継ぎ目の付近を帯の画像（方位 φ × 光軸からの角度 θ）にして、区間のキーフレームの中央値をとる。走っていれば流れる路面は消え、
-//      自車の部分だけが残る（型）。時間で変わらない所 = 自車の部分（MAD が小さい所）
-//   2. 2 つのレンズが両方写す重なり（θ 79〜101°）で、レンズ0 の型の各画素がレンズ1 の型のどこに当たるかを
-//      AI のオプティカルフロー（NeuFlow v2）で求める。前向きと逆向きのフローが一致する所だけ使い、それ以外はずらさない
-//   3. つなぎ目の行を列ごとに、型の像の差が小さい所に決める（パノラマのつなぎ目探しと同じ考え方。90° から離れるほど嫌い、
-//      隣の列となめらかに）。どちらの側もそれぞれのレンズで描く（どちらのレンズが正しいかは決めない）
-//   4. どちらのレンズでも描けない所（穴）があれば、AI の画像の補完（LaMa / MI-GAN）で埋める
-// 毎フレームの描画では、自車の部分はこの対応（つなぎ目とずれ）で、そのときの映像を貼る（明るさや影は、そのときの映像のまま）。
-// それ以外（路面・景色）は、これまでどおりフレームごとの距離の推定とつなぎ目の処理で描く。
+// However, these move together with the camera, so they stay still in the lens images. So, once per segment (about 30 s), take the time to:
+//   1. Turn the area near the seam into a band image (azimuth φ × angle θ from the optical axis) and take the median over the segment's keyframes. The road, which flows while riding, vanishes,
+//      leaving only the own-bike part (the template). Where nothing changes over time = own-bike part (where MAD is small)
+//   2. In the overlap that both lenses see (θ 79-101°), find where each pixel of the lens 0 template lands in the lens 1 template
+//      with AI optical flow (NeuFlow v2). Use it only where forward and backward flow agree; elsewhere do not shift
+//   3. For each column, put the seam row where the template images differ least (same idea as panorama seam finding. The farther from 90° the worse,
+//      and smooth with neighboring columns). Both sides are drawn with their own lens (we do not decide which lens is correct)
+//   4. Fill any holes (where neither lens can draw) with AI inpainting (LaMa / MI-GAN)
+// In per-frame rendering, the own-bike part is drawn by pasting the current video using this correspondence (seam and offset) (brightness and shadows stay as in the current video).
+// Everything else (road, scenery) is drawn as before, with per-frame distance estimation and seam handling.
 //
-// 帯の座標: 列 x → 方位 φ = (x + 0.5) / BAND_W · 360°（seamBasis の e1 から e2 の向きへ）、
-//           行 y → レンズ0 の光軸からの角度 θ = BAND_TH0 + (y + 0.5) · BAND_STEP（継ぎ目は θ = 90°）
+// Band coordinates: column x → azimuth φ = (x + 0.5) / BAND_W · 360° (from seamBasis e1 toward e2),
+//           row y → angle from the lens 0 optical axis θ = BAND_TH0 + (y + 0.5) · BAND_STEP (the seam is θ = 90°)
 
-/** 帯の大きさ [px] と、1 画素の角度 [deg] */
+/** Band size [px] and the angle of one pixel [deg] */
 export const BAND_STEP = 0.15
 export const BAND_W = 2400
 export const BAND_H = 288
-/** 帯の始まりの、レンズ0 の光軸からの角度 [deg]（帯は 68.4〜111.6°） */
+/** Angle from the lens 0 optical axis at the start of the band [deg] (the band spans 68.4-111.6°) */
 export const BAND_TH0 = 90 - (BAND_H * BAND_STEP) / 2
 
-/** 帯の行 y（小数）→ レンズ0 の光軸からの角度 [deg] */
+/** Band row y (fractional) → angle from the lens 0 optical axis [deg] */
 export const bandTheta = (y: number): number => BAND_TH0 + (y + 0.5) * BAND_STEP
-/** レンズ0 の光軸からの角度 [deg] → 帯の行（小数） */
+/** Angle from the lens 0 optical axis [deg] → band row (fractional) */
 export const bandRow = (thetaDeg: number): number => (thetaDeg - BAND_TH0) / BAND_STEP - 0.5
 
-/** オプティカルフローを求める重なりの行（θ 79〜101°）と、モデルの入力の大きさ（NeuFlow v2: 432×768） */
+/** Overlap rows for optical flow (θ 79-101°) and the model input size (NeuFlow v2: 432×768) */
 export const OV_Y0 = Math.round((79 - BAND_TH0) / BAND_STEP)
 export const OV_Y1 = Math.round((101 - BAND_TH0) / BAND_STEP)
 export const FLOW_W = 768
 export const FLOW_H = 432
 
-/** レンズが写す範囲の端（レンズ0 はこれより小さい θ、レンズ1 は大きい θ）。つなぎ目はこの内側に置く */
+/** Edge of the range each lens sees (lens 0 below this θ, lens 1 above). The seam is placed inside it */
 const LENS0_MAX = 99.5
 const LENS1_MIN = 80.5
 
-/** 区間ごとの型（レンズごと） */
+/** Per-segment template (per lens) */
 export interface BandStats {
-  /** 中央値の色（RGB, BAND_W×BAND_H×3） */
+  /** Median color (RGB, BAND_W×BAND_H×3) */
   med: Uint8Array
-  /** 明るさの時間のばらつき（中央値からの差の中央値, 0〜1） */
+  /** Temporal spread of brightness (median of the differences from the median, 0-1) */
   mad: Float32Array
-  /** そのレンズの写る範囲の内か */
+  /** Whether it is inside the range this lens sees */
   valid: Uint8Array
   /**
-   * 時間で変わらない度合い（0〜1）。模様のある所は、各フレームと型の局所的な相関（7×7、明るさの変化によらない）の中央値で、
-   * 模様の無い所は明るさのばらつきの小ささで。明るさのばらつき（mad）だけだと、日の当たり方で明るさの変わるアルミのトップケースを
-   * 「変わる」としてしまい、反射板の所でつなぎ目に段差が残った
+   * How unchanging over time it is (0-1). Where there is texture, the median of the local correlation (7×7, independent of brightness changes) between each frame and the template;
+   * where there is none, the smallness of the brightness spread. With the brightness spread (mad) alone, an aluminum top case whose brightness changes with the sunlight
+   * was judged as "changing", and a step was left at the seam around the reflector
    */
   stat: Float32Array
 }
 
-/** 1 チャンネルの帯の (2r+1) 四方の平均（方位は一周でつながる、行は端で打ち切る） */
+/** Mean over a (2r+1) square of a 1-channel band (azimuth wraps around, rows are clipped at the edges) */
 function boxBand(a: Float32Array, r: number): Float32Array {
   const tmp = new Float32Array(a.length)
   const out = new Float32Array(a.length)
@@ -84,12 +84,12 @@ function boxBand(a: Float32Array, r: number): Float32Array {
   return out
 }
 
-const STAT_R = 3 // 局所的な相関の窓（7×7）
-const STAT_TEX_LO = 0.01 // 窓の明るさの標準偏差がこれ以下は「模様が無い」、+0.02 で「模様がある」
-const STAT_NCC_LO = 0.5 // 相関の中央値がこれ以下は「変わる」、+0.3 で「変わらない」
-const STAT_FLAT_MAD = 0.015 // 模様の無い所で、明るさのばらつきがこれより小さければ「変わらない」
+const STAT_R = 3 // window for the local correlation (7×7)
+const STAT_TEX_LO = 0.01 // window brightness std at or below this = "no texture", +0.02 = "textured"
+const STAT_NCC_LO = 0.5 // median correlation at or below this = "changing", +0.3 = "unchanging"
+const STAT_FLAT_MAD = 0.015 // where there is no texture, a brightness spread smaller than this = "unchanging"
 
-/** 時間で変わらない度合い（BandStats.stat）。lums = 各フレームの明るさ（0〜1）、med = その中央値 */
+/** How unchanging over time it is (BandStats.stat). lums = brightness of each frame (0-1), med = its median */
 function staticness(lums: Float32Array[], med: Float32Array, mad: Float32Array): Float32Array {
   const N = med.length
   const mm = boxBand(med, STAT_R)
@@ -121,7 +121,7 @@ function staticness(lums: Float32Array[], med: Float32Array, mad: Float32Array):
   return stat
 }
 
-/** 何枚かの帯の画像（RGBA、アルファ = 写る範囲の内）から、中央値の色と明るさのばらつきを求める */
+/** From several band images (RGBA, alpha = inside the visible range), compute the median color and the brightness spread */
 export function bandStats(frames: ArrayLike<number>[]): BandStats {
   const n = frames.length
   const N = BAND_W * BAND_H
@@ -159,7 +159,7 @@ export function bandStats(frames: ArrayLike<number>[]): BandStats {
     sortN(v)
     mad[p] = median(v)
   }
-  // 時間で変わらない度合い（明るさを少しぼかして、カメラの台の揺れによる 1 画素ほどのずれを許す）
+  // How unchanging over time it is (blur the brightness slightly to tolerate the ~1 px shift caused by camera mount shake)
   const lums = frames.map((f) => {
     const l = new Float32Array(N)
     for (let p = 0; p < N; p++) l[p] = (f[p * 4] + f[p * 4 + 1] + f[p * 4 + 2]) / (3 * 255)
@@ -174,7 +174,7 @@ export function bandStats(frames: ArrayLike<number>[]): BandStats {
   return { med, mad, valid, stat: staticness(lums, lmed, mad) }
 }
 
-/** フローのモデルの入力: 型の重なりの行（OV_Y0〜OV_Y1）、列 x0 から FLOW_W 列（一周でつながる）を、縦だけ FLOW_H 行に引き伸ばす（1×3×H×W、0〜1） */
+/** Flow model input: take FLOW_W columns from column x0 of the template overlap rows (OV_Y0-OV_Y1) (wrapping around) and stretch only vertically to FLOW_H rows (1×3×H×W, 0-1) */
 export function flowInput(med: Uint8Array, x0: number): Float32Array {
   const rows = OV_Y1 - OV_Y0
   const out = new Float32Array(3 * FLOW_H * FLOW_W)
@@ -192,7 +192,7 @@ export function flowInput(med: Uint8Array, x0: number): Float32Array {
   return out
 }
 
-/** 帯の画像（Float32 の 1 チャンネル）を (x, y) で双線形に読む（範囲の外は端の値） */
+/** Bilinearly read a band image (1 Float32 channel) at (x, y) (outside the range, the edge value) */
 function bil(img: Float32Array, x: number, y: number): number {
   const xc = Math.min(BAND_W - 1.001, Math.max(0, x))
   const yc = Math.min(BAND_H - 1.001, Math.max(0, y))
@@ -204,7 +204,7 @@ function bil(img: Float32Array, x: number, y: number): number {
   return img[i] * (1 - ax) * (1 - ay) + img[i + 1] * ax * (1 - ay) + img[i + BAND_W] * (1 - ax) * ay + img[i + BAND_W + 1] * ax * ay
 }
 
-/** 1 チャンネルの帯をガウスでぼかす（σ [px]、縦横とも） */
+/** Gaussian-blur a 1-channel band (σ [px], both directions) */
 export function blurBand(a: Float32Array, sigma: number): Float32Array {
   const r = Math.ceil(sigma * 2.5)
   const w: number[] = []
@@ -237,7 +237,7 @@ export function blurBand(a: Float32Array, sigma: number): Float32Array {
   return out
 }
 
-/** 二値の帯を正方形で縮める（erode）・広げる（dilate）。r [px] */
+/** Shrink (erode) / grow (dilate) a binary band with a square. r [px] */
 function morph(a: Uint8Array, r: number, dilate: boolean): Uint8Array {
   const tmp = new Uint8Array(a.length)
   const out = new Uint8Array(a.length)
@@ -263,14 +263,14 @@ function morph(a: Uint8Array, r: number, dilate: boolean): Uint8Array {
   return out
 }
 
-/** フローのモデルの出力（1×2×FLOW_H×FLOW_W, 単位はモデルの入力の画素）を、列 x0 から始まる帯の重なりの行へ戻して足し込む */
+/** Map the flow model output (1×2×FLOW_H×FLOW_W, in model input pixels) back to the band overlap rows starting at column x0 and accumulate it */
 export function flowToBand(flow: Float32Array, x0: number, fx: Float32Array, fy: Float32Array, wsum: Float32Array): void {
   const rows = OV_Y1 - OV_Y0
   const S = rows / FLOW_H
   for (let y = OV_Y0; y < OV_Y1; y++) {
     const sy = Math.min(FLOW_H - 1, Math.max(0, Math.round((y - OV_Y0 + 0.5) / S - 0.5)))
     for (let x = 0; x < FLOW_W; x++) {
-      // タイルの端ほど軽く（隣のタイルと重なる所で、真ん中に近い方を使う）
+      // Lighter toward the tile edges (where tiles overlap, prefer the one nearer the center)
       const w = 1e-3 + Math.min(x + 1, FLOW_W - x)
       const bx = (((x0 + x) % BAND_W) + BAND_W) % BAND_W
       const i = y * BAND_W + bx
@@ -281,34 +281,34 @@ export function flowToBand(flow: Float32Array, x0: number, fx: Float32Array, fy:
   }
 }
 
-/** 区間の自車の継ぎ目（描画に渡す値。どれも BAND_W×BAND_H） */
+/** The segment's own-bike seam (values passed to rendering. All are BAND_W×BAND_H) */
 export interface BodyStitch {
-  /** 自車の部分の度合い（0〜1。1 = この型で描く、0 = これまでの処理で描く） */
+  /** Degree of own-bike part (0-1. 1 = draw with this template, 0 = draw with the usual processing) */
   m: Float32Array
-  /** レンズ1 で描く割合（0 = レンズ0、1 = レンズ1。つなぎ目で 0.6° かけて切り替える） */
+  /** Fraction drawn with lens 1 (0 = lens 0, 1 = lens 1. Switches over 0.6° at the seam) */
   w1: Float32Array
-  /** レンズ1 を読む位置のずれ [帯の画素]（列・行）。つなぎ目から離れるほど 0 へ */
+  /** Offset of the lens 1 read position [band pixels] (column, row). Goes to 0 away from the seam */
   dx: Float32Array
   dy: Float32Array
-  /** つなぎ目の行（列ごと、確認用） */
+  /** Seam row (per column, for inspection) */
   cut: Float32Array
 }
 
-const FB_OK = 2 // 前向きと逆向きのフローの食い違いがこれ以下なら信頼する [px]
-const CUT_RES = 3 // つなぎ目の行の、像の差の重み
-const CUT_CENTER = 0.04 // 90° から離れるほど嫌う重み（1° あたり）
-const CUT_SMOOTH = 0.2 // 隣の列との行の差の重み（1 行あたり）
-const CUT_UNALIGNED = 0.01 // レンズ1 で描く、合わせられない自車の部分の重み（1 行あたり）
-const WARP_DECAY = 40 // 重なりの外で、レンズ1 のずれをこの行数（6°）で弱める
-const BLEND_ROWS = 4 // つなぎ目の切り替えの幅 [行]（0.6°）
+const FB_OK = 2 // trust the flow if the forward/backward flow mismatch is at or below this [px]
+const CUT_RES = 3 // weight of the image difference for the seam row
+const CUT_CENTER = 0.04 // weight penalizing distance from 90° (per 1°)
+const CUT_SMOOTH = 0.2 // weight of the row difference from the neighboring column (per row)
+const CUT_UNALIGNED = 0.01 // weight for own-bike parts drawn with lens 1 that cannot be aligned (per row)
+const WARP_DECAY = 40 // outside the overlap, fade the lens 1 offset over this many rows (6°)
+const BLEND_ROWS = 4 // width of the seam switch [rows] (0.6°)
 
 /**
- * 型とフローから、区間の自車の継ぎ目を決める。
- * fwd = レンズ0 → レンズ1 のフロー、bwd = レンズ1 → レンズ0 のフロー（どちらも flowToBand で帯へ戻して重みで割ったもの。重なりの行の外は 0）
+ * From the templates and flow, determine the segment's own-bike seam.
+ * fwd = flow lens 0 → lens 1, bwd = flow lens 1 → lens 0 (both mapped back to the band with flowToBand and divided by the weight. 0 outside the overlap rows)
  */
 export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Array; fy: Float32Array }, bwd: { fx: Float32Array; fy: Float32Array }): BodyStitch {
   const N = BAND_W * BAND_H
-  // 信頼できるフローだけ使う: 前後のフローが FB_OK 以内で一致し、重なりの行の中。それ以外は 0（ずらさない）。なめらかにつなぐ
+  // Use only reliable flow: forward and backward flow agree within FB_OK, and inside the overlap rows. Otherwise 0 (no shift). Connect smoothly
   const conf = new Float32Array(N)
   for (let y = OV_Y0; y < OV_Y1; y++)
     for (let x = 0; x < BAND_W; x++) {
@@ -333,7 +333,7 @@ export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Arra
     fx[i] = bx[i] * k
     fy[i] = by[i] * k
   }
-  // 型の像の差（レンズ1 をずらして重ねたとき）と、合わない所
+  // Image difference of the templates (with lens 1 shifted and overlaid), and places that do not match
   const lum0 = new Float32Array(N)
   const lum1 = new Float32Array(N)
   for (let i = 0; i < N; i++) {
@@ -346,7 +346,7 @@ export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Arra
       const i = y * BAND_W + x
       res[i] = Math.abs(lum0[i] - bil(lum1, x + fx[i], y + fy[i]))
     }
-  // つなぎ目の行の費用: 縦 7 行・横 3 列の平均の像の差
+  // Cost of the seam row: mean image difference over 7 rows × 3 columns
   const rb = new Float32Array(N)
   for (let y = OV_Y0; y < OV_Y1; y++)
     for (let x = 0; x < BAND_W; x++) {
@@ -361,10 +361,10 @@ export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Arra
         }
       rb[y * BAND_W + x] = s / c
     }
-  // 自車の部分: どちらかのレンズで時間で変わらない所。小さな点を消して広げ、ぼかす
+  // Own-bike part: places that do not change over time in either lens. Remove small dots, expand, and blur
   let st: Uint8Array = new Uint8Array(N)
   for (let i = 0; i < N; i++) st[i] = (s0.valid[i] && s0.stat[i] > 0.5) || (s1.valid[i] && s1.stat[i] > 0.5) ? 1 : 0
-  // 小さな点（たまたま型と似た路面など）を消してから、すき間（物の縁など）を埋め、少し広げる
+  // Remove small dots (e.g. road that happens to resemble the template), then fill gaps (object edges etc.) and expand slightly
   st = morph(morph(st, 2, false), 2, true)
   st = morph(morph(st, 3, true), 3, false)
   st = morph(st, 6, true)
@@ -374,9 +374,9 @@ export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Arra
   const c0 = Math.ceil(bandRow(LENS1_MIN))
   const c1 = Math.floor(bandRow(LENS0_MAX))
   const J = c1 - c0 + 1
-  // レンズ1 で描く自車の部分のうち、フローで合わせられない（信頼できない）所の行数。レンズ0 はずらさない基準なので、
-  // 合わせられない所はレンズ0 が写せる限りレンズ0 で描く（すぐ近くのトップケースは 2 つのレンズで見える角度が大きく違い、
-  // レンズ1 の側へつなぎ目を置くと、反射板のような直線がつなぎ目で折れて見えた）
+  // Number of rows of the own-bike part drawn with lens 1 that cannot be aligned by flow (unreliable). Lens 0 is the unshifted reference,
+  // so where alignment is impossible, draw with lens 0 as far as lens 0 can see (the nearby top case looks very different in the two lenses,
+  // and placing the seam on the lens 1 side made straight lines like the reflector appear broken at the seam)
   const un = new Float32Array(N)
   for (let x = 0; x < BAND_W; x++) {
     let acc = 0
@@ -387,7 +387,7 @@ export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Arra
     }
   }
   const cost = (x: number, j: number): number => CUT_RES * rb[(c0 + j) * BAND_W + x] + CUT_CENTER * Math.abs(bandTheta(c0 + j) - 90) + CUT_UNALIGNED * un[(c0 + j) * BAND_W + x]
-  // 列に沿った最短経路（行の差は CUT_SMOOTH/行）。一周のつながりは、2 周して後半を使う
+  // Shortest path along the columns (row difference costs CUT_SMOOTH/row). For wrap-around, go around twice and use the second half
   const acc = new Float32Array(J)
   const from = new Int16Array(BAND_W * 2 * J)
   for (let j = 0; j < J; j++) acc[j] = cost(0, j)
@@ -421,7 +421,7 @@ export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Arra
     cutRaw[xx % BAND_W] = c0 + jb
     jb = from[xx * J + jb]
   }
-  // 列に沿って少しならす（σ 3 列）
+  // Smooth slightly along the columns (σ 3 columns)
   const cut = new Float32Array(BAND_W)
   for (let x = 0; x < BAND_W; x++) {
     let s = 0
@@ -440,9 +440,9 @@ export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Arra
     for (let x = 0; x < BAND_W; x++) {
       const i = y * BAND_W + x
       w1[i] = Math.min(1, Math.max(0, (y - cut[x]) / BLEND_ROWS + 0.5))
-      // ずれは、つなぎ目からの距離ではなく、フローを信頼できる所ではそのまま使う（物全体を同じように合わせるので、直線が折れない）。
-      // つなぎ目から離れるほど弱めると、反射板のような直線がつなぎ目のすぐ先で折れ、長く伸ばすと関係ない所までずれて別の物が写り込んだ。
-      // 重なりの外（レンズ1 だけが写す θ > 101°）は、端の値から WARP_DECAY 行で 0 へ
+      // Use the offset as is wherever the flow is reliable, not by distance from the seam (the whole object is aligned the same way, so straight lines do not break).
+      // Weakening it with distance from the seam made straight lines like the reflector break just past the seam, and extending it far shifted unrelated areas so other objects showed through.
+      // Outside the overlap (θ > 101°, seen only by lens 1), fade to 0 over WARP_DECAY rows from the edge value
       const yy = Math.min(y, OV_Y1 - 1)
       const k = Math.exp(-Math.max(0, y - cut[x]) / WARP_DECAY)
       dx[i] = fx[yy * BAND_W + x] * k
@@ -451,15 +451,15 @@ export function buildStitch(s0: BandStats, s1: BandStats, fwd: { fx: Float32Arra
   return { m, w1, dx, dy, cut }
 }
 
-// ---- 穴（どちらのレンズでも描けない所）----
+// ---- Holes (places neither lens can draw) ----
 //
-// つなぎ目のこちら側を描くレンズが、そこを写す範囲の外のとき（もう一方のレンズの範囲の中へつなぎ目を寄せられない所）。
-// AI の画像の補完で、型を埋めた色を使う。
-// 「暗く・時間で変わらず・模様が無い所を、手前をふさぐ物（カメラの台）とみなして穴にする」も試したが、
-// トップケースの黒い縁やライダーの黒いズボンまで穴にして消してしまったのでやめた。手元の動画（トップケースの後ろの台）では、
-// レンズ1 の台はいつもレンズ0 の側（θ < 90°）にあり、レンズ0 で描くので穴は出ない
+// When the lens drawing this side of the seam is outside the range that sees the spot (where the seam cannot be moved into the other lens's range).
+// Use the color from AI inpainting that filled the template.
+// I also tried "treat dark, time-invariant, textureless places as an occluding object (the camera mount) and make them holes",
+// but it turned even the black edges of the top case and the rider's black trousers into holes and erased them, so I dropped it. In my video (mount behind the top case),
+// the lens 1 mount is always on the lens 0 side (θ < 90°) and drawn with lens 0, so no holes appear
 
-/** 型とつなぎ目から穴を探す（1 = 穴）。force は確認用（この矩形 [x0, y0, x1, y1] の自車の部分を穴にする） */
+/** Find holes from the template and seam (1 = hole). force is for inspection (makes the own-bike part in this rectangle [x0, y0, x1, y1] a hole) */
 export function findHoles(s0: BandStats, s1: BandStats, st: BodyStitch, force: number[] | null = null): Uint8Array {
   const N = BAND_W * BAND_H
   const h = new Uint8Array(N)
@@ -473,7 +473,7 @@ export function findHoles(s0: BandStats, s1: BandStats, st: BodyStitch, force: n
   return h.some((v) => v) ? morph(h, 2, true) : h
 }
 
-/** 型をつなぎ目で合わせた色（RGB、穴を埋める入力）。レンズ1 はずれの分ずらして読む */
+/** Template colors aligned at the seam (RGB, input for filling holes). Lens 1 is read shifted by the offset */
 export function stitchedTemplate(s0: BandStats, s1: BandStats, st: BodyStitch): Uint8Array {
   const N = BAND_W * BAND_H
   const out = new Uint8Array(N * 3)
@@ -493,23 +493,23 @@ export function stitchedTemplate(s0: BandStats, s1: BandStats, st: BodyStitch): 
   return out
 }
 
-// ---- 動画の区間ごとの型 ----
+// ---- Per-video-segment templates ----
 
-/** 区間の自車の継ぎ目を、自車の部分の列だけ切り出して小さくしたもの（保存・描画用） */
+/** The segment's own-bike seam, cropped down to only the columns of the own-bike part (for saving and rendering) */
 export interface BodyMapC {
-  /** 切り出した列の始まり（一周でつながる）と列の数。行は全部（BAND_H） */
+  /** Start of the cropped columns (wraps around) and number of columns. All rows (BAND_H) */
   x0: number
   w: number
-  /** 自車の部分の度合い・レンズ1 の割合（0〜255）、レンズ1 のずれ（1/64 画素） */
+  /** Degree of own-bike part and lens 1 fraction (0-255), lens 1 offset (1/64 pixel) */
   m: Uint8Array
   w1: Uint8Array
   dx: Int16Array
   dy: Int16Array
-  /** 穴を埋めた色（RGBA、アルファ = 穴の度合い）。穴が無ければ省く */
+  /** Hole-filled color (RGBA, alpha = degree of hole). Omitted if there is no hole */
   fill?: Uint8Array
 }
 
-/** 区間 [t0, t1) [s] と、その区間の型（maps の番号。−1 = 自車の部分が無い・作れなかった） */
+/** Segment [t0, t1) [s] and its template (index into maps. -1 = no own-bike part / could not be made) */
 export interface BodyWindow {
   t0: number
   t1: number
@@ -521,11 +521,11 @@ export interface BodyTrack {
   maps: BodyMapC[]
 }
 
-/** 自車の部分の列だけ切り出す（自車の部分が無ければ null） */
+/** Crop out only the columns of the own-bike part (null if there is no own-bike part) */
 export function compactStitch(st: BodyStitch, holes: Uint8Array | null, fill: Uint8Array | null): BodyMapC | null {
   const col = new Uint8Array(BAND_W)
   for (let y = 0; y < BAND_H; y++) for (let x = 0; x < BAND_W; x++) if (st.m[y * BAND_W + x] > 0.004) col[x] = 1
-  // 自車の部分が無い列のいちばん長い並びを除いた、残りの弧
+  // The remaining arc after excluding the longest run of columns with no own-bike part
   let bestLen = -1
   let bestStart = 0
   for (let x = 0; x < BAND_W; x++) {
@@ -566,8 +566,8 @@ export function compactStitch(st: BodyStitch, holes: Uint8Array | null, fill: Ui
 }
 
 /**
- * 描画用のテクスチャの中身（BAND_W×BAND_H の RGBA: 自車の部分の度合い・レンズ1 の割合・ずれ x・ずれ y）と、
- * 穴を埋めた色（RGBA8）。map が null なら全部 0
+ * Contents of the rendering texture (BAND_W×BAND_H RGBA: degree of own-bike part, lens 1 fraction, offset x, offset y), and
+ * the hole-filled color (RGBA8). All 0 if map is null
  */
 export function bodyTexData(c: BodyMapC | null, out: Float32Array<ArrayBuffer> = new Float32Array(BAND_W * BAND_H * 4), fillOut: Uint8Array<ArrayBuffer> = new Uint8Array(BAND_W * BAND_H * 4)): { map: Float32Array<ArrayBuffer>; fill: Uint8Array<ArrayBuffer> } {
   out.fill(0)
@@ -588,8 +588,8 @@ export function bodyTexData(c: BodyMapC | null, out: Float32Array<ArrayBuffer> =
 }
 
 /**
- * 時刻 t [s] に使う 2 つの型と混ぜる割合（区間の真ん中どうしの間を直線で移る。カメラの台がゆっくり回る動画で、
- * つなぎ目とずれが区間の境で急に変わらないように）。型が無ければ −1
+ * The two templates to use at time t [s] and the blend fraction (linear between segment midpoints. So that in videos where the camera mount rotates slowly,
+ * the seam and offset do not change abruptly at segment boundaries). -1 if there is no template
  */
 export function bodyAt(track: BodyTrack, t: number): { a: number; b: number; mix: number } {
   const ws = track.windows
@@ -605,11 +605,11 @@ export function bodyAt(track: BodyTrack, t: number): { a: number; b: number; mix
   return { a: last, b: last, mix: 0 }
 }
 
-// ---- 保存（動画の横の .motorecomovie-body.bin。gzip した JSON の見出し + 配列） ----
+// ---- Saving (.motorecomovie-body.bin next to the video. gzipped JSON header + arrays) ----
 
 export const BODY_FILE_VERSION = 1
 
-/** 保存する中身を 1 つのバイト列にする（gzip の前） */
+/** Pack the contents to save into one byte array (before gzip) */
 export function encodeBodyTrack(track: BodyTrack, key: string): Uint8Array {
   const parts: Uint8Array[] = []
   const metaMaps = track.maps.map((c) => {
@@ -631,7 +631,7 @@ export function encodeBodyTrack(track: BodyTrack, key: string): Uint8Array {
   return out
 }
 
-/** encodeBodyTrack の逆（版・帯の大きさ・動画の鍵が違えば null） */
+/** Inverse of encodeBodyTrack (null if the version, band size, or video key differ) */
 export function decodeBodyTrack(buf: Uint8Array, key: string): BodyTrack | null {
   const hl = new DataView(buf.buffer, buf.byteOffset).getUint32(0, true)
   const head = JSON.parse(new TextDecoder().decode(buf.subarray(4, 4 + hl)))

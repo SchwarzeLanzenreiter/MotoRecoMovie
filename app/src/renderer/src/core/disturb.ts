@@ -1,13 +1,13 @@
-// 車体挙動の乱れの検出: スリップ率の異常、6 軸（角速度・加速度）の乱れ、サスペンションのストロークの急な動きから、
-// 時刻ごとの「乱れの強さ」（score）を作り、しきい値を超えた区間を事象として取り出す。
+// Detection of vehicle behavior disturbances: from slip-ratio anomalies, 6-axis (angular rate and acceleration) disturbances, and sudden suspension stroke movements,
+// build a per-time disturbance strength (score) and extract the sections exceeding the threshold as events.
 //
-// 指標（100Hz の統一テレメトリーから）
-//   slip     : スリップ率の急な変化（σ=1 秒の平滑からのずれ）と、走行全体の中央値からの大きなずれ（空転・ロック）
-//   roll/yaw : 車両の角速度の 1.5〜12Hz 成分の実効値（0.4 秒）… ふらつき・振られ・ウォブル
-//   x/y/zG   : 加速度の 1.5〜12Hz 成分の実効値（0.4 秒）… ログでは強く平滑化されているので補助
-//   fr/rrSus : ストロークの速さ（15Hz で平滑して微分）の実効値（0.3 秒）… 大きな突き上げ・抜け・底付き
-// それぞれを「その走行での 99.5 パーセンタイル」と「下限（静かな走行で事象が出すぎないための絶対値）」の大きい方で割り、
-// いちばん大きいものをその時刻の強さにする。1.0 がその走行の上位 0.5% 相当。
+// Metrics (from the 100 Hz unified telemetry)
+//   slip     : sudden changes in slip ratio (deviation from a σ=1 s smoothing) and large deviations from the whole ride's median (spin, lock)
+//   roll/yaw : RMS (0.4 s) of the 1.5-12 Hz component of the vehicle's angular rate ... wandering, being shaken, wobble
+//   x/y/zG   : RMS (0.4 s) of the 1.5-12 Hz component of acceleration ... auxiliary, since the log is heavily smoothed
+//   fr/rrSus : RMS (0.3 s) of stroke speed (smoothed at 15 Hz, then differentiated) ... big bumps, drops, bottoming out
+// Each is divided by the larger of "that ride's 99.5th percentile" and a "floor" (an absolute value so that quiet rides do not produce too many events),
+// and the largest one becomes the strength at that time. 1.0 corresponds to the top 0.5% of that ride.
 import { fastGaussian, lowpassFiltfilt } from './dsp'
 import type { Telemetry } from './telemetry'
 
@@ -15,32 +15,32 @@ export type DisturbCause = 'slip' | 'roll' | 'yaw' | 'xG' | 'yG' | 'zG' | 'frSus
 export const CAUSES: DisturbCause[] = ['slip', 'roll', 'yaw', 'xG', 'yG', 'zG', 'frSus', 'rrSus']
 
 export const CAUSE_NAMES: Record<DisturbCause, string> = {
-  slip: 'スリップ率', // i18n-ignore
-  roll: 'ロール角速度', // i18n-ignore
-  yaw: 'ヨー角速度', // i18n-ignore
-  xG: '前後G', // i18n-ignore
-  yG: '横G', // i18n-ignore
-  zG: '上下G', // i18n-ignore
-  frSus: 'フロントサス', // i18n-ignore
-  rrSus: 'リアサス' // i18n-ignore
+  slip: 'Slip ratio', // i18n-ignore
+  roll: 'Roll rate', // i18n-ignore
+  yaw: 'Yaw rate', // i18n-ignore
+  xG: 'Longitudinal G', // i18n-ignore
+  yG: 'Lateral G', // i18n-ignore
+  zG: 'Vertical G', // i18n-ignore
+  frSus: 'Front suspension', // i18n-ignore
+  rrSus: 'Rear suspension' // i18n-ignore
 }
 
-/** 指標の下限（このサンプルの走行の 99.5 パーセンタイル程度）。単位は各指標のもの */
+/** Floor for each metric (about the 99.5th percentile of the sample ride). Units are each metric's own */
 const FLOOR: Record<DisturbCause, number> = { slip: 1.5, roll: 3.5, yaw: 2.0, xG: 0.008, yG: 0.003, zG: 0.025, frSus: 350, rrSus: 450 }
-/** スリップ率の、走行全体の中央値からのずれの下限 [%]（これ以上の持続的な空転・ロックも乱れとみなす） */
+/** Floor for the slip-ratio deviation from the whole-ride median [%] (sustained spin or lock beyond this is also regarded as a disturbance) */
 const SLIP_ABS_FLOOR = 6
 
 export interface DisturbTrack {
   rate: number
-  /** 乱れの強さ（1.0 = その走行の上位 0.5% 相当）。走行していない時間は 0 */
+  /** Disturbance strength (1.0 = top 0.5% of that ride). 0 while not riding */
   score: Float32Array
-  /** その時刻にいちばん大きかった指標（CAUSES の番号） */
+  /** Metric that was largest at that time (index into CAUSES) */
   cause: Uint8Array
-  /** 指標ごとの基準（割った値）。表示用 */
+  /** Reference for each metric (the divisor). For display */
   ref: Record<DisturbCause, number>
 }
 
-/** 移動実効値（窓 w サンプル） */
+/** Moving RMS (window of w samples) */
 function movingRms(x: Float64Array, w: number): Float64Array {
   const n = x.length
   const cs = new Float64Array(n + 1)
@@ -55,7 +55,7 @@ function movingRms(x: Float64Array, w: number): Float64Array {
   return out
 }
 
-/** NaN を 0 にした配列（フィルタに通すため）と、有効かどうか */
+/** Array with NaN replaced by 0 (to pass through a filter), and whether each sample is valid */
 function clean(d: Float32Array | undefined, n: number): { x: Float64Array; ok: Uint8Array } | null {
   if (!d) return null
   const x = new Float64Array(n)
@@ -71,7 +71,7 @@ function clean(d: Float32Array | undefined, n: number): { x: Float64Array; ok: U
   return { x, ok }
 }
 
-/** 1.5〜12Hz の帯域の実効値 */
+/** RMS of the 1.5-12 Hz band */
 function bandRms(x: Float64Array, rate: number, win: number): Float64Array {
   const hi = lowpassFiltfilt(x, Math.min(12, rate * 0.45), rate)
   const lo = lowpassFiltfilt(x, 1.5, rate)
@@ -81,7 +81,7 @@ function bandRms(x: Float64Array, rate: number, win: number): Float64Array {
   )
 }
 
-/** 配列の p パーセンタイル（mask が 1 のところだけ。間引いて計算） */
+/** p-th percentile of an array (only where mask is 1; computed on a decimated copy) */
 function percentile(x: Float64Array, mask: Uint8Array, p: number): number {
   const v: number[] = []
   for (let i = 0; i < x.length; i += 3) if (mask[i]) v.push(x[i])
@@ -103,13 +103,13 @@ export function disturbTrack(tel: Telemetry, minSpeed = 15, minSpeedSlip = 25): 
   }
   const metric: Partial<Record<DisturbCause, { x: Float64Array; mask: Uint8Array }>> = {}
   const andMask = (a: Uint8Array, b: Uint8Array): Uint8Array => a.map((v, i) => v & b[i])
-  // スリップ率
+  // Slip ratio
   const sl = clean(ch.slip, n)
   if (sl) {
     const m = andMask(sl.ok, movingFast)
     const sm = fastGaussian(sl.x, rate * 1.0)
     const med = percentile(sl.x, m, 50)
-    // 急な変化（平滑からのずれ）を基準の割合で、持続的なずれを SLIP_ABS_FLOOR で割ったものの大きい方を「下限で正規化した値 × FLOOR」に揃える
+    // Take the larger of the sudden change (deviation from the smoothing) as a fraction of the reference and the sustained deviation divided by SLIP_ABS_FLOOR, aligned to "floor-normalized value × FLOOR"
     const hp = sl.x.map((v, i) => Math.abs(v - sm[i]))
     const ab = sl.x.map((v) => (Math.abs(v - med) / SLIP_ABS_FLOOR) * FLOOR.slip)
     metric.slip = { x: hp.map((v, i) => Math.max(v, ab[i])), mask: m }
@@ -157,16 +157,16 @@ export function disturbTrack(tel: Telemetry, minSpeed = 15, minSpeedSlip = 25): 
 }
 
 export interface DisturbEvent {
-  /** 乱れがしきい値を超えていた範囲 [s] */
+  /** Range [s] over which the disturbance exceeded the threshold */
   start: number
   end: number
-  /** いちばん強かった時刻・強さ・指標 */
+  /** Time, strength, and metric of the strongest point */
   peak: number
   score: number
   cause: DisturbCause
 }
 
-/** 強さが threshold を超えた区間を事象にする（gap 秒以内の区間はひとつにまとめる） */
+/** Turns sections where the strength exceeded threshold into events (sections within gap seconds are merged into one) */
 export function disturbEvents(d: DisturbTrack, threshold: number, gap = 1.5): DisturbEvent[] {
   const out: DisturbEvent[] = []
   const n = d.score.length

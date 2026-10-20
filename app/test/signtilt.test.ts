@@ -1,7 +1,7 @@
-// 浮遊標識の傾き（実データ）: 標識の投影に使う「地図の下向き」と、加速度から求めた本当の重力の向きとが、画面でどれだけ傾いて食い違うか。
-// 標識は MotionModel.cameraInMap（ジャイロの姿勢を、車両ログのリーン角・方位・勾配で地図へ移したもの）で投影する。
-// 本当の重力は、ジャイロの姿勢で加速度を地面に固定した座標へ移し、60 秒で平均したもの（コーナーの遠心力は左右で打ち消す）。
-// 実行: npx tsx test/signtilt.test.ts <insv> <.dat|.csv> [<.ddf>]
+// Floating sign tilt (real data): how much, on screen, the "map down" used to project the signs differs in tilt from the true gravity direction derived from acceleration.
+// Signs are projected with MotionModel.cameraInMap (the gyro orientation moved into the map using the lean angle, heading and slope from the vehicle log).
+// The true gravity is obtained by moving the acceleration into ground-fixed coordinates using the gyro orientation and averaging over 60 s (the centrifugal force in corners cancels between left and right).
+// Run: npx tsx test/signtilt.test.ts <insv> <.dat|.csv> [<.ddf>]
 import assert from 'node:assert/strict'
 import { open, readFile } from 'node:fs/promises'
 import { InsvTrailer } from '../src/renderer/src/core/insv'
@@ -42,16 +42,16 @@ const ori = integrate(imu)
 const stab = newProject('x').stab
 const mm = new MotionModel(tr.meta, ori, mount, ft, lean, stab)
 mm.setNav({ rate: tel.rate, heading: nav.heading, grade: tel.channels.grade ?? null })
-console.log(`${tr.meta.model}: 同期 a=${sync.a.toFixed(5)} b=${sync.b.toFixed(2)} 確からしさ ${sync.peakRatio.toFixed(2)} 残差 ${sync.residualMs.toFixed(0)}ms 符号 ${sync.sign}  リーンの尺度 k=${lean.k.toFixed(3)} 相関 ${lean.rateCorr.toFixed(3)}  GPS の遅れ ${gd.delay.toFixed(2)}s`)
+console.log(`${tr.meta.model}: sync a=${sync.a.toFixed(5)} b=${sync.b.toFixed(2)} confidence ${sync.peakRatio.toFixed(2)} residual ${sync.residualMs.toFixed(0)}ms sign ${sync.sign}  lean scale k=${lean.k.toFixed(3)} correlation ${lean.rateCorr.toFixed(3)}  GPS delay ${gd.delay.toFixed(2)}s`)
 {
   const lg = (L as unknown as { leanAngle?: Float64Array; lean?: Float64Array })
   const la = lg.leanAngle ?? lg.lean
-  if (la) { let mn = 1e9, mx = -1e9; for (const v of la) if (Number.isFinite(v)) { mn = Math.min(mn, v); mx = Math.max(mx, v) } ; console.log(`ログのリーン角 ${mn.toFixed(1)}〜${mx.toFixed(1)}°、ログの長さ ${((L as unknown as {t: Float64Array}).t.at(-1)! - (L as unknown as {t: Float64Array}).t[0]).toFixed(0)}s、動画 ${dur.toFixed(0)}s`) }
-  let mn = 1e9, mx = -1e9; for (const v of lean.lean) { mn = Math.min(mn, v); mx = Math.max(mx, v) }; console.log(`融合したリーン角 ${mn.toFixed(1)}〜${mx.toFixed(1)}°`)
-  console.log('同期の窓', sync.windows.slice(0, 8).map((w) => `${w.t.toFixed(0)}s:${w.offset.toFixed(2)}(${w.corr.toFixed(2)})`).join(' '))
+  if (la) { let mn = 1e9, mx = -1e9; for (const v of la) if (Number.isFinite(v)) { mn = Math.min(mn, v); mx = Math.max(mx, v) } ; console.log(`log lean angle ${mn.toFixed(1)}-${mx.toFixed(1)}°, log length ${((L as unknown as {t: Float64Array}).t.at(-1)! - (L as unknown as {t: Float64Array}).t[0]).toFixed(0)}s, video ${dur.toFixed(0)}s`) }
+  let mn = 1e9, mx = -1e9; for (const v of lean.lean) { mn = Math.min(mn, v); mx = Math.max(mx, v) }; console.log(`fused lean angle ${mn.toFixed(1)}-${mx.toFixed(1)}°`)
+  console.log('sync windows', sync.windows.slice(0, 8).map((w) => `${w.t.toFixed(0)}s:${w.offset.toFixed(2)}(${w.corr.toFixed(2)})`).join(' '))
 }
 
-// 加速度を地面に固定した座標（ジャイロの姿勢の座標）へ移し、1 秒ごとに平均
+// Move the acceleration into ground-fixed coordinates (the gyro orientation frame) and average every 1 s
 const n1 = Math.floor((imu.ts[imu.ts.length - 1] - imu.ts[0]) / 1e6)
 const acc1 = new Float64Array(n1 * 3)
 const cnt = new Float64Array(n1)
@@ -78,10 +78,10 @@ const rows: { t: number; lean: number; err: number; errMap: number }[] = []
 for (let t = 30; t < dur - 30; t += 1) {
   const i = Math.round(t * fps)
   const fr = mm.frame(i, { yaw: 0, pitch: 0, fov: 100, leanRatio: 1 })
-  const Rw = qToMat(fr.world) // 列 = カメラの右・下・前（ジャイロの姿勢の座標）
+  const Rw = qToMat(fr.world) // columns = camera right, down, forward (gyro orientation frame)
   const right = [Rw[0], Rw[3], Rw[6]]
   const down = [Rw[1], Rw[4], Rw[7]]
-  // 加速度は重力の反対（上向き）を測るので、下向き = −平均
+  // The accelerometer measures the opposite of gravity (upward), so down = −mean
   const g = gAt(mm.tc(i)).map((v) => -v)
   const trueTilt = deg(Math.atan2(dot(g, right), dot(g, down)))
   const Rm = mm.cameraInMap(i, fr.world)!
@@ -95,18 +95,18 @@ const rms = (a: number[]): number => Math.sqrt(a.reduce((s, v) => s + v * v, 0) 
 const st = rows.filter((r) => Math.abs(r.lean) < 5)
 const co = rows.filter((r) => Math.abs(r.lean) > 15)
 const mean = (a: number[]): number => a.reduce((s, v) => s + v, 0) / Math.max(1, a.length)
-console.log(`標識の傾きの食い違い（標識 − 本当の重力）: 全体 二乗平均 ${rms(rows.map((r) => r.err)).toFixed(1)}° 平均 ${mean(rows.map((r) => r.err)).toFixed(1)}°`)
-console.log(`  直進（|リーン| < 5°） ${st.length} 点: 平均 ${mean(st.map((r) => r.err)).toFixed(1)}° 二乗平均 ${rms(st.map((r) => r.err)).toFixed(1)}°`)
-console.log(`  コーナー（|リーン| > 15°） ${co.length} 点: 平均 ${mean(co.map((r) => r.err)).toFixed(1)}° 二乗平均 ${rms(co.map((r) => r.err)).toFixed(1)}°`)
-// リーンとの関係（傾き = k × リーン + c）
+console.log(`sign tilt mismatch (sign − true gravity): overall RMS ${rms(rows.map((r) => r.err)).toFixed(1)}° mean ${mean(rows.map((r) => r.err)).toFixed(1)}°`)
+console.log(`  straight (|lean| < 5°) ${st.length} points: mean ${mean(st.map((r) => r.err)).toFixed(1)}° RMS ${rms(st.map((r) => r.err)).toFixed(1)}°`)
+console.log(`  corner (|lean| > 15°) ${co.length} points: mean ${mean(co.map((r) => r.err)).toFixed(1)}° RMS ${rms(co.map((r) => r.err)).toFixed(1)}°`)
+// Relation to lean (tilt = k × lean + c)
 {
   let sx = 0, sy = 0, sxx = 0, sxy = 0
   for (const r of rows) { sx += r.lean; sy += r.err; sxx += r.lean * r.lean; sxy += r.lean * r.err }
   const n = rows.length
   const k = (n * sxy - sx * sy) / (n * sxx - sx * sx)
-  console.log(`  食い違い ≈ ${k.toFixed(3)} × リーン + ${((sy - k * sx) / n).toFixed(1)}°`)
+  console.log(`  mismatch ≈ ${k.toFixed(3)} × lean + ${((sy - k * sx) / n).toFixed(1)}°`)
 }
-for (const r of rows.filter((_, j) => j % 60 === 0)) console.log(`  ${r.t}s リーン ${r.lean.toFixed(1)}° 食い違い ${r.err.toFixed(1)}°`)
-assert.ok(rms(rows.map((r) => r.err)) < 4, '標識の傾きが本当の重力と 4° 以上食い違う')
+for (const r of rows.filter((_, j) => j % 60 === 0)) console.log(`  ${r.t}s lean ${r.lean.toFixed(1)}° mismatch ${r.err.toFixed(1)}°`)
+assert.ok(rms(rows.map((r) => r.err)) < 4, 'sign tilt differs from the true gravity by 4° or more')
 console.log('signtilt.test: OK')
 await fh.close()

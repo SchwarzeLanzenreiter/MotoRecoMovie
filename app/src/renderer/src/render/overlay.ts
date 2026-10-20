@@ -1,4 +1,4 @@
-// 重ね表示（テレメトリーなど）を Canvas 2D で描く。ウィジェットは種類ごとに登録する。
+// Draws overlays (telemetry etc.) with Canvas 2D. Widgets are registered per kind.
 import { CHANNELS, sampleAll, sampleChannel, type ChannelKey, type Telemetry } from '../core/telemetry'
 import { STATES, weightsAt } from '../core/riding'
 import type { OverlayLayer, Rect, WidgetKind } from '../engine/project'
@@ -9,18 +9,18 @@ import { DEFAULT_CYBER, drawCyber, type CyberOpts } from './cyber'
 import { getLang, tr, type Lang } from '../i18n'
 
 export interface OverlayFrame {
-  t: number // 動画時刻 [s]
+  t: number // video time [s]
   telemetry: Telemetry | null
-  values: Partial<Record<ChannelKey, number>> // その時刻のテレメトリー（計算済み）
-  /** 走行状態の重み（STATES の順）。ログがなければ巡航のみ */
+  values: Partial<Record<ChannelKey, number>> // telemetry at that time (already computed)
+  /** Weights of the riding states (in STATES order). Cruise only if there is no log */
   weights: number[]
-  /** コーナリング中のそこまでの最大リーン角（コーナー外は null） */
+  /** Maximum lean angle so far during the corner (null outside corners) */
   peakLean: number | null
-  /** リーン角の MAX ホールド（切り返しでリセット） */
+  /** MAX hold of the lean angle (reset at a switchback) */
   leanHold: number | null
   outW: number
   outH: number
-  /** 動画に入る文字の言語（project.export.textLang、省略時は画面の言語） */
+  /** Language of the text that goes into the video (project.export.textLang; the UI language if omitted) */
   lang: Lang
 }
 
@@ -34,7 +34,7 @@ function roundRect(g: Ctx, r: PixelRect, rad: number): void {
   g.roundRect(r.x, r.y, r.w, r.h, rad)
 }
 
-/** 数値の一覧（重ね表示の経路の確認用。本番のメーター類は後で追加する） */
+/** List of values (for checking the overlay path; the real meters will be added later) */
 const readout: Widget = (g, r, f) => {
   roundRect(g, r, r.h * 0.05)
   g.fillStyle = 'rgba(10, 12, 16, 0.55)'
@@ -46,7 +46,7 @@ const readout: Widget = (g, r, f) => {
     g.fillStyle = '#ddd'
     g.font = `${Math.round(r.h * 0.1)}px ${FONT}`
     g.textBaseline = 'middle'
-    g.fillText(tr(f.lang, '車両ログなし'), r.x + pad, r.y + r.h / 2)
+    g.fillText(tr(f.lang, 'No vehicle log'), r.x + pad, r.y + r.h / 2)
     return
   }
   const lh = (r.h - pad * 2) / rows.length
@@ -68,7 +68,7 @@ const readout: Widget = (g, r, f) => {
   })
 }
 
-/** 走行状態の重みの並び（STATES の順）の番号 */
+/** Index into the riding-state weights (in STATES order) */
 const W = Object.fromEntries(STATES.map((s, i) => [s, i])) as Record<(typeof STATES)[number], number>
 
 function noLog(g: Ctx, r: PixelRect, lang: Lang): void {
@@ -78,7 +78,7 @@ function noLog(g: Ctx, r: PixelRect, lang: Lang): void {
   g.font = `${Math.round(Math.min(r.h * 0.25, r.w * 0.08))}px ${FONT}`
   g.textAlign = 'center'
   g.textBaseline = 'middle'
-  g.fillText(tr(lang, '車両ログなし'), r.x + r.w / 2, r.y + r.h / 2)
+  g.fillText(tr(lang, 'No vehicle log'), r.x + r.w / 2, r.y + r.h / 2)
   g.textAlign = 'left'
 }
 
@@ -93,13 +93,13 @@ const chrono: Widget = (g, r, f, props) => {
   })
 }
 
-/** エンジン停止とみなす回転数 [rpm] と、始動・停止のときに色を切り替える時間 [s] */
+/** RPM treated as engine stopped [rpm], and the time over which the color switches at start and stop [s] */
 const ENGINE_ON_RPM = 300
 const ENGINE_FADE = 0.5
 
 /**
- * エンジンが掛かっている度合い（直前 ENGINE_FADE 秒のうち、回転数が ENGINE_ON_RPM を超えていた割合）。
- * 回転数のデータが無ければ 1（演出しない）
+ * How much the engine is running (the fraction of the last ENGINE_FADE seconds in which the RPM exceeded ENGINE_ON_RPM).
+ * 1 if there is no RPM data (no effect)
  */
 export function enginePower(tel: Telemetry | null, t: number): number {
   if (!tel?.channels.rpm) return 1
@@ -113,21 +113,21 @@ export function enginePower(tel: Telemetry | null, t: number): number {
 }
 
 /**
- * 数字が切り替わるときの動き: ROLL 秒で縦に流れて入れ替わり（新しい数字は入ってくる間に少し大きくなる）、
- * 置き換わった瞬間から POP 秒で元の大きさに戻る
+ * Motion when a digit changes: it scrolls vertically over ROLL seconds and swaps (the new digit grows a little while coming in),
+ * then returns to its normal size over POP seconds from the moment it is replaced
  */
 export const ROLL_TIME = 0.3
 export const POP_TIME = 0.35
 
-/** 切り替わりの途中: 前の値と、切り替わってからの時間 [s]（0〜ROLL_TIME + POP_TIME） */
+/** Midway through a change: the previous value and the time since the change [s] (0 to ROLL_TIME + POP_TIME) */
 export interface Roll {
   prev: number
   e: number
 }
 
 /**
- * 100Hz の値の列 series で、時刻 t の直前 ROLL_TIME + POP_TIME 秒の間に値が変わっていれば、前の値と経過時間。
- * 変わっていなければ null。書き出しでも同じになるよう、前のフレームの状態ではなくテレメトリーから求める
+ * For a 100Hz value series `series`, if the value changed within the ROLL_TIME + POP_TIME seconds just before time t, the previous value and the elapsed time.
+ * null if it did not change. Derived from the telemetry rather than from the previous frame's state, so that export gives the same result
  */
 function lastChange(series: ArrayLike<number>, tel: Telemetry, t: number): Roll | null {
   const i = Math.min(series.length - 1, Math.floor((t - tel.t0) * tel.rate))
@@ -144,15 +144,15 @@ function lastChange(series: ArrayLike<number>, tel: Telemetry, t: number): Roll 
   return null
 }
 
-/** ギアの切り替わり（無ければ null） */
+/** Gear change (null if none) */
 export function gearShift(tel: Telemetry | null, t: number): Roll | null {
   const gear = tel?.channels.gear
   return tel && gear ? lastChange(gear, tel, t) : null
 }
 
 /**
- * 表示する外気温（整数 [℃]）の列。外気温は 0.75℃ 刻みで、表示の境目（x.5℃）付近では 2 つの値を行ったり来たりするので、
- * 表示している整数から AIR_HYST℃ 以上離れたときだけ変える（0.75℃ 違いの 2 つの値を往復しても、一度変わった後は数字が流れ続けない）
+ * Series of displayed outside air temperatures (integer [deg C]). The outside air temperature moves in 0.75 deg C steps and flips between two values near the display boundary (x.5 deg C),
+ * so it changes only when it is AIR_HYST deg C or more away from the displayed integer (even when oscillating between two values 0.75 deg C apart, the digits do not keep scrolling after the first change)
  */
 const AIR_HYST = 0.8
 const shownAir = new WeakMap<Telemetry, Float32Array | null>()
@@ -177,13 +177,13 @@ export function airTempShown(tel: Telemetry): Float32Array | null {
   return out
 }
 
-/** 外気温の表示の切り替わり（無ければ null） */
+/** Outside air temperature display change (null if none) */
 export function airShift(tel: Telemetry | null, t: number): Roll | null {
   const s = tel ? airTempShown(tel) : null
   return tel && s ? lastChange(s, tel, t) : null
 }
 
-/** 時刻 t に表示する外気温（ちらつき防止の後の整数）。無ければ null */
+/** Outside air temperature shown at time t (integer after flicker suppression). null if none */
 function sampleShown(tel: Telemetry, t: number): number | null {
   const s = airTempShown(tel)
   if (!s) return null
@@ -206,9 +206,9 @@ const cyber: Widget = (g, r, f, props) => {
       brake: w[W.brake],
       lean: w[W.corner]
     },
-    // エンジン停止中は灰色（車両ログの回転数から。回転数が無ければ普通の色）
+    // Gray while the engine is stopped (from the vehicle log RPM; normal color if there is no RPM)
     enginePower(f.telemetry, f.t),
-    // ギアと外気温の数字の切り替わり（縦に流れて入れ替わり、置き換わった瞬間に少し大きく）
+    // Gear and outside air temperature digit changes (scroll vertically and swap, then grow slightly at the moment of replacement)
     {
       gear: gearShift(f.telemetry, f.t),
       air: airShift(f.telemetry, f.t),
@@ -227,95 +227,95 @@ const WIDGETS: Record<WidgetKind, Widget> = {
 }
 
 export const WIDGET_NAMES: Record<WidgetKind, string> = {
-  chrono: 'クロノグラフ風メーター', // i18n-ignore
-  cyber: 'サイバー風メーター', // i18n-ignore
-  map: '地図', // i18n-ignore
-  elevation: '標高プロファイル', // i18n-ignore
-  compass: '方位帯', // i18n-ignore
-  readout: '数値一覧' // i18n-ignore
+  chrono: 'Chronograph gauges', // i18n-ignore
+  cyber: 'Cyber gauges', // i18n-ignore
+  map: 'Map', // i18n-ignore
+  elevation: 'Elevation profile', // i18n-ignore
+  compass: 'Compass tape', // i18n-ignore
+  readout: 'Readout' // i18n-ignore
 }
 
-/** 重ね表示ごとの設定項目（サイドパネルで編集する） */
+/** Settings per overlay (edited in the side panel) */
 export type PropDef =
   | { key: string; label: string; type: 'select'; options: { value: string; label: string }[]; default: string }
   | { key: string; label: string; type: 'number'; min: number; max: number; step: number; unit?: string; default: number }
 
 const RPM_PROPS: PropDef[] = [
-  { key: 'rpmMax', label: '回転計の上限', type: 'number', min: 4000, max: 16000, step: 500, unit: 'rpm', default: 9000 }, // i18n-ignore
-  { key: 'rpmRed', label: 'レッドゾーン', type: 'number', min: 3000, max: 16000, step: 250, unit: 'rpm', default: 8000 } // i18n-ignore
+  { key: 'rpmMax', label: 'Tachometer max', type: 'number', min: 4000, max: 16000, step: 500, unit: 'rpm', default: 9000 }, // i18n-ignore
+  { key: 'rpmRed', label: 'Redline', type: 'number', min: 3000, max: 16000, step: 250, unit: 'rpm', default: 8000 } // i18n-ignore
 ]
 
 export const WIDGET_PROPS: Partial<Record<WidgetKind, PropDef[]>> = {
   chrono: [
     {
       key: 'theme',
-      label: '配色', // i18n-ignore
+      label: 'Color scheme', // i18n-ignore
       type: 'select',
       options: [
-        { value: 'bmw', label: 'BMW（M カラー）' }, // i18n-ignore
-        { value: 'standard', label: '標準' } // i18n-ignore
+        { value: 'bmw', label: 'BMW (M colors)' }, // i18n-ignore
+        { value: 'standard', label: 'Standard' } // i18n-ignore
       ],
       default: 'bmw'
     },
     ...RPM_PROPS,
-    { key: 'brakeMax', label: 'ブレーキ圧の上限', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_CHRONO.brakeMax }, // i18n-ignore
-    { key: 'leanMax', label: 'リーンの目盛り', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_CHRONO.leanMax } // i18n-ignore
+    { key: 'brakeMax', label: 'Brake pressure max', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_CHRONO.brakeMax }, // i18n-ignore
+    { key: 'leanMax', label: 'Lean scale', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_CHRONO.leanMax } // i18n-ignore
   ],
   cyber: [
     {
       key: 'theme',
-      label: '配色', // i18n-ignore
+      label: 'Color scheme', // i18n-ignore
       type: 'select',
       options: [
-        { value: 'bmw', label: 'BMW（M カラー）' }, // i18n-ignore
-        { value: 'neon', label: 'ネオン' } // i18n-ignore
+        { value: 'bmw', label: 'BMW (M colors)' }, // i18n-ignore
+        { value: 'neon', label: 'Neon' } // i18n-ignore
       ],
       default: 'bmw'
     },
     ...RPM_PROPS,
-    { key: 'brakeMax', label: 'ブレーキ圧の上限', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_CYBER.brakeMax }, // i18n-ignore
-    { key: 'leanMax', label: 'リーンの目盛り', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_CYBER.leanMax } // i18n-ignore
+    { key: 'brakeMax', label: 'Brake pressure max', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_CYBER.brakeMax }, // i18n-ignore
+    { key: 'leanMax', label: 'Lean scale', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_CYBER.leanMax } // i18n-ignore
   ],
   map: [
     {
       key: 'mode',
-      label: '表示', // i18n-ignore
+      label: 'Display', // i18n-ignore
       type: 'select',
       options: [
-        { value: 'local', label: '周辺（進行方向が上）' }, // i18n-ignore
-        { value: 'route', label: 'ルート全体（北が上）' } // i18n-ignore
+        { value: 'local', label: 'Nearby (heading up)' }, // i18n-ignore
+        { value: 'route', label: 'Whole route (north up)' } // i18n-ignore
       ],
       default: 'local'
     },
-    { key: 'rangeM', label: '範囲（周辺）', type: 'number', min: 100, max: 5000, step: 100, unit: 'm', default: 600 }, // i18n-ignore
+    { key: 'rangeM', label: 'Range (nearby)', type: 'number', min: 100, max: 5000, step: 100, unit: 'm', default: 600 }, // i18n-ignore
     {
       key: 'shape',
-      label: '形', // i18n-ignore
+      label: 'Shape', // i18n-ignore
       type: 'select',
       options: [
-        { value: 'circle', label: '円' }, // i18n-ignore
-        { value: 'rect', label: '角丸の四角' } // i18n-ignore
+        { value: 'circle', label: 'Circle' }, // i18n-ignore
+        { value: 'rect', label: 'Rounded rectangle' } // i18n-ignore
       ],
       default: 'circle'
     }
   ],
-  elevation: [{ key: 'windowKm', label: '表示する幅（0 = 全体）', type: 'number', min: 0, max: 50, step: 1, unit: 'km', default: 0 }], // i18n-ignore
-  compass: [{ key: 'spanDeg', label: '見える角度の幅', type: 'number', min: 45, max: 360, step: 15, unit: '°', default: 120 }], // i18n-ignore
+  elevation: [{ key: 'windowKm', label: 'Width shown (0 = whole route)', type: 'number', min: 0, max: 50, step: 1, unit: 'km', default: 0 }], // i18n-ignore
+  compass: [{ key: 'spanDeg', label: 'Visible angle span', type: 'number', min: 45, max: 360, step: 15, unit: '°', default: 120 }], // i18n-ignore
 
 }
 
-/** 追加したときの初期の位置（出力の縦横比 aspect = 幅/高さ に合わせる） */
+/** Initial position when added (adapted to the output aspect ratio aspect = width/height) */
 export function defaultWidgetRect(w: WidgetKind, aspect: number): Rect {
   const tall = aspect < 1
   const box = (cx: number, cy: number, ww: number, hh: number): Rect => {
-    // ww, hh は「出力の短辺」に対する大きさ
+    // ww, hh are sizes relative to the "short side of the output"
     const sw = tall ? ww : ww / aspect
     const sh = tall ? hh * aspect : hh
     return { x: cx - sw / 2, y: cy - sh / 2, w: sw, h: sh }
   }
   switch (w) {
     case 'chrono':
-    case 'cyber': // サイバー風もクロノグラフ風と同じ丸い配置
+    case 'cyber': // cyber style uses the same round layout as chronograph style
       return box(tall ? 0.5 : 0.84, tall ? 0.78 : 0.72, 0.42, 0.42)
     case 'map':
       return box(0.88, 0.2, 0.3, 0.3)

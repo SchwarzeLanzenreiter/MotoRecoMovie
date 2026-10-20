@@ -1,5 +1,5 @@
-// 書き出し: 2本の魚眼をデコード → WebGL でリフレーム → WebCodecs でハードウェアエンコード → MP4。
-// 最後に音声を ffmpeg で合成する（走行中の音を整えるときは、プレビューと同じ処理をかけて AAC に。整えないときは元ファイルの音声を無変換で）。
+// Export: decode the two fisheye streams -> reframe with WebGL -> hardware-encode with WebCodecs -> MP4.
+// Finally the audio is muxed with ffmpeg (when tidying the riding audio, apply the same processing as the preview and encode to AAC; otherwise copy the original audio untouched).
 import { Muxer, StreamTarget } from 'mp4-muxer'
 import { openLocal } from '../core/file'
 import { Compositor } from '../render/compositor'
@@ -18,12 +18,12 @@ export interface ExportProgress {
 }
 
 /**
- * 使えるエンコーダー設定を選ぶ（HEVC → H.264 の順に試す）。それぞれ次の順で試す:
- *   1. ハードウェア・実際のフレームレート
- *   2. ハードウェア・フレームレートを HW_FPS_CAP と伝える。Windows のハードウェアエンコーダーは 1920×1080 より大きいと
- *      30fps までしか登録されておらず（RTX 3070 で確認。4K 50fps は断られる）、50fps の動画の 4K 書き出しができなかった。
- *      フレームレートはビットレートの配分の目安なので、その分ビットレートを下げて伝え、実際には動画のフレームレートで送る
- *   3. ソフトウェア（遅い）
+ * Pick a usable encoder configuration (try HEVC, then H.264). Each is tried in this order:
+ *   1. Hardware, actual frame rate
+ *   2. Hardware, reporting the frame rate as HW_FPS_CAP. Windows hardware encoders are registered only up to
+ *      30 fps above 1920x1080 (confirmed on an RTX 3070; 4K 50 fps is refused), so 4K export of 50 fps video was impossible.
+ *      The frame rate is only a guide for bitrate allocation, so report a proportionally lower bitrate and still send frames at the video frame rate
+ *   3. Software (slow)
  */
 const HW_FPS_CAP = 30
 async function pickEncoder(
@@ -37,9 +37,9 @@ async function pickEncoder(
   if (codec === 'hevc') cands.push({ codec: 'hvc1.1.6.L153.B0', mux: 'hevc' }, { codec: 'hvc1.1.6.L150.B0', mux: 'hevc' })
   cands.push({ codec: 'avc1.640033', mux: 'avc' }, { codec: 'avc1.640028', mux: 'avc' })
   const tries: { hw: HardwareAcceleration; rate: number; note: string }[] = [
-    { hw: 'prefer-hardware', rate: fps, note: 'ハードウェア' },
-    ...(fps > HW_FPS_CAP ? [{ hw: 'prefer-hardware' as HardwareAcceleration, rate: HW_FPS_CAP, note: `ハードウェア（フレームレートを ${HW_FPS_CAP}fps と伝える）` }] : []),
-    { hw: 'prefer-software', rate: fps, note: 'ソフトウェア' }
+    { hw: 'prefer-hardware', rate: fps, note: 'hardware' },
+    ...(fps > HW_FPS_CAP ? [{ hw: 'prefer-hardware' as HardwareAcceleration, rate: HW_FPS_CAP, note: `hardware (reporting the frame rate as ${HW_FPS_CAP}fps)` }] : []),
+    { hw: 'prefer-software', rate: fps, note: 'software' }
   ]
   for (const tr of tries) {
     for (const c of cands) {
@@ -47,7 +47,7 @@ async function pickEncoder(
         codec: c.codec,
         width: w,
         height: h,
-        // 伝えるフレームレートを下げたときは、1 フレームあたりの割り当てが同じになるようビットレートも下げる
+        // When the reported frame rate is lowered, lower the bitrate too so the per-frame allocation stays the same
         bitrate: Math.round((bitrate * tr.rate) / fps),
         framerate: tr.rate,
         hardwareAcceleration: tr.hw,
@@ -58,7 +58,7 @@ async function pickEncoder(
       if (s.supported) return { cfg, mux: c.mux, note: tr.note }
     }
   }
-  throw new Error(t('{w}×{h} を書き出せるエンコーダーが見つかりません', { w, h }))
+  throw new Error(t('No encoder found that can export {w}×{h}', { w, h }))
 }
 
 export async function exportVideo(
@@ -75,9 +75,9 @@ export async function exportVideo(
   const i1 = ex.outSec < 0 ? total - 1 : Math.min(total - 1, Math.round(ex.outSec * fps))
   const n = i1 - i0 + 1
   const { cfg, mux, note } = await pickEncoder(ex.codec, ex.width, ex.height, fps, ex.bitrateMbps * 1e6)
-  console.log(`書き出しのエンコーダー: ${cfg.codec} ${cfg.width}×${cfg.height} ${note}・伝えたフレームレート ${cfg.framerate}fps・ビットレート ${((cfg.bitrate ?? 0) / 1e6).toFixed(1)}Mbps`)
+  console.log(`Export encoder: ${cfg.codec} ${cfg.width}×${cfg.height} ${note}, reported frame rate ${cfg.framerate}fps, bitrate ${((cfg.bitrate ?? 0) / 1e6).toFixed(1)}Mbps`)
 
-  // 書き出し専用のデコーダーと描画先（プレビューと干渉しないように）
+  // Dedicated decoders and render target for export (so they do not interfere with the preview)
   const f = await openLocal(project.insvPath)
   const decs = session.decoders.map((d) => new TrackDecoder(f, d.track)) as [TrackDecoder, TrackDecoder]
   const canvas = new OffscreenCanvas(ex.width, ex.height)
@@ -120,7 +120,7 @@ export async function exportVideo(
   }
   try {
     for (let k = 0; k < n; k++) {
-      if (signal.aborted) throw new DOMException(t('中止しました'), 'AbortError')
+      if (signal.aborted) throw new DOMException(t('Cancelled'), 'AbortError')
       if (encErr) throw encErr
       const i = i0 + k
       tp = performance.now()
@@ -140,7 +140,7 @@ export async function exportVideo(
       while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 1))
       lap('wait')
       if (k === n - 1)
-        console.log('書き出しの内訳[ms/フレーム]', Object.entries(prof).map(([key, v]) => `${key} ${(v / (k + 1)).toFixed(1)}`).join('  '), ` デコーダー ${decs.map((d) => JSON.stringify(d.stats)).join(' ')}（${n} フレーム）`)
+        console.log('Export breakdown [ms/frame]', Object.entries(prof).map(([key, v]) => `${key} ${(v / (k + 1)).toFixed(1)}`).join('  '), ` decoders ${decs.map((d) => JSON.stringify(d.stats)).join(' ')} (${n} frames)`)
       if (k % 10 === 0 || k === n - 1) {
         const el = (performance.now() - t0) / 1000
         const r = (k + 1) / el
@@ -157,9 +157,9 @@ export async function exportVideo(
     await f.close()
   }
 
-  // ---- 音声の合成 ----
-  // 走行中の音を整えるときは、プレビューと同じ処理（core/audiofx.ts の Dynamics: 高い音を切る・音圧を抑える）をかけて AAC に。
-  // 整えた音声（音割れの補修・エンジン音以外を抑える）ができていればそれを元に、まだなら動画の音声を元にする。整えないときは無変換
+  // ---- Audio muxing ----
+  // When tidying the riding audio, apply the same processing as the preview (Dynamics in core/audiofx.ts: cut high sounds, reduce loudness) and encode to AAC.
+  // If the tidied audio (declip, suppress non-engine sound) exists, use it as the source; otherwise use the video audio. When not tidying, copy untouched
   onProgress({ done: n, total: n, fps: 0, etaSec: 0, phase: 'audio' })
   let audio = false
   let log: string | undefined
@@ -184,8 +184,8 @@ export async function exportVideo(
     }
   }
   if (!audio) {
-    // 音声なしのまま最終ファイル名にする
-    const text = t('ffmpeg で音声を合成できませんでした。映像のみのファイル: {path}', { path: tmpPath })
+    // Keep the video-only file as the final file name
+    const text = t('ffmpeg could not add the audio. Video-only file: {path}', { path: tmpPath })
     log = (log ? log + '\n' : '') + text
   }
   onProgress({ done: n, total: n, fps: 0, etaSec: 0, phase: 'done' })
@@ -193,8 +193,8 @@ export async function exportVideo(
 }
 
 /**
- * 区間 [t0, t0+dur) [s] の音声に、プレビューと同じ処理（Dynamics）をかけて、映像（videoPath）と合わせて書き出す。
- * 処理の状態が落ち着くよう 1 秒前から処理し、リミッターの先読みのぶん遅れて出る所を詰める
+ * Apply the same processing as the preview (Dynamics) to the audio of the section [t0, t0+dur) [s] and export it together with the video (videoPath).
+ * Process from 1 second earlier so the processing state settles, and trim the part that comes out late by the limiter lookahead
  */
 async function processedAudio(session: Session, fx: Project['audioFx'], t0: number, dur: number, videoPath: string, outPath: string): Promise<{ code: number; log: string }> {
   const tr = session.audioTrack!
@@ -213,7 +213,7 @@ async function processedAudio(session: Session, fx: Project['audioFx'], t0: numb
     try {
       const dyn = new Dynamics(fs, fx, C, inGain)
       const total = Math.floor(fin.size / 4 / C)
-      const skip = Math.round(pre * fs) + dyn.latency // 先頭の余白と、リミッターの遅れ
+      const skip = Math.round(pre * fs) + dyn.latency // leading margin and the limiter delay
       const block = fs * 10
       let written = 0
       const run = async (inter: Float32Array): Promise<void> => {
@@ -225,7 +225,7 @@ async function processedAudio(session: Session, fx: Project['audioFx'], t0: numb
         })
         dyn.process(chans)
         for (let i = 0; i < m; i++) for (let c = 0; c < C; c++) inter[i * C + c] = chans[c][i]
-        // 先頭の skip サンプルは捨てる
+        // Discard the first skip samples
         const done = written
         written += m
         const from = Math.max(0, skip - done)
@@ -238,7 +238,7 @@ async function processedAudio(session: Session, fx: Project['audioFx'], t0: numb
         const raw = await window.api.read(fin.id, p * C * 4, m * C * 4)
         await run(new Float32Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)))
       }
-      // リミッターの遅れのぶん、無音を流して最後まで出す
+      // Feed silence for the limiter delay so everything comes out to the end
       await run(new Float32Array(dyn.latency * C))
     } finally {
       await window.api.close(fin.id)

@@ -12,16 +12,16 @@ import { IncidentSection } from './IncidentPanel'
 import type { IncidentEvent, IncidentSettings } from '../engine/incident'
 import { Slider } from './Slider'
 import { DEFAULT_BORDER, TEMPLATES } from '../engine/layout'
-import { t, getLang } from '../i18n'
+import { t, getLang, LANG_NAMES } from '../i18n'
 import type { DirectorSettings, Marker } from '../engine/director'
 
 export const PRESETS: { label: string; w: number; h: number }[] = [
-  { label: '1920×1080（16:9）', w: 1920, h: 1080 }, // i18n-ignore
-  { label: '2560×1440（16:9）', w: 2560, h: 1440 }, // i18n-ignore
-  { label: '3840×2160（4K 16:9）', w: 3840, h: 2160 }, // i18n-ignore
-  { label: '1080×1920（縦 9:16）', w: 1080, h: 1920 }, // i18n-ignore
-  { label: '1080×1350（4:5）', w: 1080, h: 1350 }, // i18n-ignore
-  { label: '1080×1080（1:1）', w: 1080, h: 1080 } // i18n-ignore
+  { label: '1920×1080 (16:9)', w: 1920, h: 1080 }, // i18n-ignore
+  { label: '2560×1440 (16:9)', w: 2560, h: 1440 }, // i18n-ignore
+  { label: '3840×2160 (4K 16:9)', w: 3840, h: 2160 }, // i18n-ignore
+  { label: '1080×1920 (portrait 9:16)', w: 1080, h: 1920 }, // i18n-ignore
+  { label: '1080×1350 (4:5)', w: 1080, h: 1350 }, // i18n-ignore
+  { label: '1080×1080 (1:1)', w: 1080, h: 1080 } // i18n-ignore
 ]
 
 interface Props {
@@ -44,16 +44,16 @@ interface Props {
   onUpdateLayer: (id: string, patch: Partial<Layer>) => void
   onApplyTemplate: (id: string) => void
   hasRiding: boolean
-  /** 走行状態・コーナーが、車両ログではなく動画の IMU から推定したものか */
+  /** Whether the riding state and corners were estimated from the video IMU rather than from the vehicle log */
   ridingFromImu: boolean
-  /** リーン角が分かるか（車両ログ、または動画の IMU からの推定） */
+  /** Whether the lean angle is known (from the vehicle log, or estimated from the video IMU) */
   leanAvailable: boolean
   onAddMarker: () => void
   onUpdateMarker: (id: string, patch: Partial<Marker>) => void
   onRemoveMarker: (id: string) => void
   onSeekTime: (t: number) => void
   onUpdateDirector: (d: DirectorSettings) => void
-  /** 設定メニューの「自動生成の視点」（前方・コーナー入口・側方・後方の既定値）を開く */
+  /** Opens the settings menu "Auto-generated views" (defaults for the front, corner entry, side and rear views) */
   onOpenShotViews: () => void
   onGenerate: (range: 'export' | 'all') => void
   incidentEvents: IncidentEvent[]
@@ -62,20 +62,20 @@ interface Props {
   onUpdateIncident: (patch: Partial<IncidentSettings>) => void
   onEstimateSeam: () => void
   seamBusy: boolean
-  /** 自車の継ぎ目の型を作っている途中の進み具合（作っていなければ null） */
+  /** Progress of building the own-bike seam pattern (null when it is not being built) */
   bodyStatus: { busy: boolean; frac: number; msg: string } | null
   bodyReady: boolean
   onRebuildBody: () => void
-  /** 走行中の音を整えている途中の進み具合（作っていなければ null） */
+  /** Progress of conditioning the audio while riding (null when it is not being done) */
   audioStatus: { busy: boolean; frac: number; msg: string } | null
   audioReady: boolean
   onLoadLog: () => void
-  /** 設定ファイル（右側の設定とメーターなどの位置）の保存・読み込み */
+  /** Save and load the settings file (the settings on the right, the positions of meters, etc.) */
   onSaveSettings: () => void
   onLoadSettings: () => void
   logPrefs: LogPrefs
   onChangeDdf: () => void
-  /** .dat のフォルダから映像に合うものを探す（true ならフォルダを選び直す） */
+  /** Look for the .dat matching the video in a folder (if true, choose the folder again) */
   onFindDat: (pickFolder: boolean) => void
   onExport: () => void
   onCancelExport: () => void
@@ -90,13 +90,13 @@ const fmtTime = (s: number): string => {
 
 function LayoutSection(p: Props): React.JSX.Element {
   const aspect = p.project.export.width / p.project.export.height
-  // 縮小図は出力の縦横比に合わせる（横長なら横長、縦長なら縦長）
+  // the thumbnail follows the output aspect ratio (landscape for landscape, portrait for portrait)
   const W = aspect >= 1 ? 40 : Math.round(40 * aspect)
   const H = aspect >= 1 ? Math.round(40 / aspect) : 40
   return (
     <div className="section">
       <h3>
-        {t('画面レイアウト')}<span className="hint">{t('視点の数と配置をまとめて決める')}</span>
+        {t('Screen layout')}<span className="hint">{t('Set the number and arrangement of views at once')}</span>
       </h3>
       <div className="templates">
         {TEMPLATES.map((tp) => (
@@ -110,12 +110,12 @@ function LayoutSection(p: Props): React.JSX.Element {
           </button>
         ))}
       </div>
-      <div className="note">{t('余った視点は削除せず非表示にします（キーフレームは残ります）。')}</div>
+      <div className="note">{t('Extra views are hidden, not deleted (their keyframes are kept).')}</div>
     </div>
   )
 }
 
-/** 重ね表示の種類を選んで追加する */
+/** Choose the kind of overlay and add it */
 function AddOverlay({ onAdd }: { onAdd: (w: WidgetKind) => void }): React.JSX.Element {
   const [kind, setKind] = useState<WidgetKind>('chrono')
   return (
@@ -127,7 +127,7 @@ function AddOverlay({ onAdd }: { onAdd: (w: WidgetKind) => void }): React.JSX.El
           </option>
         ))}
       </select>
-      <button onClick={() => onAdd(kind)}>{t('＋ 追加')}</button>
+      <button onClick={() => onAdd(kind)}>{t('+ Add')}</button>
     </>
   )
 }
@@ -145,76 +145,76 @@ function DirectorSection(p: Props): React.JSX.Element {
   return (
     <div className="section">
       <h3>
-        {t('画角の自動切り替え')}<span className="hint">{t('{name} のキーフレームを作る', { name: layerName(p.selView.name) })}</span>
+        {t('Auto camera')}<span className="hint">{t('Creates keyframes for {name}', { name: layerName(p.selView.name) })}</span>
       </h3>
-      {!p.hasRiding && <div className="note status">{t('走行状態による切り替えは車両ログが必要です（注目ポイントだけでも生成できます）。')}</div>}
-      {p.ridingFromImu && <div className="note status">{t('車両ログが無いので、動画の動き（ジャイロと加速度）から推定した走行状態を使います。ログがあるときより精度は落ちます。')}</div>}
+      {!p.hasRiding && <div className="note status">{t('Switching by riding state needs a vehicle log (markers alone also work).')}</div>}
+      {p.ridingFromImu && <div className="note status">{t('There is no vehicle log, so the riding state is estimated from the video motion (gyro and accelerometer). It is less accurate than with a log.')}</div>}
       <div className="rules">
-        <Rule k="corner" label={t('コーナー進入の演出')} />
-        <Rule k="cruise" label={t('長い巡航で左右の景色')} />
-        <Rule k="stop" label={t('停止で広角の景色')} />
+        <Rule k="corner" label={t('Corner entry shots')} />
+        <Rule k="cruise" label={t('Side scenery on long cruises')} />
+        <Rule k="stop" label={t('Wide scenery when stopped')} />
       </div>
-      <div className="note">{t('コーナー: ①内側を少し向く（通常）。長いコーナーの何本かごとに ②自分を映す（水平固定・広角）、③真横・内側、④真横・外側（入口と通過後を1画面に）を順に挟みます。')}</div>
+      <div className="note">{t('Corners: ① look slightly inside (default). Every few long corners, inserts in turn ② a shot of yourself (level, wide), ③ straight sideways, inside, and ④ straight sideways, outside (entry and exit in one frame).')}</div>
       <div className="row">
         <button data-action="open-shot-views" onClick={p.onOpenShotViews}>
-          {t('視点の既定値（前方・コーナー入口・側方・後方）…')}
+          {t('Default views (front, corner entry, side, rear)…')}
         </button>
       </div>
       <div className="rules">
         <label className="rule">
-          <input type="checkbox" checked={d.corner.special.rider} disabled={!p.hasRiding || !d.corner.on} onChange={(e) => set('corner', { special: { ...d.corner.special, rider: e.target.checked } })} /> {t('②自分を映す')}
+          <input type="checkbox" checked={d.corner.special.rider} disabled={!p.hasRiding || !d.corner.on} onChange={(e) => set('corner', { special: { ...d.corner.special, rider: e.target.checked } })} /> {t('② Show yourself')}
         </label>
         <label className="rule">
-          <input type="checkbox" checked={d.corner.special.side} disabled={!p.hasRiding || !d.corner.on} onChange={(e) => set('corner', { special: { ...d.corner.special, side: e.target.checked } })} /> {t('③真横（内側）')}
+          <input type="checkbox" checked={d.corner.special.side} disabled={!p.hasRiding || !d.corner.on} onChange={(e) => set('corner', { special: { ...d.corner.special, side: e.target.checked } })} /> {t('③ Sideways (inside)')}
         </label>
         <label className="rule">
-          <input type="checkbox" checked={d.corner.special.sideOut} disabled={!p.hasRiding || !d.corner.on} onChange={(e) => set('corner', { special: { ...d.corner.special, sideOut: e.target.checked } })} /> {t('④真横（外側）')}
+          <input type="checkbox" checked={d.corner.special.sideOut} disabled={!p.hasRiding || !d.corner.on} onChange={(e) => set('corner', { special: { ...d.corner.special, sideOut: e.target.checked } })} /> {t('④ Sideways (outside)')}
         </label>
       </div>
-      <Slider name={t('②〜④の間隔')} value={d.corner.special.every} min={1} max={8} step={1} unit={t('本')} disabled={!d.corner.on} onChange={(x) => set('corner', { special: { ...d.corner.special, every: x } })} />
-      <Slider name={t('②〜④の対象')} value={d.corner.special.minDur} min={1} max={8} step={0.5} unit="s" disabled={!d.corner.on} onChange={(x) => set('corner', { special: { ...d.corner.special, minDur: x } })} />
-      <Slider name={t('景色の間隔')} value={d.cruise.interval} min={8} max={60} step={1} unit="s" disabled={!d.cruise.on} onChange={(x) => set('cruise', { interval: x })} />
+      <Slider name={t('②–④ every N corners')} value={d.corner.special.every} min={1} max={8} step={1} unit={t('')} disabled={!d.corner.on} onChange={(x) => set('corner', { special: { ...d.corner.special, every: x } })} />
+      <Slider name={t('②–④ min. corner length')} value={d.corner.special.minDur} min={1} max={8} step={0.5} unit="s" disabled={!d.corner.on} onChange={(x) => set('corner', { special: { ...d.corner.special, minDur: x } })} />
+      <Slider name={t('Scenery interval')} value={d.cruise.interval} min={8} max={60} step={1} unit="s" disabled={!d.cruise.on} onChange={(x) => set('cruise', { interval: x })} />
       <div className="rules">
         <label className="rule">
-          <input type="checkbox" data-action="overtake" checked={d.overtake.on} onChange={(e) => set('overtake', { on: e.target.checked })} /> {t('追い越しの間は路面を映さない')}
+          <input type="checkbox" data-action="overtake" checked={d.overtake.on} onChange={(e) => set('overtake', { on: e.target.checked })} /> {t('Hide the road while overtaking')}
         </label>
       </div>
       <div className="note">
-        {t('センターラインをまたいで車を追い越す間、路面が映らないよう上（空と景色）を向きます。追い越しの場面は、映像のセンターライン・路面と車の検出から見つけます（初回は動画を調べるので 1 分ほどかかります）。')}
+        {t('While crossing the center line to overtake a vehicle, the view looks up (sky and scenery) so the road is not shown. Overtakes are found from the center line, the road surface and vehicle detection in the video (the first time takes about a minute).')}
       </div>
       {p.project.overtakes && p.project.overtakesVersion === OVERTAKE_SCAN_VERSION && (
         <div className="note status">
-          {t('見つかった追い越し: {n} か所', { n: p.project.overtakes.length })}{' '}
-          <button className="mini" onClick={() => p.onChange({ ...p.project, overtakes: undefined })} title={t('次の自動生成のときに動画を調べ直します')}>
-            {t('調べ直す')}
+          {t('Overtakes found: {n}', { n: p.project.overtakes.length })}{' '}
+          <button className="mini" onClick={() => p.onChange({ ...p.project, overtakes: undefined })} title={t('Scan the video again on the next generation')}>
+            {t('Rescan')}
           </button>
         </div>
       )}
-      <Slider name={t('追い越しの上向き')} value={d.overtake.pitch} min={0} max={70} step={1} unit="°" disabled={!d.overtake.on} onChange={(x) => set('overtake', { pitch: x })} />
-      <Slider name={t('追い越しの画角')} value={d.overtake.fov} min={50} max={130} step={1} unit="°" disabled={!d.overtake.on} onChange={(x) => set('overtake', { fov: x })} />
-      <Slider name={t('切り替える車速')} value={d.overtake.minSpeed} min={0} max={100} step={5} unit="km/h" disabled={!d.overtake.on} onChange={(x) => set('overtake', { minSpeed: x })} />
-      <div className="note">{t('この車速より遅い追い越し（追い越す間の平均）では、画角を切り替えません。0 にすると、いつも切り替えます。車速は車両ログ（無いときは動画の動きからの推定）から求めます。')}</div>
-      <Slider name={t('切り替え時間')} value={d.transition} min={0.1} max={2} step={0.1} unit="s" onChange={(x) => p.onUpdateDirector({ ...d, transition: x })} />
-      <Slider name={t('最短ショット')} value={d.minShot} min={0.5} max={5} step={0.1} unit="s" onChange={(x) => p.onUpdateDirector({ ...d, minShot: x })} />
+      <Slider name={t('Overtake: look up')} value={d.overtake.pitch} min={0} max={70} step={1} unit="°" disabled={!d.overtake.on} onChange={(x) => set('overtake', { pitch: x })} />
+      <Slider name={t('Overtake: field of view')} value={d.overtake.fov} min={50} max={130} step={1} unit="°" disabled={!d.overtake.on} onChange={(x) => set('overtake', { fov: x })} />
+      <Slider name={t('Min. speed to switch')} value={d.overtake.minSpeed} min={0} max={100} step={5} unit="km/h" disabled={!d.overtake.on} onChange={(x) => set('overtake', { minSpeed: x })} />
+      <div className="note">{t('Overtakes slower than this (average speed while overtaking) do not switch the view. Set 0 to always switch. Speed comes from the vehicle log (or, without one, is estimated from the video motion).')}</div>
+      <Slider name={t('Transition time')} value={d.transition} min={0.1} max={2} step={0.1} unit="s" onChange={(x) => p.onUpdateDirector({ ...d, transition: x })} />
+      <Slider name={t('Shortest shot')} value={d.minShot} min={0.5} max={5} step={0.1} unit="s" onChange={(x) => p.onUpdateDirector({ ...d, minShot: x })} />
       <div className="row">
         <select value={range} onChange={(e) => setRange(e.target.value as 'export' | 'all')}>
-          <option value="export">{t('書き出し範囲')}</option>
-          <option value="all">{t('動画全体')}</option>
+          <option value="export">{t('Export range')}</option>
+          <option value="all">{t('Whole video')}</option>
         </select>
         <button className="primary" onClick={() => p.onGenerate(range)}>
-          {t('キーフレームを自動生成')}
+          {t('Generate keyframes')}
         </button>
       </div>
-      <div className="note">{t('範囲内のキーフレームは置き換わります（Ctrl+Z で元に戻せます）。視点は設定メニューの「自動生成の視点」の既定値を使います。')}</div>
+      <div className="note">{t('Keyframes in the range are replaced (Ctrl+Z to undo). Views use the defaults in Settings > Auto-generated views.')}</div>
     </div>
   )
 }
 
 const DIRS: { label: string; yaw: number; pitch: number }[] = [
-  { label: '左', yaw: -90, pitch: 0 }, // i18n-ignore
-  { label: '右', yaw: 90, pitch: 0 }, // i18n-ignore
-  { label: '後ろ', yaw: 180, pitch: 0 }, // i18n-ignore
-  { label: '空', yaw: 0, pitch: -45 } // i18n-ignore
+  { label: 'Left', yaw: -90, pitch: 0 }, // i18n-ignore
+  { label: 'Right', yaw: 90, pitch: 0 }, // i18n-ignore
+  { label: 'Back', yaw: 180, pitch: 0 }, // i18n-ignore
+  { label: 'Sky', yaw: 0, pitch: -45 } // i18n-ignore
 ]
 
 function MarkersSection(p: Props): React.JSX.Element {
@@ -222,14 +222,14 @@ function MarkersSection(p: Props): React.JSX.Element {
   return (
     <div className="section">
       <h3>
-        {t('注目ポイント')}<span className="hint">{t('{n} 個', { n: ms.length })}</span>
+        {t('Markers')}<span className="hint">{t('{n} total', { n: ms.length })}</span>
       </h3>
       <div className="row">
-        <button onClick={p.onAddMarker}>{t('◎ 現在位置に追加（B）')}</button>
+        <button onClick={p.onAddMarker}>{t('◎ Add at playhead (B)')}</button>
       </div>
       {ms.map((m) => (
         <div key={m.id} className="marker-row">
-          <button className="time-btn" onClick={() => p.onSeekTime(m.t)} title={t('この時刻へ移動')}>
+          <button className="time-btn" onClick={() => p.onSeekTime(m.t)} title={t('Go to this time')}>
             {fmtTime(m.t)}
           </button>
           {DIRS.map((d) => (
@@ -237,14 +237,14 @@ function MarkersSection(p: Props): React.JSX.Element {
               {t(d.label)}
             </button>
           ))}
-          <input type="number" title={t('ヨー（°）')} value={Math.round(m.yaw)} step={5} onChange={(e) => p.onUpdateMarker(m.id, { yaw: parseFloat(e.target.value) || 0 })} style={{ width: 48 }} />
-          <input type="number" title={t('見せる長さ（秒）')} value={m.hold} step={0.5} min={1} onChange={(e) => p.onUpdateMarker(m.id, { hold: Math.max(1, parseFloat(e.target.value) || 1) })} style={{ width: 44 }} />
-          <button title={t('削除')} onClick={() => p.onRemoveMarker(m.id)}>
+          <input type="number" title={t('Yaw (°)')} value={Math.round(m.yaw)} step={5} onChange={(e) => p.onUpdateMarker(m.id, { yaw: parseFloat(e.target.value) || 0 })} style={{ width: 48 }} />
+          <input type="number" title={t('Hold time (s)')} value={m.hold} step={0.5} min={1} onChange={(e) => p.onUpdateMarker(m.id, { hold: Math.max(1, parseFloat(e.target.value) || 1) })} style={{ width: 44 }} />
+          <button title={t('Delete')} onClick={() => p.onRemoveMarker(m.id)}>
             ×
           </button>
         </div>
       ))}
-      {ms.length > 0 && <div className="note">{t('数値は 向き（ヨー°）と 見せる長さ（秒）。自動生成でこの時刻にこの向きを見せます。')}</div>}
+      {ms.length > 0 && <div className="note">{t('The numbers are direction (yaw °) and hold time (s). Auto camera shows this direction at this time.')}</div>}
     </div>
   )
 }
@@ -260,41 +260,41 @@ function LayersSection(p: Props): React.JSX.Element {
   return (
     <div className="section">
       <h3>
-        {t('レイヤー')}<span className="hint">{t('上ほど手前に表示')}</span>
+        {t('Layers')}<span className="hint">{t('Top is drawn in front')}</span>
       </h3>
       <div className="layers">
         {[...project.layers].reverse().map((l) => (
           <div key={l.id} className={'layer-row' + (l.id === selLayer?.id ? ' sel' : '')} onClick={() => p.onSelectLayer(l.id)}>
             <input type="checkbox" checked={l.visible} onClick={(e) => e.stopPropagation()} onChange={(e) => p.onUpdateLayer(l.id, { visible: e.target.checked })} />
             <span className="lname">{layerName(l.name)}</span>
-            <span className="kind">{l.type === 'view' ? t('視点') : t('重ね表示')}</span>
-            <button title={t('手前へ')} onClick={(e) => (e.stopPropagation(), p.onMoveLayer(l.id, 1))}>▲</button>
-            <button title={t('奥へ')} onClick={(e) => (e.stopPropagation(), p.onMoveLayer(l.id, -1))}>▼</button>
-            <button title={t('削除')} disabled={l.type === 'view' && views <= 1} onClick={(e) => (e.stopPropagation(), p.onRemoveLayer(l.id))}>×</button>
+            <span className="kind">{l.type === 'view' ? t('View') : t('Overlay')}</span>
+            <button title={t('Bring forward')} onClick={(e) => (e.stopPropagation(), p.onMoveLayer(l.id, 1))}>▲</button>
+            <button title={t('Send backward')} onClick={(e) => (e.stopPropagation(), p.onMoveLayer(l.id, -1))}>▼</button>
+            <button title={t('Delete')} disabled={l.type === 'view' && views <= 1} onClick={(e) => (e.stopPropagation(), p.onRemoveLayer(l.id))}>×</button>
           </div>
         ))}
       </div>
       <div className="row">
-        <button onClick={p.onAddView}>{t('＋ 視点')}</button>
+        <button onClick={p.onAddView}>{t('+ View')}</button>
         <AddOverlay onAdd={p.onAddOverlay} />
       </div>
       {selLayer && rect && (
         <>
           <div className="row">
-            <label className="name">{t('名前')}</label>
+            <label className="name">{t('Name')}</label>
             <input type="text" value={layerName(selLayer.name)} onChange={(e) => p.onUpdateLayer(selLayer.id, { name: e.target.value })} style={{ flex: 1 }} />
           </div>
           <div className="rect-edit">
             {(['x', 'y', 'w', 'h'] as const).map((k) => (
               <div key={k}>
-                <label>{{ x: t('左 %'), y: t('上 %'), w: t('幅 %'), h: t('高さ %') }[k]}</label>
+                <label>{{ x: t('Left %'), y: t('Top %'), w: t('Width %'), h: t('Height %') }[k]}</label>
                 <input type="number" step={1} value={Math.round(rect[k] * 1000) / 10} onChange={(e) => setRect(k, parseFloat(e.target.value))} />
               </div>
             ))}
           </div>
           {selLayer.type === 'view' && (
             <div className="row">
-              <label className="name">{t('枠線')}</label>
+              <label className="name">{t('Border')}</label>
               <input
                 type="range"
                 min={0}
@@ -314,17 +314,17 @@ function LayersSection(p: Props): React.JSX.Element {
           {selLayer.type === 'view' && (
             <div className="row">
               <label>
-                <input type="checkbox" checked={!!selLayer.signs} disabled={!p.hasRiding} onChange={(e) => p.onUpdateLayer(selLayer.id, { signs: e.target.checked })} /> {t('コーナーの標識（曲線半径を空中に表示）')}
+                <input type="checkbox" checked={!!selLayer.signs} disabled={!p.hasRiding} onChange={(e) => p.onUpdateLayer(selLayer.id, { signs: e.target.checked })} /> {t('Corner signs (show curve radius in the air)')}
               </label>
               <select value={selLayer.signStyle ?? 'real'} disabled={!selLayer.signs} onChange={(e) => p.onUpdateLayer(selLayer.id, { signStyle: e.target.value as 'real' | 'cyber' })}>
-                <option value="real">{t('道路標識風')}</option>
-                <option value="cyber">{t('AR 風')}</option>
+                <option value="real">{t('Road sign')}</option>
+                <option value="cyber">{t('AR style')}</option>
               </select>
             </div>
           )}
           {selLayer.type === 'view' && selLayer.signs && (
             <Slider
-              name={t('標識の位置')}
+              name={t('Sign position')}
               value={selLayer.signAhead ?? DEFAULT_SIGN_AHEAD}
               min={-100}
               max={50}
@@ -334,9 +334,9 @@ function LayersSection(p: Props): React.JSX.Element {
             />
           )}
           {selLayer.type === 'view' && selLayer.signs && p.ridingFromImu && (
-            <div className="note status">{t('車両ログが無いので、曲線半径と標識の位置は動画の動きから推定したものです（車速が分からないので誤差があります。GPS の標高が無いので、峠の頂上の向こうを隠す判定はしません）。')}</div>
+            <div className="note status">{t('There is no vehicle log, so the curve radius and sign positions are estimated from the video motion (speed is unknown, so expect errors; without GPS altitude, signs beyond a crest are not hidden).')}</div>
           )}
-          {selLayer.type === 'view' && selLayer.signs && <div className="note">{t('コーナーの入口から経路に沿った距離（マイナス = 入口の手前、プラス = コーナーの奥）。')}</div>}
+          {selLayer.type === 'view' && selLayer.signs && <div className="note">{t('Distance along the route from the corner entry (minus = before the entry, plus = into the corner).')}</div>}
           {selLayer.type === 'overlay' &&
             (WIDGET_PROPS[selLayer.widget] ?? []).map((d: PropDef) => {
               const cur = selLayer.props[d.key] ?? d.default
@@ -357,7 +357,7 @@ function LayersSection(p: Props): React.JSX.Element {
               )
             })}
           <div className="note">
-            {selLayer.type === 'view' ? t('プレビュー上: 枠のハンドルでリサイズ、上部のつまみか Shift＋ドラッグで移動。') : t('プレビュー上: ドラッグで移動、枠のハンドルでリサイズ。')}
+            {selLayer.type === 'view' ? t('In the preview: drag the frame handles to resize; drag the top grip or Shift+drag to move.') : t('In the preview: drag to move; drag the frame handles to resize.')}
           </div>
         </>
       )}
@@ -383,38 +383,38 @@ export function SidePanel(p: Props): React.JSX.Element {
   return (
     <div className="side">
       <div className="section">
-        <h3>{t('設定ファイル')}</h3>
+        <h3>{t('Settings file')}</h3>
         <div className="row">
           <button data-action="save-settings" onClick={p.onSaveSettings}>
-            {t('設定を保存…')}
+            {t('Save settings…')}
           </button>
           <button data-action="load-settings" onClick={p.onLoadSettings}>
-            {t('設定を読み込む…')}
+            {t('Load settings…')}
           </button>
         </div>
         <div className="note">
-          {t('右側の設定と、画面に置いたメーターなどの位置・大きさを 1 つのファイルにまとめ、ほかの動画でも使えます。メイン画面の向きの動き（キーフレーム）・注目ポイント・書き出し範囲・継ぎ目の推定値は動画ごとなので入りません。')}
+          {t('Saves the settings on the right and the position and size of meters and other layers to one file that you can use with other videos. The main view\'s motion (keyframes), markers, export range and seam estimate are per video and are not included.')}
         </div>
       </div>
       <LayoutSection {...p} />
       <LayersSection {...p} />
       <div className="section">
         <h3>
-          {t('視点（{name}）', { name: layerName(selView.name) })}
-          <span className="hint">{selView.keyframes.length === 1 ? t('全体に適用') : p.hasKeyHere ? t('この時刻のキーフレーム') : t('変更するとキーフレームを追加')}</span>
+          {t('View ({name})', { name: layerName(selView.name) })}
+          <span className="hint">{selView.keyframes.length === 1 ? t('Applies to the whole video') : p.hasKeyHere ? t('Keyframe at this time') : t('Changes add a keyframe')}</span>
         </h3>
-        <Slider name={t('ヨー')} value={v.yaw} min={-180} max={180} step={1} unit="°" onChange={(x) => p.onEditView({ yaw: x })} />
-        <Slider name={t('ピッチ')} value={v.pitch} min={-89} max={89} step={1} unit="°" onChange={(x) => p.onEditView({ pitch: x })} />
-        <Slider name={t('画角')} value={v.fov} min={30} max={180} step={1} unit="°" onChange={(x) => p.onEditView({ fov: x })} />
-        <Slider name={t('傾きを残す')} value={v.leanRatio * 100} min={0} max={100} step={5} unit="%" disabled={!p.leanAvailable} onChange={(x) => p.onEditView({ leanRatio: x / 100 })} />
-        {!p.leanAvailable && <div className="note status">{t('「傾きを残す」は車両ログ（MotoReco）を読み込むと使えます。')}</div>}
-        {p.leanAvailable && !logOn && <div className="note status">{t('車両ログが無いので、リーン角は動画の動きから推定したものです。')}</div>}
+        <Slider name={t('Yaw')} value={v.yaw} min={-180} max={180} step={1} unit="°" onChange={(x) => p.onEditView({ yaw: x })} />
+        <Slider name={t('Pitch')} value={v.pitch} min={-89} max={89} step={1} unit="°" onChange={(x) => p.onEditView({ pitch: x })} />
+        <Slider name={t('FOV')} value={v.fov} min={30} max={180} step={1} unit="°" onChange={(x) => p.onEditView({ fov: x })} />
+        <Slider name={t('Keep lean')} value={v.leanRatio * 100} min={0} max={100} step={5} unit="%" disabled={!p.leanAvailable} onChange={(x) => p.onEditView({ leanRatio: x / 100 })} />
+        {!p.leanAvailable && <div className="note status">{t('"Keep lean" is available after loading a vehicle log (MotoReco).')}</div>}
+        {p.leanAvailable && !logOn && <div className="note status">{t('There is no vehicle log, so the lean angle is estimated from the video motion.')}</div>}
         <div className="row">
-          <button onClick={p.onAddKey} disabled={p.hasKeyHere}>{t('◆ キーフレーム追加')}</button>
-          <button onClick={p.onRemoveKey} disabled={!p.hasKeyHere || selView.keyframes.length <= 1}>{t('削除')}</button>
-          <span className="note">{t('{n} 個', { n: selView.keyframes.length })}</span>
+          <button onClick={p.onAddKey} disabled={p.hasKeyHere}>{t('◆ Add keyframe')}</button>
+          <button onClick={p.onRemoveKey} disabled={!p.hasKeyHere || selView.keyframes.length <= 1}>{t('Delete')}</button>
+          <span className="note">{t('{n} total', { n: selView.keyframes.length })}</span>
         </div>
-        <div className="note">{t('映像をドラッグで向き、ホイールで画角を変えられます。')}</div>
+        <div className="note">{t('Drag the video to change direction; use the wheel to change the FOV.')}</div>
       </div>
 
       <DirectorSection {...p} />
@@ -432,45 +432,45 @@ export function SidePanel(p: Props): React.JSX.Element {
       <div className="section">
         <h3>
           <input type="checkbox" checked={st.enabled} onChange={(e) => setStab({ enabled: e.target.checked })} />
-          {t('スタビライズ')}
-          <span className="hint">{t('ホライズンロックなし')}</span>
+          {t('Stabilization')}
+          <span className="hint">{t('No horizon lock')}</span>
         </h3>
-        <Slider name={t('ピッチ')} value={st.sigma[0]} min={0.05} max={1.5} step={0.05} unit="s" disabled={!st.enabled} onChange={(x) => setSigma(0, x)} />
-        <Slider name={t('ヨー')} value={st.sigma[1]} min={0.05} max={1.5} step={0.05} unit="s" disabled={!st.enabled} onChange={(x) => setSigma(1, x)} />
-        <Slider name={t('ロール')} value={st.sigma[2]} min={0.05} max={1.5} step={0.05} unit="s" disabled={!st.enabled} onChange={(x) => setSigma(2, x)} />
-        <div className="note">{t('大きいほど滑らか。ロールを大きくするとリーンへの追従がなまります（ログがあれば補完されます）。')}</div>
+        <Slider name={t('Pitch')} value={st.sigma[0]} min={0.05} max={1.5} step={0.05} unit="s" disabled={!st.enabled} onChange={(x) => setSigma(0, x)} />
+        <Slider name={t('Yaw')} value={st.sigma[1]} min={0.05} max={1.5} step={0.05} unit="s" disabled={!st.enabled} onChange={(x) => setSigma(1, x)} />
+        <Slider name={t('Roll')} value={st.sigma[2]} min={0.05} max={1.5} step={0.05} unit="s" disabled={!st.enabled} onChange={(x) => setSigma(2, x)} />
+        <div className="note">{t('Higher is smoother. A high roll value makes lean tracking lag (corrected when a log is loaded).')}</div>
         <div className="row">
           <label>
-            <input type="checkbox" checked={st.rollingShutter} onChange={(e) => setStab({ rollingShutter: e.target.checked })} /> {t('ローリングシャッター補正')}
+            <input type="checkbox" checked={st.rollingShutter} onChange={(e) => setStab({ rollingShutter: e.target.checked })} /> {t('Rolling shutter correction')}
           </label>
         </div>
         <div className="row">
           <label>
-            <input type="checkbox" checked={st.rollComp} disabled={!logOn || !st.enabled} onChange={(e) => setStab({ rollComp: e.target.checked })} /> {t('ログでロールのなまりを補完')}
+            <input type="checkbox" checked={st.rollComp} disabled={!logOn || !st.enabled} onChange={(e) => setStab({ rollComp: e.target.checked })} /> {t('Correct roll lag with the log')}
           </label>
         </div>
         <div className="row">
-          <label title={t('前後のレンズの映像が重なる帯で、両方の映像が一致するようにレンズ1の向きを補正します（横を向いたときの継ぎ目のずれ）')}>
-            <input type="checkbox" checked={st.seamFix !== false && !!st.seam} disabled={!st.seam} onChange={(e) => setStab({ seamFix: e.target.checked })} /> {t('レンズの継ぎ目を合わせる')}
-            {st.seam && <span className="hint">{t('（縁 {edge}°・回転 {rot}°）', { edge: st.seam.edge.toFixed(1), rot: Math.hypot(...st.seam.rot).toFixed(1) })}</span>}
+          <label title={t('Adjusts lens 1\'s orientation so both images match in the band where the front and back lenses overlap (fixes seam offset when looking sideways)')}>
+            <input type="checkbox" checked={st.seamFix !== false && !!st.seam} disabled={!st.seam} onChange={(e) => setStab({ seamFix: e.target.checked })} /> {t('Align the lens seam')}
+            {st.seam && <span className="hint">{t('(edge {edge}°, rotation {rot}°)', { edge: st.seam.edge.toFixed(1), rot: Math.hypot(...st.seam.rot).toFixed(1) })}</span>}
           </label>
-          <button onClick={p.onEstimateSeam} disabled={p.seamBusy} title={t('動画の何か所かのフレームから推定し直す')}>
-            {p.seamBusy ? t('推定中…') : t('推定し直す')}
+          <button onClick={p.onEstimateSeam} disabled={p.seamBusy} title={t('Re-estimate from frames at several points in the video')}>
+            {p.seamBusy ? t('Estimating…') : t('Re-estimate')}
           </button>
         </div>
         <div className="row">
-          <label title={t('継ぎ目の付近の景色までの距離をフレームごとに求め、前後のレンズの位置の差（約 3.3cm）による視差を補正します。路面・車体・ライダーなど近い物の継ぎ目が合います')}>
-            <input type="checkbox" checked={st.dynamicSeam !== false} onChange={(e) => setStab({ dynamicSeam: e.target.checked })} /> {t('近い物の継ぎ目も合わせる（動的なつなぎ合わせ）')}
+          <label title={t('Measures the distance to the scene near the seam every frame and corrects the parallax from the gap between the front and back lenses (about 3.3 cm). Aligns the seam on near objects such as the road, bike and rider')}>
+            <input type="checkbox" checked={st.dynamicSeam !== false} onChange={(e) => setStab({ dynamicSeam: e.target.checked })} /> {t('Align the seam on near objects too (dynamic stitching)')}
           </label>
         </div>
-        <Slider name={t('継ぎ目のぼかし幅')} value={st.seamBlend ?? 12} min={4} max={20} step={1} unit="°" onChange={(x) => setStab({ seamBlend: x })} />
-        <div className="note">{t('広いほど継ぎ目の切り替わりが目立たなくなりますが、近い物は二重に見えやすくなります。')}</div>
+        <Slider name={t('Seam blend width')} value={st.seamBlend ?? 12} min={4} max={20} step={1} unit="°" onChange={(x) => setStab({ seamBlend: x })} />
+        <div className="note">{t('Wider hides the seam transition better, but near objects are more likely to look doubled.')}</div>
         <div className="row">
-          <label title={t('トップケース・ナンバープレートなど、カメラと一緒に動く物の継ぎ目を、動画の 30 秒ごとに AI（オプティカルフロー）で合わせます。走行中に継ぎ目がパラパラ動かず、物の一部が欠けません')}>
-            <input type="checkbox" checked={st.bodyStitch === true} onChange={(e) => setStab({ bodyStitch: e.target.checked })} /> {t('自車の継ぎ目を AI で合わせる（試験的）')}
+          <label title={t('Aligns the seam over parts that move with the camera (top case, license plate) with AI optical flow, every 30 seconds of video. The seam stops flickering while riding and parts are no longer cut away.')}>
+            <input type="checkbox" checked={st.bodyStitch === true} onChange={(e) => setStab({ bodyStitch: e.target.checked })} /> {t('Align the body seam with AI (experimental)')}
           </label>
-          <button onClick={p.onRebuildBody} disabled={st.bodyStitch !== true || !!p.bodyStatus?.busy || p.seamBusy} title={t('動画全体で作り直す')}>
-            {p.bodyStatus?.busy ? t('作成中…') : t('作り直す')}
+          <button onClick={p.onRebuildBody} disabled={st.bodyStitch !== true || !!p.bodyStatus?.busy || p.seamBusy} title={t('Rebuild for the whole video')}>
+            {p.bodyStatus?.busy ? t('Building…') : t('Rebuild')}
           </button>
         </div>
         {p.bodyStatus && (
@@ -479,81 +479,81 @@ export function SidePanel(p: Props): React.JSX.Element {
             {p.bodyStatus.busy ? ` ${Math.round(p.bodyStatus.frac * 100)}%` : ''}
           </div>
         )}
-        {st.bodyStitch === true && !p.bodyStatus && p.bodyReady && <div className="note status">{t('自車の継ぎ目: 作成済み（動画の横の .motorecomovie-body.bin）')}</div>}
+        {st.bodyStitch === true && !p.bodyStatus && p.bodyReady && <div className="note status">{t('Body seam map: ready (.motorecomovie-body.bin next to the video)')}</div>}
         <div className="row">
-          <span className="name">{t('穴を埋める AI')}</span>
+          <span className="name">{t('Inpainting AI')}</span>
           <select value={st.bodyInpaint ?? 'lama'} disabled={st.bodyStitch !== true} onChange={(e) => setStab({ bodyInpaint: e.target.value as 'lama' | 'migan' })}>
-            <option value="lama">{t('LaMa（きれい・遅い）')}</option>
-            <option value="migan">{t('MI-GAN（速い）')}</option>
+            <option value="lama">{t('LaMa (cleaner, slower)')}</option>
+            <option value="migan">{t('MI-GAN (faster)')}</option>
           </select>
         </div>
-        <div className="note">{t('どちらのレンズにも写らない所があるときだけ使います。トップケースの後ろに付けた動画では、ふつうは使いません。')}</div>
-        <div className="note">{t('オンにすると、動画を開いたときに裏で作ります（GPU で 30 秒の区間ごとに 6〜12 秒）。場面によって、トップケースの欠けやパラパラが直る一方、ナンバープレートや反射板の端が少しゆがむことがあります。')}</div>
+        <div className="note">{t('Used only where neither lens sees the scene. With the camera behind the top case it is normally not needed.')}</div>
+        <div className="note">{t('When on, the map is built in the background after opening a video (6 to 12 s per 30 s section on the GPU). Depending on the scene it fixes missing top-case parts and flicker, but may slightly distort the license plate or reflector ends.')}</div>
       </div>
 
       <AudioSection {...p} />
       <div className="section" data-section="log">
         <h3>
           {log && <input type="checkbox" checked={project.logEnabled} onChange={(e) => p.onChange({ ...project, logEnabled: e.target.checked })} />}
-          {t('車両ログ（MotoReco）')}
+          {t('Vehicle log (MotoReco)')}
         </h3>
         {log ? (
           <>
             <div className="kv">
-              <span className="k">{t('ファイル')}</span>
+              <span className="k">{t('File')}</span>
               <span title={log.path}>{window.api.path.basename(log.path)}</span>
               {log.ddfPath && (
                 <>
-                  <span className="k">{t('変換規則')}</span>
+                  <span className="k">{t('Rules')}</span>
                   <span title={log.ddfPath}>{window.api.path.basename(log.ddfPath)}</span>
                 </>
               )}
-              <span className="k">{t('時刻のずれ')}</span>
-              <span>{t('{s} 秒', { s: log.sync.b.toFixed(3) })}</span>
-              <span className="k">{t('同期の信頼度')}</span>
+              <span className="k">{t('Time offset')}</span>
+              <span>{t('{s} s', { s: log.sync.b.toFixed(3) })}</span>
+              <span className="k">{t('Sync confidence')}</span>
               <span>
-                <span className={'badge ' + (log.sync.peakRatio >= 2 ? 'ok' : 'warn')}>{log.sync.peakRatio >= 2 ? t('良好') : t('要確認')}</span> {t('相関 {v}', { v: Math.max(...log.sync.windows.map((w) => w.corr), 0).toFixed(2) })}
+                <span className={'badge ' + (log.sync.peakRatio >= 2 ? 'ok' : 'warn')}>{log.sync.peakRatio >= 2 ? t('Good') : t('Check')}</span> {t('correlation {v}', { v: Math.max(...log.sync.windows.map((w) => w.corr), 0).toFixed(2) })}
               </span>
-              <span className="k">{t('尺度の補正')}</span>
-              <span>{t('×{k}（ログのリーン角を実際の角度へ）', { k: (1 / log.lean.k).toFixed(3) })}</span>
+              <span className="k">{t('Scale correction')}</span>
+              <span>{t('×{k} (log lean angle to actual angle)', { k: (1 / log.lean.k).toFixed(3) })}</span>
             </div>
           </>
         ) : (
-          <div className="note">{t('動画と同じフォルダの CSV か、下の .dat のフォルダから映像に合うログを自動で探します。見つからない場合は手動で読み込めます。')}</div>
+          <div className="note">{t('Looks for a CSV next to the video, or a matching log in the .dat folder below. If none is found, you can load one manually.')}</div>
         )}
         {log && log.unsupported.length > 0 && (
           <div className="note status" title={log.unsupported.join('\n')}>
-            {t('変換できない規則が {n} 個あります（その列は作りません）', { n: log.unsupported.length })}
+            {t('{n} rules cannot be decoded (those columns are skipped)', { n: log.unsupported.length })}
           </div>
         )}
         <div className="row">
-          <button onClick={p.onLoadLog}>{log ? t('別のログを読み込む…') : t('ログを読み込む…')}</button>
-          <button data-action="find-dat" onClick={() => p.onFindDat(false)} title={t('ファイル名の時刻と、映像のジャイロとの相関で選びます')}>
-            {t('フォルダから探す')}
+          <button onClick={p.onLoadLog}>{log ? t('Load another log…') : t('Load log…')}</button>
+          <button data-action="find-dat" onClick={() => p.onFindDat(false)} title={t('Chooses by the time in the file name and the correlation with the video gyro')}>
+            {t('Find in folder')}
           </button>
         </div>
         <div className="kv">
-          <span className="k">{t('.dat のフォルダ')}</span>
+          <span className="k">{t('.dat folder')}</span>
           <span className="path-cell">
-            <span title={p.logPrefs.datFolder ?? ''}>{p.logPrefs.datFolder ? window.api.path.basename(p.logPrefs.datFolder) : t('未設定')}</span>
+            <span title={p.logPrefs.datFolder ?? ''}>{p.logPrefs.datFolder ? window.api.path.basename(p.logPrefs.datFolder) : t('Not set')}</span>
             <button className="mini" onClick={() => p.onFindDat(true)}>
-              {t('変更…')}
+              {t('Change…')}
             </button>
           </span>
-          <span className="k">{t('変換規則（.ddf）')}</span>
+          <span className="k">{t('Rules (.ddf)')}</span>
           <span className="path-cell">
-            <span title={p.logPrefs.ddfPath ?? ''}>{p.logPrefs.ddfPath ? window.api.path.basename(p.logPrefs.ddfPath) : t('未設定')}</span>
+            <span title={p.logPrefs.ddfPath ?? ''}>{p.logPrefs.ddfPath ? window.api.path.basename(p.logPrefs.ddfPath) : t('Not set')}</span>
             <button className="mini" onClick={p.onChangeDdf}>
-              {t('変更…')}
+              {t('Change…')}
             </button>
           </span>
         </div>
       </div>
 
       <div className="section">
-        <h3>{t('書き出し')}</h3>
+        <h3>{t('Export')}</h3>
         <div className="row">
-          <label className="name">{t('サイズ')}</label>
+          <label className="name">{t('Size')}</label>
           <select value={preset} onChange={(e) => setEx({ width: PRESETS[+e.target.value].w, height: PRESETS[+e.target.value].h })}>
             {preset < 0 && <option value={-1}>{ex.width}×{ex.height}</option>}
             {PRESETS.map((q, i) => (
@@ -564,38 +564,41 @@ export function SidePanel(p: Props): React.JSX.Element {
           </select>
         </div>
         <div className="row">
-          <label className="name">{t('コーデック')}</label>
+          <label className="name">{t('Codec')}</label>
           <select value={ex.codec} onChange={(e) => setEx({ codec: e.target.value as 'hevc' | 'avc' })}>
             <option value="hevc">H.265 / HEVC</option>
             <option value="avc">H.264 / AVC</option>
           </select>
         </div>
         <div className="row">
-          <label className="name">{t('動画に入る文字')}</label>
+          <label className="name">{t('Text in video')}</label>
           <select
             value={ex.textLang ?? ''}
             onChange={(e) => {
               const v = e.target.value
-              const textLang = v === 'ja' || v === 'en' ? v : undefined // 「画面と同じ」は undefined
+              const textLang = v === 'ja' || v === 'en' ? v : undefined // "Same as app" is undefined
               p.onChange({ ...project, export: { ...project.export, textLang } })
             }}
           >
-            <option value="">{t('画面と同じ')}</option>
-            <option value="ja">日本語{/* i18n-ignore: 言語名はその言語で書く */}</option>
-            <option value="en">English</option>
+            <option value="">{t('Same as app')}</option>
+            {LANG_NAMES.map(([v, name]) => (
+              <option key={v} value={v}>
+                {name}
+              </option>
+            ))}
           </select>
         </div>
-        <div className="note">{t('挙動の乱れの表示や字幕の見出しなど、動画に描き込まれる文字の言語')}</div>
-        <Slider name={t('ビットレート')} value={ex.bitrateMbps} min={5} max={150} step={5} unit="M" onChange={(x) => setEx({ bitrateMbps: x })} />
+        <div className="note">{t('Language of text drawn into the video, such as disturbance labels and caption headings')}</div>
+        <Slider name={t('Bitrate')} value={ex.bitrateMbps} min={5} max={150} step={5} unit="M" onChange={(x) => setEx({ bitrateMbps: x })} />
         <div className="row">
-          <label className="name">{t('範囲')}</label>
+          <label className="name">{t('Range')}</label>
           <span>
-            {fmtTime(ex.inSec)} 〜 {ex.outSec < 0 ? t('最後') : fmtTime(ex.outSec)}
+            {fmtTime(ex.inSec)} - {ex.outSec < 0 ? t('End') : fmtTime(ex.outSec)}
           </span>
         </div>
         <div className="row">
-          <button onClick={p.onSetIn}>{t('現在位置を開始に')}</button>
-          <button onClick={p.onSetOut}>{t('現在位置を終了に')}</button>
+          <button onClick={p.onSetIn}>{t('Set start to playhead')}</button>
+          <button onClick={p.onSetOut}>{t('Set end to playhead')}</button>
         </div>
         {p.exporting ? (
           <>
@@ -604,19 +607,19 @@ export function SidePanel(p: Props): React.JSX.Element {
             </div>
             <div className="note status">
               {p.exporting.phase === 'audio'
-                ? t('音声を合成しています…')
-                : t('{done} / {total} フレーム（{fps} fps、残り約 {min} 分）', {
+                ? t('Mixing audio…')
+                : t('{done} / {total} frames ({fps} fps, about {min} min left)', {
                     done: String(p.exporting.done),
                     total: String(p.exporting.total),
                     fps: p.exporting.fps.toFixed(0),
                     min: String(Math.ceil(p.exporting.etaSec / 60))
                   })}
             </div>
-            <button onClick={p.onCancelExport}>{t('中止')}</button>
+            <button onClick={p.onCancelExport}>{t('Cancel')}</button>
           </>
         ) : (
           <button className="primary" onClick={p.onExport}>
-            {t('書き出す…')}
+            {t('Export…')}
           </button>
         )}
       </div>
@@ -624,7 +627,7 @@ export function SidePanel(p: Props): React.JSX.Element {
   )
 }
 
-/** 走行中の音を整える（音割れの補修・エンジン音以外を抑える・音圧を抑える。core/audiofx.ts） */
+/** Condition the audio while riding (declip, suppress everything except the engine sound, reduce the level; core/audiofx.ts) */
 function AudioSection(p: Props): React.JSX.Element {
   const fx = p.project.audioFx
   const set = (patch: Partial<typeof fx>): void => p.onChange({ ...p.project, audioFx: { ...fx, ...patch } })
@@ -632,29 +635,29 @@ function AudioSection(p: Props): React.JSX.Element {
     <div className="section" data-section="audio">
       <h3>
         <input type="checkbox" checked={fx.on} onChange={(e) => set({ on: e.target.checked })} />
-        {t('音声')}
-        <span className="hint">{t('走行中の音を整える')}</span>
+        {t('Audio')}
+        <span className="hint">{t('Clean up riding sound')}</span>
       </h3>
-      <div className="note">{t('プレビューと書き出しの音を整えます。「高い音を切る」「音圧を抑える」は再生しながらすぐに効きます。「音割れを補修する」「エンジン音以外を抑える」は裏で作り直し（23 分の動画で 2 分ほど）、できるまでは補修・雑音の処理なしで鳴ります。')}</div>
+      <div className="note">{t('Cleans up the sound for preview and export. Cut high frequencies and Tame loud parts apply immediately while playing. Repair clipping and Reduce non-engine noise are rebuilt in the background (about 2 minutes for a 23-minute video); until then the sound plays without them.')}</div>
       <div className="row">
         <label>
-          <input type="checkbox" checked={fx.declip} disabled={!fx.on} onChange={(e) => set({ declip: e.target.checked })} /> {t('音割れを補修する')}
+          <input type="checkbox" checked={fx.declip} disabled={!fx.on} onChange={(e) => set({ declip: e.target.checked })} /> {t('Repair clipping')}
         </label>
       </div>
-      <div className="note">{t('エンジン全開や風で、マイクの振幅が上限に張り付いた所（音割れ）を、前後の波形から推定して戻します。')}</div>
-      <Slider name={t('エンジン音以外を抑える')} value={fx.noiseDb} min={0} max={24} step={1} unit="dB" disabled={!fx.on} onChange={(x) => set({ noiseDb: x })} />
-      <div className="note">{t('エンジンの回転の音（倍音）は残し、雨・水しぶき・風切りなどの「サー」という広い帯域の雑音を下げます（目安。実際は 2/3 ほど）。0 で下げません。大きくしすぎると音がこもったり、金属的に聞こえたりします。')}</div>
-      <Slider name={t('高い音を切る')} value={fx.lowpassHz ?? 0} min={0} max={6000} step={100} unit="Hz" disabled={!fx.on} onChange={(x) => set({ lowpassHz: x })} />
-      <div className="note">{t('排気音だけを通すローパスです。この周波数より高い音（風切りやロードノイズの「サー」という音）を切ります。排気音の倍音は 1.5〜2kHz くらいまでなので、2000Hz 前後がおすすめ。0 で切りません。')}</div>
-      <Slider name={t('音圧を抑える')} value={fx.compThresholdDb} min={-36} max={-6} step={1} unit="dBFS" disabled={!fx.on} onChange={(x) => set({ compThresholdDb: x })} />
-      <div className="note">{t('この大きさを超える所（エンジン全開など）を 1/3 に圧縮し、ピークを −1dBFS に抑えます。小さい値ほど強く抑えます。')}</div>
+      <div className="note">{t('Reconstructs places where the microphone hit its limit (clipping) at full throttle or in wind, estimating them from the surrounding waveform.')}</div>
+      <Slider name={t('Reduce non-engine noise')} value={fx.noiseDb} min={0} max={24} step={1} unit="dB" disabled={!fx.on} onChange={(x) => set({ noiseDb: x })} />
+      <div className="note">{t('Keeps the engine sound (its harmonics) and lowers broadband hiss such as rain, spray and wind (a guide; the actual reduction is about 2/3 of it). 0 disables it. Too much can make the sound muffled or metallic.')}</div>
+      <Slider name={t('Cut high frequencies')} value={fx.lowpassHz ?? 0} min={0} max={6000} step={100} unit="Hz" disabled={!fx.on} onChange={(x) => set({ lowpassHz: x })} />
+      <div className="note">{t('A low-pass filter that passes only the exhaust sound. Cuts sound above this frequency (the hiss of wind and road noise). The exhaust harmonics reach about 1.5 to 2 kHz, so around 2000 Hz is recommended. 0 disables it.')}</div>
+      <Slider name={t('Tame loud parts')} value={fx.compThresholdDb} min={-36} max={-6} step={1} unit="dBFS" disabled={!fx.on} onChange={(x) => set({ compThresholdDb: x })} />
+      <div className="note">{t('Compresses parts louder than this (full throttle, etc.) at 3:1 and limits peaks to −1 dBFS. Lower values compress more.')}</div>
       {p.audioStatus && (
         <div className="note status">
           {p.audioStatus.msg}
           {p.audioStatus.busy ? ` ${Math.round(p.audioStatus.frac * 100)}%` : ''}
         </div>
       )}
-      {fx.on && !p.audioStatus && p.audioReady && <div className="note status">{t('整えた音で鳴らしています')}</div>}
+      {fx.on && !p.audioStatus && p.audioReady && <div className="note status">{t('Playing the cleaned-up sound')}</div>}
     </div>
   )
 }

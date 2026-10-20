@@ -3,18 +3,19 @@ import { dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { JA_MENU } from '../renderer/src/i18n/ja-menu'
 
-// 自動テストでは実際の履歴や設定を汚さないよう、一時フォルダをユーザーデータにする。
-// また、ほかのウィンドウに隠れていても描き続けるよう、隠れているかどうかの判定を止める（画面キャプチャのため）
+// In automated tests, use a temporary folder as the user data so the real history and settings are not polluted.
+// Also stop the occlusion check so it keeps drawing even when hidden behind other windows (for screen capture)
 if (process.env['REFRAME_AUTOTEST']) {
-  process.stdout.write(`[main] ユーザーデータ（普段）: ${app.getPath('userData')}\n`)
+  process.stdout.write(`[main] user data (normal): ${app.getPath('userData')}\n`)
   app.setPath('userData', mkdtempSync(join(tmpdir(), 'reframe-test-')))
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
   app.commandLine.appendSwitch('disable-renderer-backgrounding')
 } else {
-  // アプリの名前を「Insta360 Reframe」から「MotoRecoMovie」に変えた。ユーザーデータのフォルダも名前で決まるので、
-  // 新しいフォルダがまだ無ければ、前の名前のフォルダ（最近開いた動画・画面の言語・ログの設定・視点の既定値など）を写して引き継ぐ。
-  // 作り直せるキャッシュは写さない
+  // The app was renamed from "Insta360 Reframe" to "MotoRecoMovie". The user data folder is also determined by the name,
+  // so if the new folder does not exist yet, copy the folder of the previous name (recently opened videos, UI language, log settings, default views, etc.) to carry it over.
+  // Rebuildable caches are not copied
   const cur = app.getPath('userData')
   const old = join(app.getPath('appData'), 'insta360-reframe')
   if (!existsSync(cur) && existsSync(old)) {
@@ -22,7 +23,7 @@ if (process.env['REFRAME_AUTOTEST']) {
     try {
       cpSync(old, cur, { recursive: true, filter: (src) => !SKIP.has(src.slice(old.length + 1).split(/[\\/]/)[0]) })
     } catch (e) {
-      console.error('前の名前のユーザーデータを引き継げませんでした', e)
+      console.error('Could not carry over the user data of the previous name', e)
     }
   }
 }
@@ -36,15 +37,15 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
-      // プレビューの音声をすぐ鳴らせるように（ローカルファイルだけを扱うアプリなので）
+      // So preview audio can start immediately (the app only handles local files)
       autoplayPolicy: 'no-user-gesture-required',
-      // preload で fs を使って巨大な .insv をランダムアクセスするため
+      // Because the preload uses fs to randomly access huge .insv files
       sandbox: false,
-      // ほかのウィンドウに隠れたり最小化したりしても、タイマーを間引かない（書き出しが遅くならないように）
+      // Do not throttle timers even when hidden behind other windows or minimized (so export does not slow down)
       backgroundThrottling: false
     }
   })
-  // 自動テストモード: レンダラーのログを標準出力へ流す
+  // Automated test mode: forward the renderer logs to stdout
   if (process.env['REFRAME_AUTOTEST']) {
     win.webContents.on('console-message', (e) => {
       process.stdout.write(`[renderer:${e.level}] ${e.message}\n`)
@@ -67,13 +68,13 @@ ipcMain.handle('dialog:save', async (_e, opts: Electron.SaveDialogOptions) => {
   return r.canceled ? null : r.filePath
 })
 
-// ffmpeg を実行して終了コードと標準エラーの末尾を返す（音声の合成などに使う）
-/** ライセンス表示のファイル（配布物ではアプリと同じフォルダ、開発中は build の中） */
+// Run ffmpeg and return the exit code and the tail of stderr (used for audio muxing, etc.)
+/** License notices file (next to the app in a distribution; inside build during development) */
 function noticesPath(): string {
   return app.isPackaged ? join(dirname(process.execPath), 'THIRD-PARTY-NOTICES.txt') : join(app.getAppPath(), 'build', 'THIRD-PARTY-NOTICES.txt')
 }
 
-// 同梱の ffmpeg（LGPL 版、resources/ffmpeg。書き出しのときは resources/ffmpeg として配る）。無ければ PATH の ffmpeg
+// Bundled ffmpeg (LGPL build, resources/ffmpeg. Distributed as resources/ffmpeg for export). If absent, ffmpeg on PATH
 let ffmpegCache: string | null = null
 function ffmpegPath(): string {
   if (ffmpegCache) return ffmpegCache
@@ -85,7 +86,7 @@ function ffmpegPath(): string {
   return ffmpegCache
 }
 
-// アプリのキャッシュ（整えた音声など。消しても作り直せるもの）
+// App cache (tidied audio, etc.; anything that can be rebuilt even if deleted)
 ipcMain.handle('app:cacheDir', async () => {
   const dir = join(app.getPath('userData'), 'cache')
   const { mkdir } = await import('node:fs/promises')
@@ -104,7 +105,7 @@ ipcMain.handle('ffmpeg:run', async (_e, args: string[]) => {
   })
 })
 
-// ---- 開いた動画の履歴（ユーザーデータの recent.json）----
+// ---- History of opened videos (recent.json in the user data) ----
 export interface RecentEntry {
   path: string
   name: string
@@ -112,7 +113,7 @@ export interface RecentEntry {
   durationSec?: number
   model?: string
   hasLog?: boolean
-  thumb?: string // 縮小したプレビュー（JPEG の data URL）
+  thumb?: string // shrunken preview (JPEG data URL)
 }
 const RECENT_MAX = 12
 const recentFile = (): string => join(app.getPath('userData'), 'recent.json')
@@ -125,15 +126,15 @@ function readRecent(): RecentEntry[] {
   }
 }
 const writeRecent = (a: RecentEntry[]): void => writeFileSync(recentFile(), JSON.stringify(a.slice(0, RECENT_MAX), null, 1), 'utf-8')
-/** Windows のパスは区切り文字と大文字小文字の違いを無視して比べる */
+/** Windows paths are compared ignoring differences in separators and letter case */
 const normPath = (p: string): string => p.split('\\').join('/').toLowerCase()
 const samePath = (a: string, b: string): boolean => normPath(a) === normPath(b)
 
-/** 一覧（ファイルがまだあるか、編集内容が保存されているかも付ける） */
+/** List (also adds whether the file still exists and whether the edits are saved) */
 ipcMain.handle('recent:list', () =>
   readRecent().map((e) => ({ ...e, exists: existsSync(e.path), edited: existsSync(e.path + '.motorecomovie.json') || existsSync(e.path + '.reframe.json') }))
 )
-/** 追加（同じファイルは先頭へ移す。サムネイルなどは前の値を引き継ぐ） */
+/** Add (move the same file to the top; carry over earlier values such as the thumbnail) */
 ipcMain.handle('recent:add', (_e, entry: RecentEntry) => {
   const list = readRecent()
   const old = list.find((x) => samePath(x.path, entry.path))
@@ -146,7 +147,7 @@ ipcMain.handle('recent:remove', (_e, path: string) => {
   writeRecent(readRecent().filter((x) => !samePath(x.path, path)))
 })
 
-// ---- 自動テスト用 ----
+// ---- For automated tests ----
 ipcMain.handle('test:env', () => ({
   autotest: process.env['REFRAME_AUTOTEST'] ?? null,
   args: process.env['REFRAME_TEST_ARGS'] ?? null
@@ -154,8 +155,8 @@ ipcMain.handle('test:env', () => ({
 ipcMain.handle('test:capture', async (e, path: string) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   if (!win) return
-  // 直前に描かれた画面が返ることがあるので一度捨てて撮り直す。
-  // また一時的に失敗することがある（UnknownVizError など）ので数回やり直す
+  // The previously drawn screen may be returned, so discard it once and capture again.
+  // It also fails temporarily at times (UnknownVizError, etc.), so retry a few times
   await win.webContents.capturePage().catch(() => null)
   await new Promise((r) => setTimeout(r, 150))
   let img: Electron.NativeImage | null = null
@@ -170,33 +171,27 @@ ipcMain.handle('test:capture', async (e, path: string) => {
   const { writeFile } = await import('node:fs/promises')
   await writeFile(path, img!.toPNG())
 })
-// 本物のマウスを動かす（CSS の :hover を確かめるため）
+// Move the real mouse (to check CSS :hover)
 ipcMain.handle('test:mouse', (e, x: number, y: number) => {
   e.sender.sendInputEvent({ type: 'mouseMove', x: Math.round(x), y: Math.round(y) })
 })
 ipcMain.handle('test:quit', () => app.quit())
 
-// ---- メインメニュー（画面の言語に合わせて作り直す）----
+// ---- Main menu (rebuilt to match the UI language) ----
 type MenuLang = 'ja' | 'en'
-const MENU_TEXT: Record<MenuLang, Record<string, string>> = {
-  ja: {
-    file: 'ファイル', open: '開く…', close: '閉じる', quit: '終了',
-    edit: '編集', undo: '元に戻す', redo: 'やり直し', cut: '切り取り', copy: 'コピー', paste: '貼り付け', selectAll: 'すべて選択',
-    view: '表示', reload: '再読み込み', devTools: '開発者ツール', resetZoom: '実際のサイズ', zoomIn: '拡大', zoomOut: '縮小', fullscreen: '全画面表示',
-    window: 'ウィンドウ', minimize: '最小化', closeWindow: 'ウィンドウを閉じる',
-    settings: '設定', shotViews: '自動生成の視点…',
-    help: 'ヘルプ', licenses: 'ライセンス情報…'
-  },
-  en: {
-    file: 'File', open: 'Open…', close: 'Close', quit: 'Quit',
-    edit: 'Edit', undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select all',
-    view: 'View', reload: 'Reload', devTools: 'Developer tools', resetZoom: 'Actual size', zoomIn: 'Zoom in', zoomOut: 'Zoom out', fullscreen: 'Full screen',
-    window: 'Window', minimize: 'Minimize', closeWindow: 'Close window',
-    settings: 'Settings', shotViews: 'Auto-generated views…',
-    help: 'Help', licenses: 'Licenses…'
-  }
+const MENU_EN: Record<string, string> = {
+  file: 'File', open: 'Open…', close: 'Close', quit: 'Quit',
+  edit: 'Edit', undo: 'Undo', redo: 'Redo', cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select all',
+  view: 'View', reload: 'Reload', devTools: 'Developer tools', resetZoom: 'Actual size', zoomIn: 'Zoom in', zoomOut: 'Zoom out', fullscreen: 'Full screen',
+  window: 'Window', minimize: 'Minimize', closeWindow: 'Close window',
+  settings: 'Settings', shotViews: 'Auto-generated views…',
+  help: 'Help', licenses: 'License information…'
 }
-/** メニューの「開く」「閉じる」「設定」は画面（レンダラー）で処理する */
+const MENU_TEXT: Record<MenuLang, Record<string, string>> = {
+  ja: Object.fromEntries(Object.entries(MENU_EN).map(([k, en]) => [k, JA_MENU[en] ?? en])),
+  en: MENU_EN
+}
+/** The menu items "Open", "Close" and "Settings" are handled by the screen (renderer) */
 const sendMenu = (action: string): void => BrowserWindow.getFocusedWindow()?.webContents.send('menu', action)
 function buildMenu(lang: MenuLang): void {
   const m = MENU_TEXT[lang]
@@ -249,14 +244,14 @@ function buildMenu(lang: MenuLang): void {
     {
       label: m.help,
       submenu: [
-        // ほかの人が作ったソフトウェアとデータのライセンス（tools/notices.ts で作り、配布物ではアプリと同じフォルダに置く）
+        // License notices for software and data made by others (built by tools/notices.ts; placed next to the app in a distribution)
         { label: m.licenses, click: () => void shell.openPath(noticesPath()) }
       ]
     }
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(tpl))
-  // 自動テストでは、メニューの見出しをログに出す（メニューは画面キャプチャに写らないため）
-  if (process.env['REFRAME_AUTOTEST']) process.stdout.write(`[main] メニュー(${lang}): ${tpl.map((x) => `${x.label}[${(x.submenu as MenuItemConstructorOptions[]).map((y) => y.label ?? '-').join('/')}]`).join(' ')}
+  // In automated tests, log the menu headings (the menu does not appear in screen captures)
+  if (process.env['REFRAME_AUTOTEST']) process.stdout.write(`[main] menu (${lang}): ${tpl.map((x) => `${x.label}[${(x.submenu as MenuItemConstructorOptions[]).map((y) => y.label ?? '-').join('/')}]`).join(' ')}
 `)
 }
 let menuLang: MenuLang | null = null
@@ -268,7 +263,7 @@ ipcMain.handle('menu:lang', (_e, lang: MenuLang) => {
 })
 
 app.whenReady().then(() => {
-  // 画面から言語が届くまでは OS の言語で作っておく
+  // Until the language arrives from the screen, build with the OS language
   buildMenu(app.getLocale().toLowerCase().startsWith('ja') ? 'ja' : 'en')
   createWindow()
   app.on('activate', () => {

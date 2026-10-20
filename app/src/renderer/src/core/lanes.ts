@@ -1,58 +1,58 @@
-// 映像から、車線のどちら側を走っているか（センターラインの左右）を判定する。
-// 画角の自動切り替えの「追い越し」（車線をまたいでいる間は路面を映さない視点にする）に使う。
+// Determine from the video which side of the lane we are riding on (left or right of the center line).
+// Used for "overtake" in auto camera (a view that does not show the road surface while straddling the lane).
 //
-//   1. 車体の前方の路面を見下ろした小さな画像（LANE_VIEW）を描く（水平・リーンを戻した向き）
-//   2. 各行の画素を路面上の位置（横 L・前方 F [m]）に戻す（カメラの高さ LANE_CAM_HEIGHT の平面との交点）
-//   3. 手がかりは 2 つ:
-//      ・黄・オレンジのセンターライン: 細い帯（幅 0.45m 以下・色相 12〜48°）で両側が灰色の路面の点に、直線 L = a + b·F を当てはめる
-//        （ハフ変換）。a = 車体の真下での線の横の位置。道路脇の草は黄緑で幅も広いので入らない
-//      ・路面の広がり: 車体の真下から左右へ、灰色の路面がどこまで続くか。左側通行で自分の車線にいれば右が広い。
-//        白いセンターラインは、自分の車線でも反対の車線でも「左右に 1 本ずつ」見えるだけで区別できないので、線ではなく路面の広がりで見る
-// 黄色の線があればそれで決め、無ければ路面の広がりの偏りで決める。
+//   1. Draw a small image looking down at the road ahead of the bike (LANE_VIEW) (in the orientation with horizon and lean undone)
+//   2. Map each row's pixels back to positions on the road (lateral L, forward F [m]) (intersection with the plane at camera height LANE_CAM_HEIGHT)
+//   3. There are two cues:
+//      - Yellow/orange center line: fit a straight line L = a + b·F to points that are a thin band (width 0.45 m or less, hue 12-48°) with gray road on both sides
+//        (Hough transform). a = lateral position of the line directly under the bike. Roadside grass is yellow-green and wide, so it is not included
+//      - Road extent: how far the gray road continues left and right from directly under the bike. In left-hand traffic, the right side is wider when in our own lane.
+//        A white center line shows up as "one on each side" whether in our own lane or the opposite lane, so they cannot be told apart; so use the road extent rather than the line
+// If there is a yellow line, decide by that; otherwise decide by the bias in the road extent.
 
-/** 路面を見下ろす視点（水平から下へ 35°・水平画角 120° = 透視投影の上限）と画像の大きさ */
+/** Viewpoint looking down at the road (35° down from horizontal, horizontal FOV 120° = the upper limit of perspective projection) and the image size */
 export const LANE_VIEW = { pitch: -35, fov: 120, width: 320, height: 180 }
-/** カメラの路面からの高さ [m]（おおよそ。横の位置の尺度にだけ効き、左右の判定には効かない） */
+/** Camera height above the road [m] (approximate. It only affects the scale of the lateral position, not the left/right decision) */
 export const LANE_CAM_HEIGHT = 1.5
 
-const F_MIN = 2 // 線を探す前方の範囲 [m]
+const F_MIN = 2 // forward range to search for lines [m]
 const F_MAX = 10
-const F_ROAD_MIN = 4 // 路面の広がりを見る前方の範囲 [m]
+const F_ROAD_MIN = 4 // forward range to look at the road extent [m]
 const F_ROAD_MAX = 9
-const MAX_WIDTH = 0.45 // 線の幅の上限 [m]
-const EDGE = 0.25 // 線の両側で路面を確かめる幅 [m]
-const ROAD_GAP = 0.6 // 路面でない画素がこれだけ続いたら路面の端 [m]
-const ROAD_BIAS = 0.2 // 路面の広がりの偏りがこれ以上なら、その側と判定する
-const SINGLE_MIN = 0.6 // 1 回だけ反対側に見えた黄色の線を、車線をまたいだとみなす線との距離 [m]
+const MAX_WIDTH = 0.45 // upper limit of line width [m]
+const EDGE = 0.25 // width on both sides of a line over which to check for road [m]
+const ROAD_GAP = 0.6 // the road edge is where this many non-road pixels continue [m]
+const ROAD_BIAS = 0.2 // if the bias in the road extent is at least this, judge it to be that side
+const SINGLE_MIN = 0.6 // distance from the line at which a yellow line seen on the opposite side only once is taken to mean we straddled the lane [m]
 const SINGLE_MAX = 2
-const YELLOW_FAR = 4.5 // これより遠い黄色は、センターラインではない（反対の車線の矢印など）とみなす [m]
-const ROAD_CONTRADICT = 0.25 // 路面の広がりがこれ以上自分の車線側に偏っていれば、反対側に見えた黄色を使わない
-const ROAD_RUN_BIAS = 0.3 // 路面の広がりだけで決めた区間で、偏りがこれ以上反対側に寄ったら車線をまたいだとみなす
-const RUN_MIN_A = 1.1 // 黄色の線だけで決めた区間で、線が車体からこれ以上離れたら車線をまたいだとみなす [m]
+const YELLOW_FAR = 4.5 // yellow farther than this is taken not to be the center line (e.g. an arrow in the opposite lane) [m]
+const ROAD_CONTRADICT = 0.25 // if the road extent is biased toward our own lane by at least this, do not use yellow seen on the opposite side
+const ROAD_RUN_BIAS = 0.3 // in a run decided by the road extent alone, if the bias moves to the opposite side by at least this, take it as straddling the lane
+const RUN_MIN_A = 1.1 // in a run decided by the yellow line alone, if the line moves away from the bike by at least this, take it as straddling the lane [m]
 
 export interface LaneLine {
-  /** 車体の真下での横の位置 [m]（右が正） */
+  /** Lateral position directly under the bike [m] (right is positive) */
   a: number
-  /** 前方 1m あたりの横の変化 */
+  /** Lateral change per 1 m forward */
   b: number
-  /** 当てはまった点の数 */
+  /** Number of fitted points */
   votes: number
 }
 
 export interface LaneObservation {
   yellow: LaneLine | null
-  /** 路面の左右の広がり [m]（中央値）と、端が見えた行の割合 */
+  /** Left/right extent of the road [m] (median), and the fraction of rows where the edge was visible */
   road: { left: number; right: number; leftSeen: number; rightSeen: number } | null
 }
 
-/** 見下ろした画像（RGBA、上の行から）から、黄色の線と路面の広がりを求める */
+/** From the downward-looking image (RGBA, from the top row), find the yellow line and the road extent */
 export function observeLanes(rgba: Uint8ClampedArray | Uint8Array, w: number, h: number, camHeight = LANE_CAM_HEIGHT): LaneObservation {
   const pitch = (-LANE_VIEW.pitch * Math.PI) / 180
   const f = w / 2 / Math.tan((LANE_VIEW.fov * Math.PI) / 360)
   const cs = Math.cos(pitch)
   const sn = Math.sin(pitch)
   const cx = w / 2 - 0.5
-  const pts: number[] = [] // 黄色の線の点（F, L の組）
+  const pts: number[] = [] // points on the yellow line (pairs of F, L)
   const hue = new Float32Array(w)
   const sat = new Float32Array(w)
   const val = new Float32Array(w)
@@ -66,7 +66,7 @@ export function observeLanes(rgba: Uint8ClampedArray | Uint8Array, w: number, h:
     const y = yy - (h / 2 - 0.5)
     const ly = y * cs + f * sn
     if (ly <= 0) continue
-    const t = camHeight / ly // 1 画素あたりの横の長さ [m]
+    const t = camHeight / ly // lateral length per pixel [m]
     const F = t * (-y * sn + f * cs)
     if (F < F_MIN || F > F_MAX) continue
     let nRoad = 0
@@ -85,9 +85,9 @@ export function observeLanes(rgba: Uint8ClampedArray | Uint8Array, w: number, h:
       nRoad += road[x]
     }
     const cand = (x: number): boolean => hue[x] >= 12 && hue[x] <= 48 && sat[x] >= 0.14 && val[x] >= 0.5
-    // 路面の広がりでは、黄色の線（二重線は幅 0.5m ほど）や縁のにじんだ画素も路面として数える
+    // For the road extent, also count yellow lines (a double line is about 0.5 m wide) and pixels with blurred edges as road
     const roadish = (x: number): boolean => road[x] === 1 || sat[x] < 0.2 || cand(x)
-    // 路面の広がり: 真下から左右へ、路面でない画素が ROAD_GAP 続くところまで（細い線は飛び越える）
+    // Road extent: from directly under to the left and right, until ROAD_GAP non-road pixels continue (thin lines are skipped over)
     if (F >= F_ROAD_MIN && F <= F_ROAD_MAX) {
       const gap = Math.max(1, Math.round(ROAD_GAP / t))
       for (const dir of [-1, 1]) {
@@ -114,7 +114,7 @@ export function observeLanes(rgba: Uint8ClampedArray | Uint8Array, w: number, h:
         }
       }
     }
-    // 黄色の線の候補
+    // Yellow line candidates
     if (nRoad < w * 0.3) continue
     rows++
     const e = Math.max(1, Math.round(EDGE / t))
@@ -127,7 +127,7 @@ export function observeLanes(rgba: Uint8ClampedArray | Uint8Array, w: number, h:
       const x0 = x
       while (x < w && cand(x)) x++
       const x1 = x
-      // 両側が路面か（線の縁のにじんだ 1 画素は飛ばす）
+      // Whether both sides are road (skip the one blurred pixel at the edge of the line)
       if ((x1 - x0) * t > MAX_WIDTH || x0 - e - 1 < 0 || x1 + e + 1 > w) continue
       let l = 0
       let r = 0
@@ -145,7 +145,7 @@ export function observeLanes(rgba: Uint8ClampedArray | Uint8Array, w: number, h:
   }
 }
 
-/** 点 (F, L) の組に直線 L = a + b·F を当てはめる（ハフ変換）。いちばん票の多い直線 */
+/** Fit a straight line L = a + b·F to pairs of points (F, L) (Hough transform). The line with the most votes */
 function houghLine(pts: number[]): LaneLine | null {
   const A0 = -7
   const DA = 0.15
@@ -169,30 +169,30 @@ function houghLine(pts: number[]): LaneLine | null {
 }
 
 export interface LaneSample {
-  /** 動画時刻 [s] */
+  /** Video time [s] */
   t: number
-  /** センターラインの側（右 = +1、左 = -1、分からない = 0）。左側通行なら +1 が自分の車線 */
+  /** Side of the center line (right = +1, left = -1, unknown = 0). In left-hand traffic, +1 is our own lane */
   side: -1 | 0 | 1
-  /** 黄色の線から決めたか（路面の広がりからの推定より確か） */
+  /** Whether it was decided from a yellow line (more reliable than the estimate from the road extent) */
   yellow: boolean
-  /** 確認用: 黄色の線の真下での位置 [m]・路面の広がりの偏り（右が広いと正） */
+  /** For inspection: position directly under the yellow line [m] and the bias of the road extent (positive if the right is wider) */
   a?: number
   bias?: number
 }
 
-/** 1 枚の観測から、センターラインの側を決める */
+/** From one observation, decide the side of the center line */
 export function laneSide(o: LaneObservation): { side: -1 | 0 | 1; yellow: boolean; a?: number; bias?: number } {
   const r = o.road
   const bias = r ? (r.right - r.left) / Math.max(r.right + r.left, 1e-6) : undefined
   if (o.yellow) return { side: o.yellow.a >= 0 ? 1 : -1, yellow: true, a: o.yellow.a, bias }
-  // 路面の広がり: 少なくとも片側の端が見えていて、偏りがはっきりしているとき
+  // Road extent: when at least one side's edge is visible and the bias is clear
   if (!r || bias === undefined || (r.leftSeen < 0.5 && r.rightSeen < 0.5)) return { side: 0, yellow: false, bias }
   return { side: bias >= ROAD_BIAS ? 1 : bias <= -ROAD_BIAS ? -1 : 0, yellow: false, bias }
 }
 
 /**
- * 自分の車線でのセンターラインの側（左側通行 = +1、右側通行 = -1）。観測の多い方。黄色の線の観測が十分あればそれで決める。
- * 観測が少なすぎれば 0
+ * Side of the center line in our own lane (left-hand traffic = +1, right-hand traffic = -1). The one with more observations. If there are enough yellow line observations, decide by them.
+ * 0 if there are too few observations
  */
 export function ownSide(samples: LaneSample[]): -1 | 0 | 1 {
   let pos = 0
@@ -209,16 +209,16 @@ export function ownSide(samples: LaneSample[]): -1 | 0 | 1 {
 }
 
 export interface LaneCrossing {
-  /** 自分の車線にいた最後の時刻 [s]（この後、次の観測までの間に車線をまたぎ始める） */
+  /** Last time we were in our own lane [s] (after this, we start straddling the lane before the next observation) */
   start: number
-  /** 自分の車線に戻ったのを確かめた時刻 [s] */
+  /** Time when we were confirmed to be back in our own lane [s] */
   end: number
 }
 
 /**
- * 観測の並びから、センターラインをまたいで反対の車線にいた区間を探す。
- * 自分の側（左側通行なら右にセンターライン）は、観測の多い方とする（左側通行・右側通行のどちらでも使える）。
- * 路面の広がりからの推定は誤りやすいので、反対側の判定は前後どちらかも反対側のときだけ使う
+ * From the sequence of observations, find the runs in which we were across the center line in the opposite lane.
+ * Our own side (the center line on the right in left-hand traffic) is taken to be the one with more observations (so it works for both left- and right-hand traffic).
+ * The estimate from the road extent is error-prone, so the opposite-side decision is used only when either neighbor is also on the opposite side
  */
 export function findLaneCrossings(samples: LaneSample[], maxDur = 30): LaneCrossing[] {
   const own = ownSide(samples)
@@ -228,9 +228,9 @@ export function findLaneCrossings(samples: LaneSample[], maxDur = 30): LaneCross
     if (s.side === own) return s.side
     if (s.yellow) {
       const a = Math.abs(s.a ?? 0)
-      // 遠すぎる黄色（反対の車線の矢印などの表示）や、路面の広がりがはっきり自分の車線を示すときは使わない
+      // Do not use yellow that is too far (markings such as an arrow in the opposite lane) or when the road extent clearly indicates our own lane
       if (a > YELLOW_FAR || (s.bias ?? 0) * own >= ROAD_CONTRADICT) return 0
-      // 前後に黄色の線が無く 1 回だけ現れたもの（ほかの黄色い物）も使わない
+      // Also do not use something that appears only once with no yellow line before or after (other yellow objects)
       const tracked = [samples[i - 1], samples[i + 1]].some((x) => x && x.yellow)
       return tracked ? s.side : 0
     }
@@ -244,17 +244,17 @@ export function findLaneCrossings(samples: LaneSample[], maxDur = 30): LaneCross
       if (st[i] === own) lastOwn = i
       continue
     }
-    // 反対の車線の区間: 次に自分の側と判定されるまで
+    // Run in the opposite lane: until we are next judged to be on our own side
     let k = i + 1
     let n = 1
     while (k < samples.length && st[k] !== own) {
       if (st[k] === -own) n++
       k++
     }
-    // 1 回だけの反対側は、線が車体の真下（線の上を通っただけ）や遠く（ほかの黄色い表示）なら使わない
+    // If the opposite side appears only once, do not use it when the line is directly under the bike (just drove over the line) or far (other yellow markings)
     const a = Math.abs(samples[i].a ?? NaN)
     const single = n === 1 && !(samples[i].yellow && a >= SINGLE_MIN && a <= SINGLE_MAX)
-    // 黄色の線だけで決めた区間は、線が車体から十分離れたか、路面の広がりも反対側を示すときだけ
+    // A run decided by the yellow line alone only when the line moved far enough from the bike, or the road extent also indicates the opposite side
     let maxA = 0
     let minBias = Infinity
     let yellowOnly = true
@@ -266,7 +266,7 @@ export function findLaneCrossings(samples: LaneSample[], maxDur = 30): LaneCross
       maxA = Math.max(maxA, Math.abs(samples[q].a ?? 0))
       minBias = Math.min(minBias, (samples[q].bias ?? 0) * own)
     }
-    // 路面の広がりだけで決めた区間は、偏りがはっきりしているときだけ（道路脇の駐車場などの舗装で左右の広さが変わることがある）
+    // A run decided by the road extent alone only when the bias is clear (the left-right width can change with paving such as a roadside parking lot)
     const weak = (yellowOnly && maxA < RUN_MIN_A && minBias > -0.1) || (!anyYellow && minBias > -ROAD_RUN_BIAS)
     if (!single && !weak && lastOwn >= 0 && k < samples.length && samples[k].t - samples[lastOwn].t <= maxDur) out.push({ start: samples[lastOwn].t, end: samples[k].t })
     i = k - 1

@@ -1,4 +1,4 @@
-// 自動生成の視点の既定値（ShotViews。このパソコンに覚える）: 前方・コーナー入口・側方・後方
+// Default values of auto-generated views (ShotViews; remembered on this PC): front, corner entry, side, rear
 import { DEFAULT_SHOT_VIEWS, mergeShotViews, type ShotViews } from './director'
 
 const KEY = 'reframe.shotViews'
@@ -15,6 +15,6 @@ export function saveShotViews(v: ShotViews): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(v))
   } catch {
-    /* 覚えられなくても使える */
+    /* works even if it cannot be remembered */
   }
 }

@@ -13,14 +13,14 @@ interface Props {
   inSec: number
   outSec: number
   lean: { t: Float64Array; v: Float64Array } | null
-  /** 車速 [km/h]（リーン角のグラフに重ねる） */
+  /** Vehicle speed [km/h] (overlaid on the lean angle graph) */
   speed: { t: Float64Array; v: Float64Array } | null
   riding: RidingTrack | null
   markers: { t: number }[]
-  /** 車体挙動の乱れで 2 画面にする範囲 */
+  /** Ranges split into 2 screens because of a bike disturbance */
   incidents?: { start: number; end: number }[]
   onSeek: (frame: number) => void
-  /** 時刻 [s] → いちばん近いコマ（実際のコマの時刻で。省略時は時刻 × fps を丸める） */
+  /** Time [s] -> nearest frame (using the actual frame times; if omitted, round time x fps) */
   frameOf?: (t: number) => number
 }
 
@@ -30,19 +30,19 @@ const fmt = (s: number, step: number): string => {
   return step < 1 ? `${m}:${ss.toFixed(1).padStart(4, '0')}` : `${m}:${ss.toFixed(0).padStart(2, '0')}`
 }
 
-const PAD = 12 // 左右の余白 [px]
-const BAND = 14 // 走行状態の帯の太さ [px]
-const GRAPH_TOP = 44 // グラフの上端（目盛り・キーフレーム・乱れの帯の下）
+const PAD = 12 // left and right margin [px]
+const BAND = 14 // thickness of the riding-state band [px]
+const GRAPH_TOP = 44 // top of the graph (below the ticks, keyframes and disturbance band)
 const LEAN_COLOR = '#f5b84a'
 const SPEED_COLOR = '#62d6e8'
-/** 拡大の上限: 画面の幅で見せる最短の長さ [s] */
+/** Zoom limit: the shortest span shown across the screen width [s] */
 const MIN_SPAN = 2
 
-/** 時刻 t0〜t1 の範囲の、列ごとの最小・最大（グラフを画素数ぶんに間引く） */
+/** Per-column min and max over the range t0 to t1 (thins the graph down to the pixel count) */
 function columns(d: { t: Float64Array; v: Float64Array }, t0: number, t1: number, cols: number): { mn: Float32Array; mx: Float32Array } {
   const mn = new Float32Array(cols).fill(Infinity)
   const mx = new Float32Array(cols).fill(-Infinity)
-  // 範囲の先頭を二分探索で探す
+  // find the start of the range by binary search
   let lo = 0
   let hi = d.t.length
   while (lo < hi) {
@@ -61,25 +61,25 @@ function columns(d: { t: Float64Array; v: Float64Array }, t0: number, t1: number
   return { mn, mx }
 }
 
-/** キーフレームを描く順（後ほど手前）: 手で置いたもの・前方の上に、コーナー入口・側方・後方、いちばん手前に追い越し */
+/** Order in which keyframes are drawn (later = in front): hand-placed ones and front at the bottom, then corner entry, side, rear, with overtake in front */
 const KEY_ORDER: (Keyframe['tag'] | undefined)[] = [undefined, 'front', 'corner', 'side', 'rear', 'overtake']
 
 /**
- * 時間軸: 目盛り・リーン角と車速のグラフ・書き出し範囲・キーフレーム・再生位置・走行状態の帯。
- * ホイールで拡大縮小（マウスの位置を中心に）、Shift＋ホイール・横スクロール・下端のスクロールバーで左右に動かす
+ * Time axis: ticks, lean angle and vehicle speed graphs, export range, keyframes, playhead, riding-state band.
+ * Zoom with the wheel (centered on the mouse position); scroll left and right with Shift+wheel, horizontal scroll or the scrollbar at the bottom
  */
 export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lean, speed, riding, markers, incidents, onSeek, frameOf }: Props): React.JSX.Element {
-  // 言語が変わったら描き直す（描画の effect は毎回の描画で走る）
+  // redraw when the language changes (the drawing effect runs on every render)
   useLang()
   const ref = useRef<HTMLCanvasElement>(null)
   const dur = frameCount / fps
-  // 見えている範囲 [s]
+  // visible range [s]
   const [view, setView] = useState<{ v0: number; v1: number }>({ v0: 0, v1: dur })
   const viewRef = useRef(view)
   useEffect(() => {
     viewRef.current = view
   }, [view])
-  // 動画が変わったら全体を見せる
+  // show the whole video when the video changes
   useEffect(() => setView({ v0: 0, v1: dur }), [dur])
   const clampView = (v0: number, v1: number): { v0: number; v1: number } => {
     let span = Math.min(dur, Math.max(Math.min(MIN_SPAN, dur), v1 - v0))
@@ -89,17 +89,17 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
     return { v0: a, v1: a + span }
   }
   const zoomed = view.v1 - view.v0 < dur - 1e-6
-  /** k 倍に拡大縮小する（k < 1 で拡大）。中心は at、無ければ再生位置（見えていれば）か表示の中央 */
+  /** Zoom by a factor of k (k < 1 zooms in). The center is `at`; if absent, the playhead (if visible) or the center of the view */
   const zoomBy = (k: number, at?: number): void => {
     const { v0, v1 } = viewRef.current
     const now = tNowRef.current
     const c = at ?? (now >= v0 && now <= v1 ? now : (v0 + v1) / 2)
     const next = clampView(c - (c - v0) * k, c + (v1 - c) * k)
-    viewRef.current = next // 続けて押したときに、描き直しを待たずに次の拡大へ使う
+    viewRef.current = next // use it for the next zoom without waiting for a redraw when keys are pressed in a row
     setView(next)
   }
 
-  // 再生位置が見えている範囲の外に出たら追いかける（拡大中のみ）
+  // follow the playhead when it leaves the visible range (only while zoomed in)
   const tNow = frame / fps
   const tNowRef = useRef(tNow)
   tNowRef.current = tNow
@@ -113,14 +113,14 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tNow, dur])
 
-  // 時刻 → コマ（描き直すたびに作り直される関数なので、参照で持つ。依存に入れるとドラッグ中にマウスの扱いが作り直される）
+  // time -> frame (the function is recreated on every render, so hold it in a ref; as a dependency it would recreate the mouse handling during a drag)
   const frameOfRef = useRef(frameOf)
   frameOfRef.current = frameOf
 
-  // キーフレームにマウスを乗せたときの説明（種類）
+  // tooltip (kind) when the mouse is over a keyframe
   const [tip, setTip] = useState<{ x: number; y: number; k: Keyframe } | null>(null)
 
-  // 大きさが変わったら描き直す
+  // redraw when the size changes
   const [, setTick] = useState(0)
   useEffect(() => {
     const ro = new ResizeObserver(() => setTick((n) => n + 1))
@@ -143,13 +143,13 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
     const span = v1 - v0
     const IW = W - 2 * PAD
     const x = (s: number): number => PAD + ((s - v0) / span) * IW
-    // グラフの範囲（走行状態の帯の上）
+    // graph range (above the riding-state band)
     const gBottom = riding ? H - BAND - 4 : H - 4
-    // 書き出し範囲
+    // export range
     const o = outSec < 0 ? dur : outSec
     g.fillStyle = 'rgba(79,156,249,0.12)'
     g.fillRect(x(inSec), 0, x(o) - x(inSec), H)
-    // 目盛り
+    // ticks
     g.fillStyle = '#9aa1ae'
     g.strokeStyle = '#343946'
     g.lineWidth = 1
@@ -163,7 +163,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       g.stroke()
       g.fillText(fmt(s, step), x(s) + 3, 11)
     }
-    // リーン角（中央線 = 0°, 上下 ±45°）
+    // lean angle (center line = 0 deg, +-45 deg up and down)
     const mid = (GRAPH_TOP + gBottom) / 2
     const amp = (gBottom - GRAPH_TOP) / 2 / 45
     g.strokeStyle = '#343946'
@@ -185,7 +185,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       }
       g.stroke()
     }
-    // 車速（下端 = 0 km/h、上端 = その動画の最高速度）。リーン角より奥に描く
+    // vehicle speed (bottom = 0 km/h, top = the top speed in this video). Drawn behind the lean angle
     const labels: [string, string][] = []
     if (speed && speed.v.length) {
       let vmax = 0
@@ -195,9 +195,9 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       g.fillStyle = SPEED_COLOR
       g.font = '10px Yu Gothic UI, sans-serif'
       g.fillText(`${top} km/h`, PAD + 2, GRAPH_TOP + 9)
-      labels.push([t('車速'), SPEED_COLOR])
+      labels.push([t('Speed'), SPEED_COLOR])
     }
-    // キーフレームの色の凡例（グラフの左上。自動生成で付いた種類だけ）
+    // legend of keyframe colors (top left of the graph; only kinds that auto-generation produced)
     {
       const tags = KEY_ORDER.filter((tg): tg is NonNullable<typeof tg> => !!tg && keyframes.some((k) => k.tag === tg))
       g.font = '10px Yu Gothic UI, sans-serif'
@@ -218,9 +218,9 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
     }
     if (lean) {
       drawSeries(lean, LEAN_COLOR, (v) => mid - v * amp)
-      labels.push([t('リーン角'), LEAN_COLOR])
+      labels.push([t('Lean angle'), LEAN_COLOR])
     }
-    // グラフの名前（右下）
+    // graph names (bottom right)
     g.font = '11px Yu Gothic UI, sans-serif'
     let lxr = W - PAD - 4
     for (const [name, color] of labels.reverse()) {
@@ -229,7 +229,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       g.fillText(name, lxr - w, gBottom - 4)
       lxr -= w + 12
     }
-    // 走行状態の帯（下端）と凡例
+    // riding-state band (bottom) and legend
     if (riding) {
       for (const sg of riding.segments) {
         if (sg.end < v0 || sg.start > v1) continue
@@ -248,7 +248,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
         lx += 18 + g.measureText(name).width
       }
     }
-    // キーフレーム: 自動生成のショットの種類で色分け（前方・コーナー入口・側方・後方・追い越し）。手で置いたものは青
+    // keyframes: colored by kind of auto-generated shot (front, corner entry, side, rear, overtake). Hand-placed ones are blue
     for (const k of KEY_ORDER.flatMap((tg) => keyframes.filter((k) => k.tag === tg))) {
       if (k.t < v0 - span * 0.02 || k.t > v1 + span * 0.02) continue
       const kx = x(k.t)
@@ -261,14 +261,14 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       g.closePath()
       g.fill()
     }
-    // 車体挙動の乱れで 2 画面にする範囲（赤）
+    // ranges split into 2 screens because of a bike disturbance (red)
     for (const c of incidents ?? []) {
       if (c.end < v0 || c.start > v1) continue
       g.fillStyle = '#ff4b4b'
       const a = x(c.start)
       g.fillRect(a, 37, Math.max(2, x(c.end) - a), 4)
     }
-    // 注目ポイント（旗）
+    // markers (flags)
     for (const m of markers) {
       if (m.t < v0 || m.t > v1) continue
       const mx = x(m.t)
@@ -286,7 +286,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       g.closePath()
       g.fill()
     }
-    // 再生位置
+    // playhead
     if (tNow >= v0 && tNow <= v1) {
       const px = x(tNow)
       g.strokeStyle = '#ffffff'
@@ -298,7 +298,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
     }
   })
 
-  // クリック・ドラッグでシーク、ホイールで拡大縮小・左右に移動
+  // click/drag to seek; wheel to zoom and scroll left and right
   useEffect(() => {
     const c = ref.current!
     let down = false
@@ -311,7 +311,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       const r = c.getBoundingClientRect()
       const { v0, v1 } = viewRef.current
       const s = Math.max(0, Math.min(dur, timeAt(e.clientX)))
-      // キーフレームの近くをクリックしたらそこへ吸着する
+      // clicking near a keyframe snaps to it
       const near = [...keyframes, ...markers].find((k) => Math.abs(((k.t - s) / (v1 - v0)) * (r.width - 2 * PAD)) < 6)
       const ts = near ? near.t : s
       onSeek(frameOfRef.current ? frameOfRef.current(ts) : Math.round(ts * fps))
@@ -327,7 +327,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
         setTip(null)
         return
       }
-      // キーフレームの段（◆の上下）にあれば、いちばん近いキーフレームの説明を出す
+      // if the pointer is on the keyframe row (above and below the diamond), show a description of the nearest keyframe
       const r = c.getBoundingClientRect()
       const y = e.clientY - r.top
       const { v0, v1 } = viewRef.current
@@ -342,7 +342,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
             best = k
           }
         }
-      // マウスカーソルの真上に出す
+      // place it right above the mouse cursor
       setTip(best ? { x: e.clientX - r.left, y, k: best } : null)
     }
     const pl = (): void => setTip(null)
@@ -354,7 +354,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       const { v0, v1 } = viewRef.current
       const span = v1 - v0
       const r = c.getBoundingClientRect()
-      // 横スクロール（タッチパッド）・Shift＋ホイール: 左右に動かす
+      // horizontal scroll (touchpad) and Shift+wheel: scroll left and right
       const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0
       if (dx) {
         const d = (dx / (r.width - 2 * PAD)) * span
@@ -363,7 +363,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
         setView(next)
         return
       }
-      // ホイール: マウスの位置を中心に拡大縮小
+      // wheel: zoom centered on the mouse position
       zoomBy(Math.exp(e.deltaY * 0.0015), timeAt(e.clientX))
     }
     c.addEventListener('pointerdown', pd)
@@ -381,7 +381,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dur, fps, keyframes, markers, onSeek])
 
-  // ---- スクロールバー（下端）: つまみをドラッグして左右に動かす。つまみの外を押すとそこへ移り、そのままドラッグできる ----
+  // ---- Scrollbar (bottom): drag the thumb to scroll left and right. Pressing outside the thumb jumps there, and you can keep dragging ----
   const barRef = useRef<HTMLDivElement>(null)
   const onBarDown = (e: React.PointerEvent<HTMLDivElement>): void => {
     const bar = barRef.current
@@ -391,7 +391,7 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
     const { v0, v1 } = viewRef.current
     const span = v1 - v0
     const at = ((e.clientX - r.left) / r.width) * dur
-    // つまみの外を押したら、押した所がつまみの中央になるよう移る
+    // if pressed outside the thumb, jump so that the pressed point becomes the center of the thumb
     const onThumb = at >= v0 && at <= v1
     const start = onThumb ? v0 : at - span / 2
     const first = clampView(start, start + span)
@@ -418,21 +418,21 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       {tip && (
         <div className="tl-tip" data-tip="keyframe" style={{ left: Math.max(50, tip.x), top: tip.y - 10 }}>
           <span className="swatch" style={{ background: keyColor(tip.k.tag) }} />
-          {tip.k.tag ? t(KEY_TAG_NAMES[tip.k.tag]) : t('手動・注目ポイント')}
+          {tip.k.tag ? t(KEY_TAG_NAMES[tip.k.tag]) : t('Manual / marker')}
         </div>
       )}
-      <div ref={barRef} className={`tl-scroll${zoomed ? '' : ' full'}`} data-handle="tl-scroll" onPointerDown={onBarDown} title={zoomed ? t('ドラッグで左右に移動') : ''}>
+      <div ref={barRef} className={`tl-scroll${zoomed ? '' : ' full'}`} data-handle="tl-scroll" onPointerDown={onBarDown} title={zoomed ? t('Drag to scroll left and right') : ''}>
         <div className="thumb" style={{ left: `${(view.v0 / dur) * 100}%`, width: `${((view.v1 - view.v0) / dur) * 100}%` }} />
       </div>
       <div className="tl-zoom">
-        <button className="mini" data-action="tl-zoom-out" onClick={() => zoomBy(1.6)} title={t('縮小（ホイールでも拡大縮小。Shift＋ホイールで左右に移動）')}>
+        <button className="mini" data-action="tl-zoom-out" onClick={() => zoomBy(1.6)} title={t('Zoom out (or use the wheel; Shift+wheel to scroll)')}>
           −
         </button>
-        <button className="mini" data-action="tl-zoom-in" onClick={() => zoomBy(1 / 1.6)} title={t('拡大（ホイールでも拡大縮小。Shift＋ホイールで左右に移動）')}>
-          ＋
+        <button className="mini" data-action="tl-zoom-in" onClick={() => zoomBy(1 / 1.6)} title={t('Zoom in (or use the wheel; Shift+wheel to scroll)')}>
+          +
         </button>
-        <button className="mini" data-action="tl-zoom-fit" onClick={() => setView({ v0: 0, v1: dur })} disabled={!zoomed} title={t('全体を表示')}>
-          {t('全体')}
+        <button className="mini" data-action="tl-zoom-fit" onClick={() => setView({ v0: 0, v1: dur })} disabled={!zoomed} title={t('Show all')}>
+          {t('All')}
         </button>
       </div>
     </div>

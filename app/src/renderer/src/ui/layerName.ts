@@ -1,16 +1,17 @@
-// レイヤーの名前の表示。作ったときの言語のまま保存されている「既定の名前」（メイン・後ろ・サイバー風メーター・
-// 視点 2 など）は、今の画面の言語で表示する（日本語・英語のどちらで作った名前でも）。自分で付けた名前はそのまま。
+// Display of layer names. Default names (Main, Back, Cyber meter, View 2, ...) are stored in whatever language
+// was active when the layer was created; show them in the current UI language either way. Custom names stay as they are.
 import { tr, t } from '../i18n'
 import { WIDGET_NAMES } from '../render/overlay'
 
-/** 既定の名前（日本語の原文） */
-const DEFAULTS = ['メイン', '後ろ', '左', '右', '自車（挙動の乱れ）', ...Object.values(WIDGET_NAMES)] // i18n-ignore
+/** Default names (English source strings) */
+const DEFAULTS = ['Main', 'Back', 'Left', 'Right', 'Own bike (disturbance)', ...Object.values(WIDGET_NAMES)] // i18n-ignore
 
-const VIEW_N = /^(?:視点|View) (\d+)$/ // i18n-ignore
+/** "View 3" in either language */
+const VIEW_N = new RegExp('^(?:View |' + tr('ja', 'View {n}').replace('{n}', '') + ')(\\d+)$')
 
 export function layerName(name: string): string {
-  for (const ja of DEFAULTS) if (name === ja || name === tr('en', ja)) return t(ja)
+  for (const en of DEFAULTS) if (name === en || name === tr('ja', en)) return t(en)
   const m = VIEW_N.exec(name)
-  if (m) return t('視点 {n}', { n: m[1] })
+  if (m) return t('View {n}', { n: m[1] })
   return name
 }

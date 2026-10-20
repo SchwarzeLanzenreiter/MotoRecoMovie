@@ -1,9 +1,9 @@
-"""カメラの取り付け姿勢（リグ座標での車体の上・前方向）をIMUだけから推定する。
+"""Estimate the camera mount attitude (vehicle up and forward directions in rig coordinates) from the IMU alone.
 
-- 上方向: 走行全体の加速度の平均。バイクはリーン中も合力が車体の鉛直方向を向くので、
-          平均すると車体の上方向になる（前後の加減速は平均でほぼ相殺される）
-- 前方向: 上方向に垂直な面へ射影し、低域通過したジャイロの主成分。リーン動作の
-          ロール回転が最も大きいので、その軸が前後方向になる（符号は視点の向きに近い方を選ぶ）
+- Up direction: the mean acceleration over the whole ride. A bike's resultant force points along the vehicle vertical even while leaning, so
+          the mean gives the vehicle up direction (front-back acceleration and braking nearly cancel on average)
+- Forward direction: the principal component of the lowpass-filtered gyro projected onto the plane perpendicular to the up direction. The roll rotation of
+          leaning is the largest, so that axis is the front-back direction (choose the sign closer to the view direction)
 """
 import numpy as np
 
@@ -16,8 +16,8 @@ def estimate_mount(acc_g, gyro_dps, M=IMU_TO_RIG, forward_hint=(0, 0, -1)):
     up = a.mean(0)
     up /= np.linalg.norm(up)
     gp = g - np.outer(g @ up, up)
-    # 生のジャイロはスティックの振動（主にピッチ）が支配的なので、
-    # 0.5秒平均で振動を落とし、リーン動作（ゆっくりしたロール）だけを残す
+    # The raw gyro is dominated by stick vibration (mainly pitch), so
+    # remove the vibration with a 0.5 s average and keep only the leaning motion (slow roll)
     n = len(gp) // 500 * 500
     gp = gp[:n].reshape(-1, 500, 3).mean(1)
     C = gp.T @ gp
@@ -27,9 +27,9 @@ def estimate_mount(acc_g, gyro_dps, M=IMU_TO_RIG, forward_hint=(0, 0, -1)):
     fwd /= np.linalg.norm(fwd)
     if fwd @ np.asarray(forward_hint) < 0:
         fwd = -fwd
-    right = np.cross(fwd, up)  # +x右, +y下, +z前 の右手系: right = fwd × up
+    right = np.cross(fwd, up)  # right-handed system with +x right, +y down, +z front: right = fwd × up
     down = -up
-    R_mount = np.stack([right, down, fwd], 1)  # 列 = 車体の右・下・前（リグ座標）
+    R_mount = np.stack([right, down, fwd], 1)  # columns = vehicle right, down, front (rig coordinates)
     ratio = w[-1] / max(w[-2], 1e-9)
     return R_mount, ratio
 
@@ -43,8 +43,8 @@ if __name__ == "__main__":
     ts, acc, gyro = x.imu()
     Rm, ratio = estimate_mount(acc, gyro)
     np.set_printoptions(precision=4, suppress=True)
-    print("車体の右・下・前（リグ座標、列）:\n", Rm)
-    print("det", np.linalg.det(Rm), " 主成分の固有値比（大きいほど前方向が明確）", round(ratio, 2))
+    print("Vehicle right, down, front (rig coordinates, columns):\n", Rm)
+    print("det", np.linalg.det(Rm), " principal component eigenvalue ratio (larger means a clearer forward direction)", round(ratio, 2))
     up = -Rm[:, 1]
-    print("上方向とリグ-yのなす角", np.degrees(np.arccos(-up[1])).round(2), "°")
+    print("Angle between the up direction and rig -y", np.degrees(np.arccos(-up[1])).round(2), "°")
     np.save("out/mount.npy", Rm)

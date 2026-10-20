@@ -1,8 +1,8 @@
-"""平滑化の強さ（sigma）ごとに、出力の仮想カメラ軌跡の滑らかさと追従性をジャイロだけで評価する。
+"""Evaluate, for each smoothing strength (sigma), the smoothness and tracking of the output virtual camera trajectory using the gyro alone.
 
-ローリングシャッターとスタビが正しく効いていれば、視聴者に見える動き = 平滑化後の軌跡 qs。
-  残る揺れ  : qs の角速度の 1〜10Hz 成分の RMS [deg/s]（車体のピッチ/ヨー/ロール別）
-  追従のずれ: 実際のカメラ姿勢と qs の差の 95パーセンタイル [deg]（大きいほどコーナーで視点が遅れ/先行する）
+If rolling shutter correction and stabilization work correctly, the motion the viewer sees = the smoothed trajectory qs.
+  Residual shake : RMS [deg/s] of the 1 to 10 Hz component of the angular velocity of qs (per vehicle pitch/yaw/roll)
+  Tracking error : 95th percentile [deg] of the difference between the actual camera attitude and qs (the larger it is, the more the view lags/leads in corners)
 """
 import sys
 
@@ -30,20 +30,20 @@ sos = butter(4, [1, 10], btype="band", fs=50, output="sos")
 
 def evaluate(sig, label):
     qs = smooth(tsw, q, tf, sig, axes=R_mount)
-    # 出力軌跡の角速度（車体の軸成分）
+    # Angular velocity of the output trajectory (vehicle axis components)
     w = (qs[:-1].inv() * qs[1:]).as_rotvec() @ R_mount * 50
     band = sosfiltfilt(sos, np.degrees(w), axis=0)
     shake = np.sqrt((band ** 2).mean(0))
     dev = np.degrees(np.abs((q_f.inv() * qs).as_rotvec() @ R_mount))
     d95 = np.percentile(dev, 95, axis=0)
-    print(f"{label:22s} 残る揺れ[deg/s] ピッチ {shake[0]:5.2f} ヨー {shake[1]:5.2f} ロール {shake[2]:5.2f}"
-          f" | 追従のずれ95%[deg] ピッチ {d95[0]:5.2f} ヨー {d95[1]:5.2f} ロール {d95[2]:5.2f}", flush=True)
+    print(f"{label:22s} residual shake[deg/s] pitch {shake[0]:5.2f} yaw {shake[1]:5.2f} roll {shake[2]:5.2f}"
+          f" | tracking error 95%[deg] pitch {d95[0]:5.2f} yaw {d95[1]:5.2f} roll {d95[2]:5.2f}", flush=True)
 
 
 w_raw = (q_f[:-1].inv() * q_f[1:]).as_rotvec() @ R_mount * 50
 band = sosfiltfilt(sos, np.degrees(w_raw), axis=0)
 r = np.sqrt((band ** 2).mean(0))
-print(f"{'補正なし':22s} 残る揺れ[deg/s] ピッチ {r[0]:5.2f} ヨー {r[1]:5.2f} ロール {r[2]:5.2f}")
+print(f"{'No correction':22s} residual shake[deg/s] pitch {r[0]:5.2f} yaw {r[1]:5.2f} roll {r[2]:5.2f}")
 for s in (0.1, 0.15, 0.25, 0.4, 0.6, 1.0):
     evaluate(s, f"sigma {s}s")
 for sig in ((0.5, 0.25, 0.15), (0.6, 0.3, 0.2), (0.8, 0.4, 0.25)):

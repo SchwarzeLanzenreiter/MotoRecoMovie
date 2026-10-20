@@ -221,7 +221,7 @@ input[type='range'] {
 }
 .row .unit {
   color: var(--muted);
-  min-width: 18px; /* 「km/h」など長い単位は広げる */
+  min-width: 18px; /* widen for long units such as "km/h" */
   white-space: nowrap;
 }
 .note {
@@ -277,7 +277,7 @@ input[type='range'] {
   grid-template-rows: 36px minmax(0, 1fr);
   min-height: 0;
 }
-/* プレビューとの境界（ドラッグでタイムラインの高さを変える） */
+/* boundary with the preview (drag to change the timeline height) */
 .timeline-resizer {
   position: absolute;
   left: 0;
@@ -313,16 +313,16 @@ input[type='range'] {
   position: absolute;
   top: 0;
   left: 0;
-  /* 下端はスクロールバー。高さは必ず指定する（キャンバスは指定が無いと画素数を高さにするので、描くたびに伸びていく） */
+  /* The bottom is the scrollbar. Always specify the height (without one, a canvas takes its pixel count as its height and grows on every draw) */
   width: 100%;
   height: calc(100% - 14px);
   display: block;
   cursor: pointer;
 }
-/* タイムラインのキーフレームにマウスを乗せたときの説明 */
+/* tooltip shown when the mouse is over a timeline keyframe */
 .tl-tip {
   position: absolute;
-  /* マウスカーソルの上（top はカーソルの少し上。下端をそこにそろえる） */
+  /* above the mouse cursor (top is slightly above the cursor; align the bottom edge there) */
   transform: translate(-50%, -100%);
   padding: 3px 8px;
   border: 1px solid var(--line);
@@ -337,7 +337,7 @@ input[type='range'] {
 .tl-tip .swatch {
   margin-right: 6px;
 }
-/* タイムラインのスクロールバー（拡大しているときに全体の中を動かす） */
+/* timeline scrollbar (moves within the whole while zoomed in) */
 .tl-scroll {
   position: absolute;
   left: 12px;
@@ -520,7 +520,7 @@ input[type='color'] {
   max-width: 70%;
 }
 
-/* ---- 起動画面: 最近開いた動画 ---- */
+/* ---- Start screen: recently opened videos ---- */
 .recent {
   align-self: stretch;
   width: 100%;
@@ -630,7 +630,7 @@ input[type='color'] {
   opacity: 1;
 }
 
-/* ---- 一覧（車体挙動の乱れの事象など） ---- */
+/* ---- List (disturbance events of the bike, etc.) ---- */
 .event-list {
   max-height: 240px;
   overflow-y: auto;
@@ -673,7 +673,7 @@ input[type='color'] {
   color: #0b0d12;
 }
 
-/* ---- 配置の目印（十字線・対角線。プレビューだけ） ---- */
+/* ---- Placement guides (crosshair and diagonals; preview only) ---- */
 .viewer .guides {
   position: absolute;
   inset: 0;
@@ -721,8 +721,8 @@ input[type='color'] {
   color: #ffb36b;
 }
 /*
- * 右のメニューの説明（.note）は、すぐ上の項目（行・スライダー・見出しなど）にマウスを載せたときだけ、その下に浮かべて出す
- * （項目と説明が並んでごちゃごちゃしないように）。状態の表示（.note.status）と注意（.note.warn）はいつも出す
+ * The description (.note) in the right-hand menu floats below the item right above it (row, slider, heading, etc.) only while the mouse is over that item
+ * (so that items and descriptions do not crowd each other). Status notes (.note.status) and warnings (.note.warn) are always shown
  */
 .side .section {
   position: relative;
@@ -746,7 +746,7 @@ input[type='color'] {
 .side :hover + div.note:not(.status):not(.warn) + div.note:not(.status):not(.warn) {
   display: block;
 }
-/* ファイルの場所と「変更…」ボタン（車両ログの設定） */
+/* file location and the "Change..." button (vehicle log settings) */
 .path-cell {
   display: flex;
   align-items: center;
@@ -762,10 +762,10 @@ button.mini {
   padding: 1px 6px;
   font-size: 11px;
 }
-/* タイムラインの拡大縮小のボタン（右上） */
+/* timeline zoom buttons (top right) */
 .tl-zoom {
   position: absolute;
-  top: 46px; /* グラフの右上（目盛りとキーフレームの下） */
+  top: 46px; /* top right of the graph (below the ticks and keyframes) */
   right: 14px;
   display: flex;
   gap: 4px;
@@ -775,7 +775,7 @@ button.mini {
   opacity: 1;
 }
 
-/* 設定の画面（右側のパネルに重ねる。左のプレビューは見えたまま） */
+/* settings screen (overlaid on the right-hand panel; the preview on the left stays visible) */
 .dialog {
   grid-area: side;
   z-index: 10;

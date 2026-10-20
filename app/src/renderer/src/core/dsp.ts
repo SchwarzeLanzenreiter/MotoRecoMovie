@@ -1,6 +1,6 @@
-// 信号処理の小さな部品
+// Small signal-processing building blocks
 
-/** 2次バターワース低域通過（双一次変換）を前後にかけて位相遅れをなくす（scipy の sosfiltfilt 相当） */
+/** 2nd-order Butterworth lowpass (bilinear transform) applied forward and backward to remove phase lag (equivalent to scipy's sosfiltfilt) */
 export function lowpassFiltfilt(x: Float64Array, fc: number, fs: number): Float64Array {
   const K = Math.tan((Math.PI * fc) / fs)
   const norm = 1 / (1 + Math.SQRT2 * K + K * K)
@@ -11,7 +11,7 @@ export function lowpassFiltfilt(x: Float64Array, fc: number, fs: number): Float6
   const a2 = (1 - Math.SQRT2 * K + K * K) * norm
   const run = (inp: Float64Array): Float64Array => {
     const out = new Float64Array(inp.length)
-    // 端の過渡応答を抑えるため、最初の値で定常状態から始める
+    // Start from the steady state with the first value to suppress the edge transient
     let x1 = inp[0]
     let x2 = inp[0]
     let y1 = inp[0]
@@ -33,7 +33,7 @@ export function lowpassFiltfilt(x: Float64Array, fc: number, fs: number): Float6
   return b
 }
 
-/** ガウスフィルタ（scipy.ndimage.gaussian_filter1d, mode='nearest', truncate=3 相当） */
+/** Gaussian filter (equivalent to scipy.ndimage.gaussian_filter1d, mode='nearest', truncate=3) */
 export function gaussianFilter(x: Float64Array, sigmaSamples: number): Float64Array {
   if (sigmaSamples <= 0) return x.slice()
   const r = Math.ceil(3 * sigmaSamples)
@@ -57,7 +57,7 @@ export function gaussianFilter(x: Float64Array, sigmaSamples: number): Float64Ar
   return out
 }
 
-/** その場で計算する基数2の複素FFT（inverse で逆変換、1/n はかけない） */
+/** In-place radix-2 complex FFT (inverse for the inverse transform; no 1/n scaling) */
 function fft(re: Float64Array, im: Float64Array, inverse: boolean): void {
   const n = re.length
   for (let i = 1, j = 0; i < n; i++) {
@@ -94,8 +94,8 @@ function fft(re: Float64Array, im: Float64Array, inverse: boolean): void {
 }
 
 /**
- * 相互相関 c[lag] = Σ a[n+lag]·b[n]（lag = -(len(b)-1) .. len(a)-1）。
- * 戻り値の index i が lag = i - (len(b)-1) に対応する。
+ * Cross-correlation c[lag] = Σ a[n+lag]·b[n] (lag = -(len(b)-1) .. len(a)-1).
+ * Return index i corresponds to lag = i - (len(b)-1).
  */
 export function crossCorrelate(a: Float64Array, b: Float64Array): Float64Array {
   const m = a.length + b.length - 1
@@ -141,7 +141,7 @@ export function interp(x: number, xs: Float64Array, ys: Float64Array): number {
   return ys[lo] + (ys[hi] - ys[lo]) * t
 }
 
-/** 単調増加の x 列に対する一括線形補間（高速） */
+/** Batch linear interpolation for a monotonically increasing x array (fast) */
 export function interpSorted(xq: Float64Array, xs: Float64Array, ys: Float64Array): Float64Array {
   const out = new Float64Array(xq.length)
   let j = 0
@@ -156,12 +156,12 @@ export function interpSorted(xq: Float64Array, xs: Float64Array, ys: Float64Arra
 }
 
 /**
- * 幅の大きいガウスフィルタの近似（箱型フィルタを3回。端は最寄りの値で延長）。
- * 計算量がデータ長に比例するので、σ が数百サンプルでも速い
+ * Approximation of a wide Gaussian filter (3 passes of a box filter. Ends are extended with the nearest value).
+ * Cost is proportional to the data length, so it is fast even when σ is hundreds of samples
  */
 export function fastGaussian(x: Float64Array, sigmaSamples: number): Float64Array {
   if (sigmaSamples < 1) return x.slice()
-  // 3回の箱型で分散 σ² になる幅（奇数）
+  // Odd width at which 3 box passes give variance σ²
   const w = Math.max(1, Math.round(Math.sqrt(4 * sigmaSamples * sigmaSamples + 1)) | 1)
   const r = (w - 1) >> 1
   const n = x.length

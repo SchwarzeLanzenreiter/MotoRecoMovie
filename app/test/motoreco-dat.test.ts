@@ -1,13 +1,13 @@
-// MotoReco の .dat を .ddf の規則でデコードした結果を、MotoRecoViewer の CSV と突き合わせる。
-// 実行: npx tsx test/motoreco-dat.test.ts [dat ddf csv] [insv]
-//   insv を渡すと、映像に合う .dat を選ぶ照合の目安（同じ走行 / 別の走行）も確かめる
+// Compares the result of decoding a MotoReco .dat with the .ddf rules against the CSV from MotoRecoViewer.
+// Run: npx tsx test/motoreco-dat.test.ts [dat ddf csv] [insv]
+//   given an insv, also checks the matching score used to pick the .dat that fits the video (same ride / different ride)
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { compileFormula, datRollRate, decodeDat, parseDdf } from '../src/renderer/src/core/motoreco-dat'
 import { bikeLogFromColumns, cameraRollRate, logMatchScore, parseMotoReco } from '../src/renderer/src/core/motoreco'
 
-// ---- 式の規則 ----
+// ---- Formula rules ----
 {
   const d = new Uint8Array([0x10, 0x20, 0x34, 0, 0, 0, 0, 0])
   assert.equal(compileFormula('Data1')(d, 0), 16)
@@ -24,50 +24,50 @@ import { bikeLogFromColumns, cameraRollRate, logMatchScore, parseMotoReco } from
   ])
 }
 
-// ---- 実データ: CSV（MotoRecoViewer が同じ .dat を BMW.ddf で変換したもの）と比べる ----
+// ---- Real data: compare with the CSV (the same .dat converted by MotoRecoViewer with BMW.ddf) ----
 const [datPath, ddfPath, csvPath, insvPath] = process.argv.slice(2)
 const DAT = datPath ?? String.raw`E:\R1200GSA\CAN Log\2026\20260919_143356.dat`
 const DDF = ddfPath ?? String.raw`E:\R1200GSA\CAN Log\BMW.ddf`
-const CSV = csvPath ?? String.raw`E:\R1200GSA\Movie\2026\0919宗谷丘陵\0919.csv`
+const CSV = csvPath ?? String.raw`E:\R1200GSA\Movie\2026\0919宗谷丘陵\0919.csv` // i18n-ignore
 let buf: Uint8Array
 try {
   buf = new Uint8Array(readFileSync(DAT))
 } catch {
-  console.log(`実データ ${DAT} が無いので、式の確認だけで終わります`)
+  console.log(`real data ${DAT} not found, so only the formula check is done`)
   process.exit(0)
 }
 const t0 = performance.now()
 const table = decodeDat(buf, parseDdf(readFileSync(DDF, 'utf-8')))
-console.log(`デコード ${(performance.now() - t0).toFixed(0)}ms  ${table.t.length} 行 × ${table.columns.size} 列  未対応: ${table.unsupported.join(', ') || 'なし'}`)
+console.log(`decode ${(performance.now() - t0).toFixed(0)}ms  ${table.t.length} rows × ${table.columns.size} columns  unsupported: ${table.unsupported.join(', ') || 'none'}`)
 const csv = parseMotoReco(readFileSync(CSV, 'utf-8'))
-assert.equal(table.t.length, csv.t.length, '行の数が CSV と同じ')
+assert.equal(table.t.length, csv.t.length, 'row count matches the CSV')
 
-// MotoRecoViewer と同じ手順なので、CSV のすべての列・すべての行が（小数の丸めの差を除いて）一致するはず
-assert.equal(table.unsupported.length, 0, '知らない規則が無い')
+// Same procedure as MotoRecoViewer, so every column and row of the CSV should match (apart from decimal rounding differences)
+assert.equal(table.unsupported.length, 0, 'no unknown rules')
 let cols = 0
 for (const [name, b] of csv.columns) {
   if (name === 'time (ms)') continue
   const a = table.columns.get(name)
-  assert.ok(a, `列 ${name}`)
+  assert.ok(a, `column ${name}`)
   let bad = 0
   let worst = 0
   for (let i = 0; i < b.length; i++) {
     const e = Math.abs(a[i] - b[i])
-    // CSV は .NET の既定の書式（有効数字 15 桁）で書かれている
+    // The CSV is written in the .NET default format (15 significant digits)
     if (!(e <= 1e-9 * Math.max(1, Math.abs(b[i])))) bad++
     worst = Math.max(worst, e)
   }
-  console.log(`  ${name.padEnd(24)} 不一致 ${bad} 行  最大誤差 ${worst.toPrecision(3)}`)
-  assert.equal(bad, 0, `${name} が CSV と一致しない`)
+  console.log(`  ${name.padEnd(24)} mismatches ${bad} rows  max error ${worst.toPrecision(3)}`)
+  assert.equal(bad, 0, `${name} does not match the CSV`)
   cols++
 }
-for (let i = 0; i < csv.t.length; i++) assert.ok(Math.abs(table.t[i] - csv.t[i]) < 1e-9, `${i} 行目の時刻`)
-console.log(`  ${cols} 列 × ${csv.t.length} 行が一致`)
-// アプリが使う形（BikeLog）にできる
+for (let i = 0; i < csv.t.length; i++) assert.ok(Math.abs(table.t[i] - csv.t[i]) < 1e-9, `time of row ${i}`)
+console.log(`  ${cols} columns × ${csv.t.length} rows match`)
+// Can be converted to the form the app uses (BikeLog)
 const log = bikeLogFromColumns(table.t, table.columns)
 assert.equal(log.t.length, table.t.length)
 
-// ---- 映像に合う .dat を選ぶ照合の目安 ----
+// ---- Matching score for picking the .dat that fits the video ----
 if (insvPath) {
   const { InsvTrailer } = await import('../src/renderer/src/core/insv')
   const { estimateMount } = await import('../src/renderer/src/core/motion')
@@ -80,7 +80,7 @@ if (insvPath) {
     const t1 = performance.now()
     const rr = datRollRate(new Uint8Array(readFileSync(p)), null)
     const s = logMatchScore(rr.t, rr.rollRate, cam)
-    console.log(`  照合 ${p.split(/[\\/]/).pop()}: 主ピーク/第2ピーク ${s.peakRatio.toFixed(2)}  ずれ ${s.offset.toFixed(2)}s  (${(performance.now() - t1).toFixed(0)}ms)`)
+    console.log(`  match ${p.split(/[\\/]/).pop()}: main peak/2nd peak ${s.peakRatio.toFixed(2)}  offset ${s.offset.toFixed(2)}s  (${(performance.now() - t1).toFixed(0)}ms)`)
   }
   await fh.close()
 }

@@ -11,7 +11,7 @@ import { useLang } from './useLang'
 const HANDLES: Handle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
 const SNAP_PX = 8
 
-/** 配置の目印（十字線・対角線）。表示の設定はこのパソコンに覚えておく */
+/** Placement guides (crosshair and diagonals). The display setting is remembered on this computer */
 interface Guides {
   cross: boolean
   diagonal: boolean
@@ -29,7 +29,7 @@ function saveGuides(g: Guides): void {
   try {
     localStorage.setItem(GUIDES_KEY, JSON.stringify(g))
   } catch {
-    /* 保存できなくても表示はできる */
+    /* the guides can still be shown even if saving fails */
   }
 }
 
@@ -43,7 +43,7 @@ interface Props {
   onPlayer: (p: Player | null) => void
   onStatus: (s: PlayerStatus) => void
   onError: (e: unknown) => void
-  /** layerId を指定するとそのレイヤーを編集する（省略時は選択中の視点レイヤー） */
+  /** If layerId is given, edits that layer (if omitted, the selected view layer) */
   onEditView: (patch: (cur: Omit<Keyframe, 't'>) => ViewPatch, layerId?: string) => void
 }
 
@@ -56,7 +56,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
   const projRef = useRef(project)
   projRef.current = project
 
-  // プレイヤーの作成（セッションごと）
+  // create the player (per session)
   useEffect(() => {
     const p = new Player(canvas.current!, session, projRef.current)
     p.onStatus = onStatus
@@ -75,13 +75,13 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
     player.current?.setProject(project)
   }, [project])
 
-  // 書き出しの縦横比に合わせてキャンバスを配置する
+  // lay out the canvas to match the export aspect ratio
   const aspect = project.export.width / project.export.height
   useEffect(() => {
     const el = wrap.current!
     const fit = (): void => {
       const st = stage.current
-      if (!st) return // 外された後に呼ばれた場合
+      if (!st) return // called after it was detached
       const W = el.clientWidth
       const H = el.clientHeight
       let w = W
@@ -100,7 +100,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
     return () => ro.disconnect()
   }, [aspect])
 
-  /** レイヤーの移動・リサイズを始める（ポインターを離すまでウィンドウ全体で追う） */
+  /** Start moving or resizing a layer (follows the pointer over the whole window until it is released) */
   const startRectDrag = (id: string, handle: Handle, e: { clientX: number; clientY: number }): void => {
     const l = projRef.current.layers.find((x) => x.id === id)
     const st = stage.current
@@ -127,11 +127,11 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
   const startRectDragRef = useRef(startRectDrag)
   startRectDragRef.current = startRectDrag
 
-  // クリックでレイヤーを選択、ドラッグで視点（Shift＋ドラッグ・重ね表示は移動）、ホイールで画角
+  // click selects a layer; drag changes the view (Shift+drag, or any drag in overlay mode, moves the layer); wheel changes the FOV
   useEffect(() => {
     const c = canvas.current!
     let drag: { x: number; y: number; layer: string | null } | null = null
-    /** 画面上の点にある一番手前の表示中レイヤー */
+    /** The frontmost visible layer at a point on the screen */
     const hit = (e: { clientX: number; clientY: number }): { id: string; type: string } | null => {
       const r = c.getBoundingClientRect()
       const u = (e.clientX - r.left) / r.width
@@ -146,7 +146,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
     const down = (e: PointerEvent): void => {
       const h = hit(e)
       if (h) onSelect(h.id)
-      // 重ね表示、または Shift を押しながらのドラッグはレイヤーの移動
+      // overlay mode, or dragging with Shift held, moves the layer
       if (h && (h.type === 'overlay' || e.shiftKey)) {
         startRectDragRef.current(h.id, 'move', e)
         drag = null
@@ -156,7 +156,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
       try {
         c.setPointerCapture(e.pointerId)
       } catch {
-        /* 合成イベントなど */
+        /* synthetic events, etc. */
       }
     }
     const move = (e: PointerEvent): void => {
@@ -166,9 +166,9 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
       drag.x = e.clientX
       drag.y = e.clientY
       const l = projRef.current.layers.find((x) => x.id === drag!.layer)
-      const w = c.clientWidth * (l?.rect.w ?? 1) // そのレイヤーの表示幅
+      const w = c.clientWidth * (l?.rect.w ?? 1) // display width of that layer
       onEditView((cur) => {
-        const k = cur.fov / w // 1px あたりの角度（おおよそ）
+        const k = cur.fov / w // angle per 1 px (approximate)
         let yaw = cur.yaw - dx * k
         yaw = ((((yaw + 180) % 360) + 360) % 360) - 180
         const pitch = Math.max(-89, Math.min(89, cur.pitch - dy * k))
@@ -195,7 +195,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
     }
   }, [onEditView, onSelect])
 
-  // ---- 配置の目印（プレビューだけに出す。書き出しには入らない）----
+  // ---- Placement guides (shown only in the preview; not included in the export) ----
   const [guides, setGuides] = useState<Guides>(loadGuides)
   const toggleGuide = (k: keyof Guides): void =>
     setGuides((g) => {
@@ -203,7 +203,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
       saveGuides(next)
       return next
     })
-  // G キー: 目印をまとめて出す・消す
+  // G key: show or hide all guides together
   useEffect(() => {
     const key = (e: KeyboardEvent): void => {
       if (e.key !== 'g' && e.key !== 'G') return
@@ -222,7 +222,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
   }, [])
 
   const sel = project.layers.find((l) => l.id === selected)
-  // 全画面の視点が1つだけのときは枠を出さない（今まで通りの見た目）
+  // no frame when there is only one full-screen view (looks the same as before)
   const showFrame = !!sel && (project.layers.length > 1 || !isFull(sel.rect))
 
   return (
@@ -232,7 +232,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
         {(guides.cross || guides.diagonal) && (
           <svg className="guides" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {[0, 1].map((pass) => (
-              // 1 回目は暗い太線（明るい映像の上でも見えるように）、2 回目は明るい細線
+              // 1st pass: a dark thick line (so it is visible even on bright footage); 2nd pass: a bright thin line
               <g key={pass} className={pass ? 'fg' : 'bg'}>
                 {guides.cross && (
                   <>
@@ -269,7 +269,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
             <div
               className="move-grip"
               data-handle="move"
-              title={t('ドラッグで移動（Shift＋ドラッグでも移動できます）')}
+              title={t('Drag to move (Shift+drag also moves)')}
               onPointerDown={(e) => {
                 e.stopPropagation()
                 startRectDrag(sel.id, 'move', e)
@@ -281,11 +281,11 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
         )}
       </div>
       <div className="guide-buttons">
-        <button data-guide="cross" className={guides.cross ? 'on' : ''} onClick={() => toggleGuide('cross')} title={t('十字線（画面の中央の縦横の線）。G キーで目印をまとめて出し入れ')}>
-          ┼ {t('十字線')}
+        <button data-guide="cross" className={guides.cross ? 'on' : ''} onClick={() => toggleGuide('cross')} title={t('Crosshair (vertical and horizontal center lines). Press G to toggle all guides')}>
+          ┼ {t('Crosshair')}
         </button>
-        <button data-guide="diagonal" className={guides.diagonal ? 'on' : ''} onClick={() => toggleGuide('diagonal')} title={t('対角線（画面の四隅を結ぶ線）。G キーで目印をまとめて出し入れ')}>
-          ╳ {t('対角線')}
+        <button data-guide="diagonal" className={guides.diagonal ? 'on' : ''} onClick={() => toggleGuide('diagonal')} title={t('Diagonals (lines joining the corners). Press G to toggle all guides')}>
+          ╳ {t('Diagonals')}
         </button>
       </div>
       {status.playing && <div className="hud">{status.fps.toFixed(0)} fps</div>}

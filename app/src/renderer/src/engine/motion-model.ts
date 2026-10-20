@@ -1,22 +1,22 @@
-// フレームごとの仮想カメラ（リグ座標での向き）とローリングシャッター用の回転を計算する。
+// Computes the per-frame virtual camera (orientation in rig coordinates) and the rotation for rolling shutter.
 //
-//   世界での仮想カメラ = 車体 · Rz(−L) · Ry(ヨー) · Rz(割合·|cos(ヨー)|·L) · Rx(ピッチ)（リーン角 L が分かるとき）
-//     画面に残す傾きは横を向くほど弱め、真横で水平にする（車体に固定したカメラが横を向いていれば、
-//     リーンは画面の傾きではなく上下の動きとして見えるため）。後ろ向きでは前向きと同じ向きに傾ける
-//     （車体に固定したカメラなら逆向きに見えるが、リーン感をそろえる方を選んだ）
-//     車体 = qs · R(前後軸, Δ) · R_mount(t)。ヨー 0 なら qs · R(前後軸, Δ) · R(前後軸, −(1−割合)·L) · R_mount · Rx(ピッチ)
-//   リーン角が分からないとき = qs · R_mount · Ry(ヨー) · Rx(ピッチ)
-//     qs : ジャイロを車体の軸ごとに平滑化した姿勢（スタビ無効なら q そのもの = リグ固定）
-//     Δ  : L − G*L（平滑化で削れたリーンの動き。ログがあるときだけ）
-//     L  : ログと融合した実際のリーン角
-//     R_mount(t): 取り付け姿勢（core/mount.ts）。走行中にカメラの向きがバイクに対して変わるときは時刻ごと
-//   シェーダーに渡すのはリグ座標での向き q(tc)⁻¹ · 世界での仮想カメラ。
+//   virtual camera in the world = body · Rz(-L) · Ry(yaw) · Rz(ratio·|cos(yaw)|·L) · Rx(pitch) (when the lean angle L is known)
+//     The tilt kept on screen weakens as the view turns sideways and is level at exactly sideways (for a camera fixed to the body
+//     looking sideways, the lean shows up as vertical motion rather than screen tilt). When looking back, tilt in the same direction as looking forward
+//     (a camera fixed to the body would see it reversed, but we chose to keep the lean feel consistent)
+//     body = qs · R(fore-aft axis, Δ) · R_mount(t). At yaw 0: qs · R(fore-aft axis, Δ) · R(fore-aft axis, -(1-ratio)·L) · R_mount · Rx(pitch)
+//   when the lean angle is unknown = qs · R_mount · Ry(yaw) · Rx(pitch)
+//     qs : the gyro attitude smoothed per body axis (with stabilization off this is q itself = fixed to the rig)
+//     Δ  : L - G*L (the lean motion removed by smoothing; only when a log is present)
+//     L  : the actual lean angle fused with the log
+//     R_mount(t): mount orientation (core/mount.ts). Per time when the camera direction relative to the bike changes while riding
+//   What is passed to the shader is the orientation in rig coordinates: q(tc)^-1 · virtual camera in the world.
 //
-// 空中の標識は、映像と同じ仮想カメラの向き（上の「世界」= ジャイロの座標）を地図の座標へ移して投影する。
-// ジャイロの座標 → 地図の座標の回転 M は本来ほぼ一定（ジャイロのドリフトでゆっくり変わるだけ）なので、
-//   M(t) = 地図での車体（融合した方位・勾配）· (ジャイロでの車体（リーンを戻したもの）)⁻¹
-// を時間方向に強く平滑化して使う。方位や勾配の推定に含まれる細かい揺れは M から除かれ、
-// 映像の細かい揺れ（スタビライズの残り）はそのまま標識にも乗るので、標識が景色に貼り付いて見える。
+// The floating signs project the same virtual camera orientation as the video (the "world" above = gyro coordinates) into map coordinates.
+// The rotation M from gyro coordinates to map coordinates is essentially constant (it only drifts slowly with gyro drift), so we use
+//   M(t) = body on the map (fused heading and grade) · (body in gyro coordinates (lean undone))^-1
+// heavily smoothed over time. Fine jitter in the heading and grade estimates is removed from M, while
+// the fine jitter of the video (residual stabilization) rides on the signs as well, so the signs look stuck to the scenery.
 import { gaussianFilter, interp } from '../core/dsp'
 import type { InsvMeta } from '../core/insv'
 import { readoutRotations, sampleQ, smooth, type Orientation } from '../core/motion'
@@ -26,10 +26,10 @@ import { qAxisAngle, qConj, qFromRotvec, qMul, qSlerp, qToMat, qYawPitch, type M
 import type { Keyframe, StabSettings } from './project'
 
 const BLOCK = 250
-const MAP_RATE = 10 // M を計算する間隔 [Hz]
-const MAP_SIGMA_S = 2 // M を平滑化するガウスの σ [s]
+const MAP_RATE = 10 // interval at which M is computed [Hz]
+const MAP_SIGMA_S = 2 // Gaussian sigma for smoothing M [s]
 
-/** 地図での車体の向き（標識の投影用）。方位は北 = 0・時計回り、勾配は % */
+/** Body orientation on the map (for projecting signs). Heading is north = 0, clockwise; grade in % */
 export interface NavAttitude {
   rate: number
   heading: ArrayLike<number>
@@ -40,7 +40,7 @@ export class MotionModel {
   private qsCache = new Map<number, Float64Array>()
   private rsCache: { i: number; rs: Float32Array | null } = { i: -1, rs: null }
   private delta: Float64Array | null = null
-  private mapQ: Float64Array | null = null // ジャイロの座標 → 地図の座標（MAP_RATE ごと, 平滑化済み）
+  private mapQ: Float64Array | null = null // gyro coordinates -> map coordinates (per MAP_RATE, smoothed)
   private nav: NavAttitude | null = null
   readonly offsetUs: number
   readonly readoutUs: number
@@ -71,7 +71,7 @@ export class MotionModel {
     this.updateDelta()
   }
 
-  /** 取り付け姿勢を置き換える（ログで詰めたとき） */
+  /** Replace the mount orientation (when refined with the log) */
   setMount(m: MountTrack): void {
     this.mount = m
     this.qsCache.clear()
@@ -84,7 +84,7 @@ export class MotionModel {
     this.updateMap()
   }
 
-  /** 標識の投影に使う地図での向きを設定する（null で解除） */
+  /** Set the map orientation used to project signs (null clears it) */
   setNav(nav: NavAttitude | null): void {
     if (nav?.heading === this.nav?.heading && nav?.grade === this.nav?.grade) return
     this.nav = nav
@@ -111,10 +111,10 @@ export class MotionModel {
       const gr = nav.grade ? nav.grade[j] : 0
       const th = Math.atan((Number.isFinite(gr) ? gr : 0) / 100)
       const hd = Number.isFinite(nav.heading[j]) ? nav.heading[j] * d2r : 0
-      // 地図の座標は x 東・y 下・z 北。方位 h の水平な車体 = Ry(h)、上り坂で前上がり = Rx(勾配)
+      // Map coordinates are x east, y down, z north. A level body with heading h = Ry(h); nose up on an uphill = Rx(grade)
       const mapBike = qMul(qFromRotvec(0, hd, 0), qFromRotvec(th, 0, 0))
       let m = qMul(mapBike, qConj(gyroBike))
-      // 平均できるように符号をそろえる（q と −q は同じ回転）
+      // Align signs so they can be averaged (q and -q are the same rotation)
       if (prev && m[0] * prev[0] + m[1] * prev[1] + m[2] * prev[2] + m[3] * prev[3] < 0) m = m.map((x) => -x) as Quat
       prev = m
       for (let c = 0; c < 4; c++) comp[c][k] = m[c]
@@ -129,8 +129,8 @@ export class MotionModel {
   }
 
   /**
-   * 仮想カメラ（frame() の world）の向きを地図の座標（x 東・y 下・z 北）で表した回転（列 = カメラの右・下・前）。
-   * 地図での向きが設定されていなければ null
+   * Rotation expressing the orientation of the virtual camera (world in frame()) in map coordinates (x east, y down, z north) (columns = camera right, down, forward).
+   * null if the map orientation is not set
    */
   cameraInMap(i: number, world: Quat): Mat3 | null {
     const m = this.mapQ
@@ -152,23 +152,23 @@ export class MotionModel {
     this.delta = L.map((v, i) => v - G[i])
   }
 
-  /** 時刻 t [us]（ジャイロの時間軸）の取り付け姿勢 */
+  /** Mount orientation at time t [us] (gyro time axis) */
   private mountQAt(t: number): Quat {
     return mountQAt(this.mount, t)
   }
 
-  /** 取り付け姿勢の前方（リグ座標） */
+  /** Mount forward direction (rig coordinates) */
   private fwdOf(q: Quat): [number, number, number] {
     const R = qToMat(q)
     return [R[2], R[5], R[8]]
   }
 
-  /** フレーム i の中央時刻（ジャイロの時間軸, us） */
+  /** Center time of frame i (gyro time axis, us) */
   tc(i: number): number {
     return this.frameTimes[i] + this.offsetUs
   }
 
-  /** フレーム i の動画時刻 [s] */
+  /** Video time of frame i [s] */
   videoTime(i: number): number {
     return (this.frameTimes[i] - this.meta.firstFrameUs) / 1e6
   }
@@ -189,17 +189,17 @@ export class MotionModel {
     return Array.from(blk.subarray(k * 4, k * 4 + 4)) as Quat
   }
 
-  /** リーン角（実際の角度, deg）。ログがなければ null */
+  /** Lean angle (actual angle, deg). null if there is no log */
   leanAt(i: number): number | null {
     return this.lean ? interp(this.videoTime(i), this.lean.t, this.lean.lean) : null
   }
 
   /**
-   * フレーム i の重力の下向き（リグ座標）。車体の姿勢からリーンを戻した水平な向きの「下」
-   * （動的なつなぎ合わせで、水平より下の方位に地面までの距離を目安にするのに使う）
+   * Gravity down direction of frame i (rig coordinates): the "down" of the level orientation with the lean undone from the body attitude
+   * (used by dynamic stitching to estimate the distance to the ground for directions below the horizon)
    */
   downInRig(i: number): [number, number, number] {
-    const v = this.frame(i, { yaw: 0, pitch: 0, fov: 90, leanRatio: 0 }).view // 列 = 視点の右・下・前（リグ座標）
+    const v = this.frame(i, { yaw: 0, pitch: 0, fov: 90, leanRatio: 0 }).view // columns = view right, down, forward (rig coordinates)
     return [v[1], v[4], v[7]]
   }
 
@@ -216,26 +216,26 @@ export class MotionModel {
       if (this.stab.enabled && this.stab.rollComp && this.delta) {
         w = qMul(w, qAxisAngle(fwd, interp(tv, this.lean.t, this.delta) * d2r))
       }
-      // リーン角が分かるときは、横を向く回転を「水平」を基準にする:
-      //   車体 · Rz(−L)（リーンを戻す）· Ry(ヨー)（鉛直軸まわりに横を向く）· Rz(割合·|cos(ヨー)|·L)（画面に残す傾き）· Rx(ピッチ)
-      // 傾いた車体の上下軸まわりに横を向くと、リーン中は内側を向くほど視線が地面側へ下がってしまうため。
-      // ヨー 0 のときは従来の 車体 · Rz(−(1−割合)·L) · Rx(ピッチ) と同じになる（Rz は車体の前後軸）
-      // 画面に残す傾きは cos(ヨー) で、前で +・真横で 0（水平）・後ろで −。後ろを向いた視線は車体の前後軸と逆向きなので、
-      // 同じリーンでも画面の傾きは前と逆になる（カメラを車体に固定したまま後ろを向くと Ry(180°)·Rz(L) = Rz(−L)·Ry(180°)）。
-      // 以前は |cos(ヨー)| で、後ろを向いても前と同じ向きに傾けていた
+      // When the lean angle is known, the turn sideways is made relative to the "horizontal":
+      //   body · Rz(-L) (undo lean) · Ry(yaw) (turn sideways about the vertical axis) · Rz(ratio·|cos(yaw)|·L) (tilt kept on screen) · Rx(pitch)
+      // because turning about the tilted body up axis would make the line of sight drop toward the ground when turning to the inside during a lean.
+      // At yaw 0 this equals the previous body · Rz(-(1-ratio)·L) · Rx(pitch) (Rz is the body fore-aft axis)
+      // The tilt kept on screen follows cos(yaw): + at the front, 0 (level) at exactly sideways, - at the back. A view toward the rear is opposite to the body fore-aft axis,
+      // so the same lean tilts the screen the opposite way from the front (looking back with the camera fixed to the body gives Ry(180°)·Rz(L) = Rz(-L)·Ry(180°)).
+      // It used to be |cos(yaw)|, which tilted the same way as the front even when looking back
       const L = interp(tv, this.lean.t, this.lean.lean) * d2r
       const bike = qMul(w, mountQ)
       const rz = (a: number): Quat => qFromRotvec(0, 0, a)
       const keep = view.leanRatio * Math.cos(view.yaw * d2r)
       world = qMul(qMul(qMul(qMul(bike, rz(-L)), qFromRotvec(0, view.yaw * d2r, 0)), rz(keep * L)), qFromRotvec(view.pitch * d2r, 0, 0))
-      w = qMul(w, qAxisAngle(fwd, -(1 - view.leanRatio) * L)) // 補正量の表示用（ヨー 0 のときの姿勢）
+      w = qMul(w, qAxisAngle(fwd, -(1 - view.leanRatio) * L)) // for displaying the correction amount (attitude at yaw 0)
     } else {
       world = qMul(qMul(w, mountQ), qYawPitch(view.yaw, view.pitch))
     }
     const rel = qMul(qConj(qc), world)
     const corr = qMul(qConj(qc), w)
     const correctionDeg = (2 * Math.acos(Math.min(1, Math.abs(corr[3]))) * 180) / Math.PI
-    // 読み出し中の回転は視点によらないので、同じフレームなら使い回す（画面分割で視点が複数あるとき）
+    // The rotation used for readout does not depend on the view, so reuse it for the same frame (when split screen has several views)
     let rs: Float32Array | null = null
     if (this.stab.rollingShutter) {
       if (this.rsCache.i !== i) this.rsCache = { i, rs: readoutRotations(this.ori, tc, this.readoutUs) }

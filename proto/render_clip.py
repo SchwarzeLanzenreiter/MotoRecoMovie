@@ -1,7 +1,7 @@
-"""短いクリップを透視投影でリフレームして書き出す。補正なし｜補正ありの比較動画も作る。
+"""Reframe a short clip with a perspective projection and export it. Also makes a comparison video of no correction | corrected.
 
-使い方:
-  python render_clip.py <insv> <開始秒> <秒数> <ヨー(度, 0=車体の前)> [ピッチ] [水平FOV] [sigma秒] [タグ]
+Usage:
+  python render_clip.py <insv> <start sec> <duration sec> <yaw (deg, 0 = vehicle front)> [pitch] [horizontal FOV] [sigma sec] [tag]
 """
 import subprocess
 import sys
@@ -34,7 +34,7 @@ nf = int(round(dur * fps))
 ft = x.frame_times(0)[f0:f0 + nf]
 lenses = make_rig(x, picture_w=IN)
 
-# ---- 姿勢 ----
+# ---- Attitude ----
 ts, acc, gyro = x.imu()
 lo, hi = np.searchsorted(ts, [ft[0] - 3_000_000, ft[-1] + 3_000_000])
 ts_w, gy_w = ts[lo:hi], gyro[lo:hi]
@@ -42,19 +42,19 @@ q = integrate(ts_w, gy_w)
 from stabilize import sample
 q_f = sample(ts_w, q, ft)
 qs_f = smooth(ts_w, q, ft, sigma)
-# 取り付け補正: 視点は車体座標（右・下・前）で指定し、リグ座標へは R_mount で変換する
-# ヨー0°=車体の前方。全走行のIMUから推定する
+# Mount correction: the view is specified in vehicle coordinates (right, down, front) and converted to rig coordinates with R_mount
+# Yaw 0° = vehicle front. Estimated from the IMU over the whole ride
 R_mount, _ = estimate_mount(acc, gyro)
 R_user = Rot.from_matrix(R_mount) * Rot.from_euler("YX", [yaw, pitch], degrees=True)
 
-# 補正なし: 仮想カメラはリグに固定（R_rig = R_user）
-# 補正あり: R_rig = q⁻¹ · qs · R_user
+# No correction: the virtual camera is fixed to the rig (R_rig = R_user)
+# Corrected: R_rig = q⁻¹ · qs · R_user
 R_raw = [R_user.as_matrix()] * nf
 R_stab = [(q_f[i].inv() * qs_f[i] * R_user).as_matrix() for i in range(nf)]
 corr = np.degrees(np.linalg.norm((q_f.inv() * qs_f).as_rotvec(), axis=1))
-print(f"補正量: 平均 {corr.mean():.2f}° 最大 {corr.max():.2f}°")
+print(f"Correction: mean {corr.mean():.2f}° max {corr.max():.2f}°")
 
-# ---- 透視投影の光線 ----
+# ---- Perspective projection rays ----
 fpx = (OW / 2) / np.tan(np.radians(hfov) / 2)
 uu, vv = np.meshgrid(np.arange(OW, dtype=np.float32) + 0.5, np.arange(OH, dtype=np.float32) + 0.5)
 cam_rays = np.stack([(uu - OW / 2) / fpx, (vv - OH / 2) / fpx, np.ones_like(uu)], -1).astype(np.float32)
@@ -99,7 +99,7 @@ for i in range(nf):
             break
         imgs.append(np.frombuffer(buf, np.uint8).reshape(IN, IN, 3))
     if len(imgs) < 2:
-        print("フレームが足りません", i)
+        print("Not enough frames", i)
         break
     stab = render(imgs, R_stab[i])
     raw = render(imgs, R_raw[i])
@@ -118,4 +118,4 @@ for w in (w_stab, w_cmp):
     w.wait()
 for r in rd:
     r.kill()
-print("完了", time.time() - t0, "s")
+print("Done", time.time() - t0, "s")

@@ -1,11 +1,11 @@
-"""CSV の各列を、対応する CAN ID のバイトの組み合わせ（1 バイト・4 ビット・12/16 ビット、符号の有無）の
-一次式 a·x + b で最もよく表せるものを探す（#BMW_* の変換式を実データから求める）。"""
+"""Search, for each column of the CSV, for the linear expression a·x + b of a combination of bytes of the corresponding CAN ID
+(1 byte, 4 bits, 12/16 bits, signed or unsigned) that represents it best (derive the #BMW_* conversion formulas from real data)."""
 import numpy as np
 import pandas as pd
 from motoreco_dat import read_dat
 
 DAT = r'E:\R1200GSA\CAN Log\2026\20260919_143356.dat'
-CSV = r'E:\R1200GSA\Movie\2026\0919宗谷丘陵\0919.csv'
+CSV = r'E:\R1200GSA\Movie\2026\0919宗谷丘陵\0919.csv'  # i18n-ignore
 DDF = r'E:\R1200GSA\CAN Log\BMW.ddf'
 
 r = read_dat(DAT)
@@ -43,7 +43,7 @@ for name, cid, rule, *_ in ddf:
     cid = int(cid, 16)
     m = r['id'] == cid
     if not m.any():
-        print(f'{name:24s} ID {cid:03X}: dat に無い')
+        print(f'{name:24s} ID {cid:03X}: not in the dat')
         continue
     ts = tt[m]
     idx = np.searchsorted(ts, tc, side='right') - 1
@@ -66,4 +66,4 @@ for name, cid, rule, *_ in ddf:
             best = (k, err, coef)
     sd = np.std(y[sub])
     if best:
-        print(f'{name:24s} ID {cid:03X} {rule:30s} 最良 {best[0]:10s} a={best[2][0]:.6g} b={best[2][1]:.6g}  誤差 {best[1]:.4g}（ばらつき {sd:.4g}）')
+        print(f'{name:24s} ID {cid:03X} {rule:30s} best {best[0]:10s} a={best[2][0]:.6g} b={best[2][1]:.6g}  error {best[1]:.4g} (spread {sd:.4g})')

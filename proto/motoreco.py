@@ -1,11 +1,11 @@
-"""MotoReco の車両ログ（CSV, "TO Custom v1"）の読み込みと、カメラ映像との時刻同期。
+"""Loading of the MotoReco vehicle log (CSV, "TO Custom v1") and time synchronization with the camera video.
 
-同期の方法:
-  カメラのジャイロを車体のロール軸へ射影したロールレートと、ログの RollRate の相互相関を取る。
-  1. 粗同期: 全区間をFFTで相互相関（記録開始が何分ずれていても見つかる）
-  2. 精密化: 60秒窓ごとに 1ms 刻みでずれを求め、t_log = a·t_video + b を当てはめる
-     （a はカメラとロガーの時計の速度差、b はずれ）
-  求まるずれには車体IMUの処理遅れ・CAN伝送遅れも含まれる（=記録上の時刻として揃えたいもの）。
+Synchronization method:
+  Cross-correlate the roll rate (camera gyro projected onto the vehicle roll axis) with the RollRate in the log.
+  1. Coarse sync: cross-correlate the whole range with FFT (found however many minutes the recording starts differ)
+  2. Refinement: find the offset in 1 ms steps for each 60 s window and fit t_log = a·t_video + b
+     (a is the clock rate difference between camera and logger, b is the offset)
+  The offset found also includes the vehicle IMU processing delay and CAN transmission delay (= what we want to align as the recorded time).
 """
 from dataclasses import dataclass
 
@@ -13,15 +13,15 @@ import numpy as np
 import pandas as pd
 from scipy.signal import butter, correlate, sosfiltfilt
 
-INVALID = -124.9  # ロガーの無効値は -125
+INVALID = -124.9  # the logger's invalid value is -125
 
 
 @dataclass
 class BikeLog:
-    t: np.ndarray            # 秒（ログ先頭から）
-    lean: np.ndarray         # リーン角 [deg]（ログの符号のまま）
-    lean_updated: np.ndarray  # その時刻に値が更新されたか（止まっている間は False）
-    roll_rate: np.ndarray    # RollRate（ログ単位、無効は NaN）
+    t: np.ndarray            # seconds (from the start of the log)
+    lean: np.ndarray         # lean angle [deg] (sign as in the log)
+    lean_updated: np.ndarray  # whether the value was updated at that time (False while stopped)
+    roll_rate: np.ndarray    # RollRate (log units, NaN if invalid)
     yaw_rate: np.ndarray
     speed: np.ndarray
     df: pd.DataFrame
@@ -41,8 +41,8 @@ def load(path):
 
 
 def camera_roll_rate(ts_us, gyro_dps, R_mount, M, t0_us, fs=100.0):
-    """カメラのジャイロを車体ロール軸へ射影し、等間隔 fs[Hz] に（動画時刻, deg/s）で返す。"""
-    w = gyro_dps @ M.T @ R_mount  # 車体の (ピッチ, ヨー, ロール) 成分
+    """Project the camera gyro onto the vehicle roll axis and return (video time, deg/s) at uniform fs [Hz]."""
+    w = gyro_dps @ M.T @ R_mount  # vehicle (pitch, yaw, roll) components
     n = int(1000 / fs)
     m = len(ts_us) // n * n
     t = (ts_us[:m].reshape(-1, n).mean(1) - t0_us) / 1e6
@@ -56,36 +56,36 @@ def _norm(x):
 
 
 def sync(log: BikeLog, cam_t, cam_roll, window_s=60.0, fs=100.0):
-    """ログ時刻 = a·動画時刻 + b を推定する。戻り値: (a, b, 符号, 診断情報)。"""
-    sos = butter(2, 3.0, fs=fs, output="sos")  # スティックの振動を落とす（3Hz以下）
+    """Estimate log time = a·video time + b. Returns: (a, b, sign, diagnostics)."""
+    sos = butter(2, 3.0, fs=fs, output="sos")  # remove the vibration of the stick (3 Hz or lower)
     cr = sosfiltfilt(sos, cam_roll)
     grid = np.arange(0, log.t[-1], 1 / fs)
     rr = np.interp(grid, log.t, np.nan_to_num(log.roll_rate))
     valid = np.interp(grid, log.t, (~np.isnan(log.roll_rate)).astype(float)) > 0.99
     rr[~valid] = 0
-    # ---- 1. 粗同期（FFT相互相関、全範囲）----
+    # ---- 1. Coarse sync (FFT cross-correlation, full range) ----
     a_, b_ = _norm(rr), _norm(cr)
     c = correlate(a_, b_, mode="full", method="fft") / min(len(a_), len(b_))
     lags = np.arange(-len(b_) + 1, len(a_))
     j = np.argmax(np.abs(c))
     sign = np.sign(c[j])
-    # correlate: c[lag] = Σ log[n+lag]·cam[n] → ログ時刻 (n+lag)/fs と 動画時刻 cam_t[0]+n/fs が対応
-    # → ログ時刻 = 動画時刻 + lag/fs - cam_t[0]
+    # correlate: c[lag] = Σ log[n+lag]·cam[n] -> log time (n+lag)/fs corresponds to video time cam_t[0]+n/fs
+    # -> log time = video time + lag/fs - cam_t[0]
     coarse = lags[j] / fs - cam_t[0]
     c_sorted = np.sort(np.abs(c))
     diag = {"coarse_offset": coarse, "peak": float(abs(c[j]))}
-    # 2番目のピーク（±2秒以外）との比 = 同期の信頼度
+    # Ratio to the second peak (outside ±2 s) = sync confidence
     far = np.abs(lags - lags[j]) > 2 * fs
     diag["peak_ratio"] = float(abs(c[j]) / np.abs(c[far]).max())
 
-    # ---- 2. 窓ごとに精密化（1ms刻み）----
+    # ---- 2. Refinement per window (1 ms steps) ----
     pts = []
     for w0 in np.arange(cam_t[0], cam_t[-1] - window_s, window_s / 2):
         m = (cam_t >= w0) & (cam_t < w0 + window_s)
         if m.sum() < window_s * fs * 0.9:
             continue
         tc, rc = cam_t[m], cr[m]
-        if rc.std() < 2.0:  # 直線ばかりの区間は手がかりがない
+        if rc.std() < 2.0:  # a section of only straight lines gives no clue
             continue
         best = None
         for off in np.arange(coarse - 0.3, coarse + 0.3, 0.001):
@@ -101,7 +101,7 @@ def sync(log: BikeLog, cam_t, cam_roll, window_s=60.0, fs=100.0):
     pts = np.array(pts)
     diag["windows"] = pts
     if len(pts) >= 3:
-        # t_log = t_v + off(t_v),  off(t_v) = (a-1)·t_v + b をロバストに当てはめ
+        # t_log = t_v + off(t_v),  off(t_v) = (a-1)·t_v + b fitted robustly
         A = np.c_[pts[:, 0], np.ones(len(pts))]
         coef, *_ = np.linalg.lstsq(A, pts[:, 1], rcond=None)
         for _ in range(2):
@@ -128,8 +128,8 @@ if __name__ == "__main__":
     R_mount, _ = estimate_mount(acc, gyro)
     ct, cr = camera_roll_rate(ts, gyro, R_mount, IMU_TO_RIG, x.first_frame_us)
     a, b, sign, d = sync(log, ct, cr)
-    print(f"粗同期: ログ時刻 = 動画時刻 {d['coarse_offset']:+.3f}s  ピーク {d['peak']:.3f}  第2ピーク比 {d['peak_ratio']:.2f}")
-    print(f"精密: ログ時刻 = {a:.8f}·動画時刻 {b:+.4f}s  （時計の速度差 {(a - 1) * 1e6:+.1f}ppm, 窓の残差 {d.get('residual_ms', float('nan')):.1f}ms）")
-    print(f"ログ RollRate とカメラのロールレートの符号: {'+' if sign > 0 else '-'}")
+    print(f"Coarse sync: log time = video time {d['coarse_offset']:+.3f}s  peak {d['peak']:.3f}  second peak ratio {d['peak_ratio']:.2f}")
+    print(f"Refined: log time = {a:.8f}·video time {b:+.4f}s  (clock rate difference {(a - 1) * 1e6:+.1f}ppm, window residual {d.get('residual_ms', float('nan')):.1f}ms)")
+    print(f"Sign between log RollRate and camera roll rate: {'+' if sign > 0 else '-'}")
     for tv, off, cc in d["windows"]:
-        print(f"  動画 {tv:7.1f}s: ずれ {off * 1000:+8.1f}ms  相関 {cc:.3f}")
+        print(f"  video {tv:7.1f}s: offset {off * 1000:+8.1f}ms  correlation {cc:.3f}")

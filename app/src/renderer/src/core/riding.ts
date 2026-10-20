@@ -1,20 +1,20 @@
-// 走行状態の判定: 停止・減速・コーナリング・加速・巡航。
-// メーターの見た目の切り替え（重ね表示）と、画角の自動切り替えの両方で使う。
+// Riding state detection: stop, deceleration, cornering, acceleration, cruise.
+// Used both for the meter's appearance switching (overlay) and for auto camera.
 //
-//   1. 各時刻の生の状態を、しきい値とヒステリシス（入る値と出る値を変える）で決める
-//   2. 短すぎる区間（ちらつき）を前の状態に吸収させる
-//   3. 状態ごとの重み（0〜1）を、切り替わりから一定時間かけて滑らかに変える（見た目の遷移に使う）
+//   1. Decide the raw state at each time with thresholds and hysteresis (different enter and exit values)
+//   2. Absorb too-short sections (flicker) into the previous state
+//   3. Change the per-state weights (0-1) smoothly over a fixed time after a switch (used for visual transitions)
 import type { Telemetry } from './telemetry'
 
 export const STATES = ['cruise', 'accel', 'brake', 'corner', 'stop'] as const
 export type RidingState = (typeof STATES)[number]
 
 export const STATE_NAMES: Record<RidingState, string> = {
-  cruise: '巡航', // i18n-ignore
-  accel: '加速', // i18n-ignore
-  brake: '減速', // i18n-ignore
-  corner: 'コーナリング', // i18n-ignore
-  stop: '停止' // i18n-ignore
+  cruise: 'Cruise', // i18n-ignore
+  accel: 'Accelerating', // i18n-ignore
+  brake: 'Braking', // i18n-ignore
+  corner: 'Cornering', // i18n-ignore
+  stop: 'Stopped' // i18n-ignore
 }
 
 export const STATE_COLORS: Record<RidingState, string> = {
@@ -28,17 +28,17 @@ export const STATE_COLORS: Record<RidingState, string> = {
 export interface RidingParams {
   stopEnter: number // km/h
   stopExit: number
-  brakeEnterBar: number // ブレーキ圧
+  brakeEnterBar: number // brake pressure
   brakeExitBar: number
-  brakeEnterG: number // 減速G（負）
+  brakeEnterG: number // deceleration G (negative)
   brakeExitG: number
-  cornerEnter: number // リーン角 [deg]
+  cornerEnter: number // lean angle [deg]
   cornerExit: number
   accelEnterThrottle: number // %
   accelEnterG: number
   accelExitG: number
-  minDuration: number // 区間の最短 [s]
-  transition: number // 見た目の切り替えにかける時間 [s]
+  minDuration: number // minimum section length [s]
+  transition: number // time taken for visual switching [s]
 }
 
 export const DEFAULT_RIDING: RidingParams = {
@@ -59,27 +59,27 @@ export const DEFAULT_RIDING: RidingParams = {
 
 export interface RidingTrack {
   rate: number
-  /** 各時刻の状態（STATES のインデックス） */
+  /** State at each time (index into STATES) */
   state: Uint8Array
-  /** 状態ごとの重み（切り替えを滑らかにしたもの、合計 1） */
+  /** Per-state weights (switching smoothed, sum 1) */
   weights: Float32Array[]
-  /** コーナリング区間中のそこまでの最大リーン角 [deg]（符号つき、区間外は 0） */
+  /** Maximum lean angle so far within a cornering section [deg] (signed, 0 outside sections) */
   peakLean: Float32Array
   /**
-   * リーン角の MAX ホールド [deg]（符号つき）。同じ側に傾いている間の最大値を保ち、
-   * 車体が反対側へ切り返した（反対側に LEAN_SIDE_DEG を超えた）時点でリセットする
+   * MAX hold of the lean angle [deg] (signed). Keeps the maximum while leaning to the same side,
+   * and resets when the bike flicks to the other side (beyond LEAN_SIDE_DEG on the opposite side)
    */
   leanHold: Float32Array
-  /** 区間の一覧 */
+  /** List of sections */
   segments: { state: RidingState; start: number; end: number }[]
 }
 
 const S = { cruise: 0, accel: 1, brake: 2, corner: 3, stop: 4 } as const
 
-/** これを超えて反対側に傾いたら「切り返した」とみなす [deg] */
+/** Leaning to the opposite side beyond this is regarded as a flick [deg] */
 export const LEAN_SIDE_DEG = 3
 
-/** リーン角の MAX ホールド（切り返しでリセット）を計算する */
+/** Computes the MAX hold of the lean angle (reset at a flick) */
 export function leanHoldTrack(lean: ArrayLike<number>): Float32Array {
   const out = new Float32Array(lean.length)
   let side = 0
@@ -112,17 +112,17 @@ export function detectRiding(tel: Telemetry, p: RidingParams = DEFAULT_RIDING): 
   const thr = ch.throttle ?? zero
   const bf = ch.brakeFront ?? zero
   const br = ch.brakeRear ?? zero
-  // スロットルの記録が無い（動画の IMU から推定したもの）ときは、前後 G だけで加速を判定する
+  // If there is no throttle record (estimated from the video's IMU), acceleration is judged from longitudinal G alone
   const hasThrottle = !!ch.throttle
 
-  // ---- 1. ヒステリシス付きの生の状態 ----
+  // ---- 1. Raw state with hysteresis ----
   const raw = new Uint8Array(n)
   let stop = speed[0] < p.stopEnter
   let brake = false
   let corner = false
   let accel = false
   for (let i = 0; i < n; i++) {
-    // ログのない区間（NaN）は判定できないので巡航とみなす
+    // Sections without a log (NaN) cannot be judged, so regard them as cruise
     if (Number.isNaN(speed[i])) {
       raw[i] = S.cruise
       stop = brake = corner = accel = false
@@ -142,11 +142,11 @@ export function detectRiding(tel: Telemetry, p: RidingParams = DEFAULT_RIDING): 
       : accel
         ? gi > p.accelExitG
         : gi > p.accelEnterG
-    // 優先順位: 停止 > 減速 > コーナリング > 加速 > 巡航（コーナー手前のブレーキは減速を優先）
+    // Priority: stop > deceleration > cornering > acceleration > cruise (braking just before a corner is classified as deceleration)
     raw[i] = stop ? S.stop : brake ? S.brake : corner ? S.corner : accel ? S.accel : S.cruise
   }
 
-  // ---- 2. 短い区間を前の状態に吸収 ----
+  // ---- 2. Absorb short sections into the previous state ----
   const minLen = Math.round(p.minDuration * rate)
   const state = raw.slice()
   const runs = (): { s: number; a: number; b: number }[] => {
@@ -166,7 +166,7 @@ export function detectRiding(tel: Telemetry, p: RidingParams = DEFAULT_RIDING): 
     for (let k = 0; k < rs.length; k++) {
       const r = rs[k]
       if (r.b - r.a >= minLen) continue
-      // 前の区間の状態で埋める（先頭なら次の区間）
+      // Fill with the previous section's state (the next section if it is the first)
       const fill = k > 0 ? state[rs[k - 1].a] : k + 1 < rs.length ? rs[k + 1].s : r.s
       if (fill === r.s) continue
       state.fill(fill, r.a, r.b)
@@ -175,7 +175,7 @@ export function detectRiding(tel: Telemetry, p: RidingParams = DEFAULT_RIDING): 
     if (!changed) break
   }
 
-  // ---- 3. 状態ごとの重み（一定の速さで目標へ近づける） ----
+  // ---- 3. Per-state weights (approach the target at a constant rate) ----
   const weights = STATES.map(() => new Float32Array(n))
   const step = 1 / Math.max(1, p.transition * rate)
   const w = new Float64Array(STATES.length)
@@ -190,7 +190,7 @@ export function detectRiding(tel: Telemetry, p: RidingParams = DEFAULT_RIDING): 
     for (let k = 0; k < STATES.length; k++) weights[k][i] = w[k] / sum
   }
 
-  // ---- コーナーごとの最大リーン角 ----
+  // ---- Maximum lean angle per corner ----
   const peakLean = new Float32Array(n)
   const segments: RidingTrack['segments'] = []
   for (const r of runs()) {
@@ -205,7 +205,7 @@ export function detectRiding(tel: Telemetry, p: RidingParams = DEFAULT_RIDING): 
   return { rate, state, weights, peakLean, leanHold: leanHoldTrack(lean), segments }
 }
 
-/** 時刻 t [s] の状態の重み（STATES の順） */
+/** State weights at time t [s] (in STATES order) */
 export function weightsAt(r: RidingTrack, t: number): number[] {
   const i = Math.max(0, Math.min(r.state.length - 1, Math.round(t * r.rate)))
   return r.weights.map((w) => w[i])

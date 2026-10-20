@@ -1,11 +1,11 @@
-// サイバー風メーター（HUD）。配置はクロノグラフ風（chrono.ts）とまったく同じで、見た目だけを変える（速度は出さない）。
+// Cyber-style meter (HUD). The layout is exactly the same as the chronograph style (chrono.ts); only the look changes (does not show speed).
 //
-//   一番外側・上半分: タコメーター（区切りのあるネオンの弧。レッドゾーンつき）
-//   一番外側・下半分: 6時から外向きに伸びる区切りの弧。右 = アクセル開度、左 = ブレーキ圧
-//   内側・上半分    : リーンメーター（真上が 0°）。MAX ホールドは切り返しでリセット
-//   中央            : 現在のリーン角（大きく）と MAX
-//   内側・下半分    : ギア段と外気温（六角形のサブダイヤル）
-// 文字盤は半透明の暗いガラスに走査線、線はネオンで発光。配色は BMW（M カラー）とネオン（シアン・マゼンタ）。
+//   Outermost, upper half: tachometer (a segmented neon arc, with a red zone)
+//   Outermost, lower half: segmented arcs extending outward from 6 o'clock. Right = throttle opening, left = brake pressure
+//   Inner, upper half    : lean meter (straight up is 0°). The MAX hold resets at a switchback
+//   Center               : current lean angle (large) and MAX
+//   Inner, lower half    : gear and outside air temperature (hexagonal sub-dials)
+// The dial is translucent dark glass with scan lines, and the lines glow like neon. The color schemes are BMW (M colors) and neon (cyan, magenta).
 import type { ChronoEmphasis } from './chrono'
 import { airTempColor, M_COLORS } from './chrono'
 import { POP_TIME, ROLL_TIME, type Roll } from './overlay'
@@ -26,14 +26,14 @@ export interface CyberOpts {
 export const DEFAULT_CYBER: CyberOpts = { rpmMax: 9000, rpmRed: 8000, brakeMax: 20, leanMax: 60, theme: 'bmw' }
 
 interface Pal {
-  line: string // 主な線の色
-  line2: string // 補助の色（高回転側）
-  hot: string // レッドゾーン・ブレーキ・MAX
+  line: string // main line color
+  line2: string // secondary color (high-RPM side)
+  hot: string // red zone, brake, MAX
   thr: string
   lean: string
-  bg0: string // 文字盤（中心）
-  bg1: string // 文字盤（外周）
-  dim: string // 消えている区切り
+  bg0: string // dial (center)
+  bg1: string // dial (outer edge)
+  dim: string // unlit segments
   text: string
   sub: string
   stripes: string[] | null
@@ -70,12 +70,12 @@ const PALS: Record<CyberTheme, Pal> = {
 
 const clamp = (x: number, a: number, b: number): number => Math.max(a, Math.min(b, x))
 const TAU = Math.PI * 2
-/** 文字の大きさの倍率（以前の 1.5 倍。小さくて読みにくかったため） */
+/** Text size multiplier (1.5 times the previous size, because it was too small to read) */
 const TEXT_SCALE = 1.5
-/** 数字が置き換わった瞬間の拡大の量（1 + この値 倍） */
+/** Amount of enlargement at the moment a digit is replaced (1 + this value, times) */
 const POP_SCALE = 0.4
 
-// ---- エンジン停止中の灰色（配色を、明るさを保った灰色へ混ぜる）----
+// ---- Gray while the engine is stopped (blend the color scheme toward a gray that keeps its brightness) ----
 function parseColor(c: string): [number, number, number, number] | null {
   const h = /^#([0-9a-f]{6})$/i.exec(c)
   if (h) {
@@ -88,7 +88,7 @@ function parseColor(c: string): [number, number, number, number] | null {
   return [p[0], p[1], p[2], p[3] ?? 1]
 }
 
-/** 色 c を灰色へ k（0〜1）だけ近づける。灰色は明るさ（輝度）を保ち、少し暗くする */
+/** Moves color c toward gray by k (0 to 1). The gray keeps the brightness (luminance) and is slightly darker */
 function toGrey(c: string, k: number): string {
   const p = parseColor(c)
   if (!p) return c
@@ -97,7 +97,7 @@ function toGrey(c: string, k: number): string {
   return `rgba(${mix(p[0])},${mix(p[1])},${mix(p[2])},${p[3]})`
 }
 
-/** 配色を灰色へ k だけ近づけたもの */
+/** The color scheme moved toward gray by k */
 function greyPal(P: Pal, k: number): Pal {
   const out = { ...P } as Record<string, unknown>
   for (const [key, v] of Object.entries(P)) {
@@ -108,7 +108,7 @@ function greyPal(P: Pal, k: number): Pal {
 }
 
 /**
- * power: エンジンが掛かっている度合い（1 = 掛かっている、0 = 止まっている）。止まっている間は配色を灰色にする
+ * power: how much the engine is running (1 = running, 0 = stopped). While stopped, the color scheme turns gray
  */
 export function drawCyber(
   g: Ctx,
@@ -119,8 +119,8 @@ export function drawCyber(
   em: ChronoEmphasis,
   power = 1,
   /**
-   * ギアと外気温の数字の切り替わり（overlay.ts の gearShift・airShift）と、表示する外気温（ちらつき防止の後の整数）。
-   * 数字が増えるときは前の数字が上へ出て下から新しい数字が入り、減るときは逆。置き換わった瞬間に少し大きく見せる
+   * Gear and outside air temperature digit changes (gearShift and airShift in overlay.ts), and the displayed outside air temperature (integer after flicker suppression).
+   * When the number increases, the previous digit moves out upward and the new one comes in from below; when it decreases, the reverse. The new digit looks slightly larger at the moment of replacement
    */
   rolls: { gear: Roll | null; air: Roll | null; airShown: number | null } | null = null
 ): void {
@@ -164,7 +164,7 @@ export function drawCyber(
     g.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1)
     g.stroke()
   }
-  /** 区切りのある弧。from から to へ n 個に分け、先頭から lit 個を点ける */
+  /** Segmented arc. Split from `from` to `to` into n segments, lighting the first `lit` of them */
   const segArc = (r: number, from: number, to: number, n: number, lit: number, w: number, color: (frac: number) => string, amt: number): void => {
     const step = (to - from) / n
     const gap = Math.abs(step) * 0.22
@@ -184,7 +184,7 @@ export function drawCyber(
     }
   }
 
-  // ---- 文字盤: 半透明のガラスと走査線、発光する外周 ----
+  // ---- Dial: translucent glass and scan lines, glowing outer ring ----
   const face = g.createRadialGradient(cx, cy - R * 0.25, R * 0.05, cx, cy, R)
   face.addColorStop(0, P.bg0)
   face.addColorStop(1, P.bg1)
@@ -200,21 +200,21 @@ export function drawCyber(
   const sl = Math.max(2, R * 0.025)
   for (let y = cy - R; y < cy + R; y += sl) g.fillRect(cx - R, y, R * 2, sl * 0.3)
   g.restore()
-  // 外周: 発光リングを 4 つに分け、3時・6時・9時・12時に切れ目
+  // Outer ring: glowing ring split into 4 parts, with gaps at 3, 6, 9 and 12 o'clock
   g.globalAlpha = 0.9
   glow(P.line, 1)
   for (let q = 0; q < 4; q++) ring(R * 0.96, (q * Math.PI) / 2 + 0.07, ((q + 1) * Math.PI) / 2 - 0.07, R * 0.012, P.line)
   noGlow()
   g.globalAlpha = 1
-  // 外周の細かい目盛り（飾り）
+  // Fine ticks on the outer ring (decoration)
   for (let k = 0; k < 120; k++) {
     const a = (k / 120) * TAU
     tick(R * 0.915, R * (k % 10 === 0 ? 0.885 : 0.9), a, R * (k % 10 === 0 ? 0.008 : 0.004), k % 10 === 0 ? P.sub : 'rgba(255,255,255,0.18)')
   }
-  // 斜め 4 方向の括弧（HUD らしさ）
+  // Brackets in the 4 diagonal directions (for the HUD look)
   for (const a of [-Math.PI * 0.75, -Math.PI * 0.25, Math.PI * 0.25, Math.PI * 0.75]) ring(R, a - 0.09, a + 0.09, R * 0.012, P.line)
 
-  // ---- 一番外側・上半分: タコメーター ----
+  // ---- Outermost, upper half: tachometer ----
   const rO = R * 0.81
   const wO = R * 0.085
   const red = clamp(o.rpmRed / o.rpmMax, 0, 1)
@@ -223,7 +223,7 @@ export function drawCyber(
   const litT = rpm === undefined ? 0 : clamp(rpm / o.rpmMax, 0, 1) * nT
   const overRed = rpm !== undefined && rpm >= o.rpmRed
   segArc(rO, Math.PI, TAU, nT, litT, wO, (f) => (f >= red ? P.hot : f > 0.6 ? P.line2 : P.line), overRed ? 1.6 : em.rpm * 1.4)
-  // レッドゾーンの内側に細い赤線
+  // Thin red line inside the red zone
   ring(rO - wO * 0.75, Math.PI + red * Math.PI, TAU, R * 0.01, P.hot)
   for (let r = 0; r <= o.rpmMax + 1; r += 1000) {
     const a = Math.PI + (r / o.rpmMax) * Math.PI
@@ -233,7 +233,7 @@ export function drawCyber(
   }
   text('RPM x1000', cx, cy - R * 0.6, R * 0.036, P.sub, 600, 0.25)
 
-  // ---- 一番外側・下半分: アクセル開度（右）とブレーキ圧（左）。6時から外向きに伸びる ----
+  // ---- Outermost, lower half: throttle opening (right) and brake pressure (left). Extend outward from 6 o'clock ----
   const bottom = Math.PI / 2
   const quarter = Math.PI / 2 - 0.08
   const nB = 16
@@ -250,7 +250,7 @@ export function drawCyber(
   text(hasBrk ? brk.toFixed(1) : '--', cx - vx, cy + vy, R * 0.085, P.text, 700, 0.02)
   text('bar', cx - vx, cy + vy + R * 0.075, R * 0.034, P.sub, 600, 0.2)
 
-  // ---- 内側・上半分: リーンメーター ----
+  // ---- Inner, upper half: lean meter ----
   const rI = R * 0.5
   const wI = R * 0.03
   const top = -Math.PI / 2
@@ -260,7 +260,7 @@ export function drawCyber(
     const major = d % 30 === 0
     const mid = d % 15 === 0
     tick(rI + wI, rI + wI + R * (major ? 0.055 : mid ? 0.035 : 0.018), leanAng(d), R * (major ? 0.01 : 0.005), major ? P.line : 'rgba(255,255,255,0.35)')
-    // 端（±leanMax）の数字は L・R の文字と重なるので出さない
+    // Do not show the numbers at the ends (±leanMax); they overlap the L and R letters
     if (major && d !== 0 && Math.abs(d) < o.leanMax - 0.1) text(String(Math.abs(d)), cx + Math.cos(leanAng(d)) * R * 0.4, cy + Math.sin(leanAng(d)) * R * 0.4, R * 0.042, P.sub, 600, 0)
   }
   text('L', cx - rI, cy + R * 0.075, R * 0.05, P.sub, 700, 0)
@@ -271,7 +271,7 @@ export function drawCyber(
     glow(P.lean, 1 + em.lean * 2)
     ring(rI, top, a, wI * 2.2, P.lean)
     noGlow()
-    // 指標: リングに乗る三角（外向き）
+    // Indicator: a triangle riding on the ring (pointing outward)
     g.save()
     g.translate(cx + Math.cos(a) * rI, cy + Math.sin(a) * rI)
     g.rotate(a + Math.PI / 2)
@@ -286,7 +286,7 @@ export function drawCyber(
     noGlow()
     g.restore()
   }
-  // MAX ホールドの印（山形）
+  // MAX hold marker (chevron)
   if (hold !== null && Math.abs(hold) > 1) {
     const a = leanAng(hold)
     g.save()
@@ -304,7 +304,7 @@ export function drawCyber(
     g.restore()
   }
 
-  // ---- 中央: 現在のリーン角と MAX ----
+  // ---- Center: current lean angle and MAX ----
   if (lean !== undefined) {
     text('LEAN', cx, cy - R * 0.315, R * 0.04, P.sub, 600, 0.35)
     glow(P.lean, 0.8 + em.lean * 1.6)
@@ -313,7 +313,7 @@ export function drawCyber(
     if (hold !== null && Math.abs(hold) > 1) text(`MAX ${Math.abs(hold).toFixed(0)}° ${hold > 0 ? 'R' : 'L'}`, cx, cy + R * 0.02, R * 0.05, P.hot, 700, 0.12)
   }
 
-  // ---- 内側・下半分: ギア段と外気温（六角形） ----
+  // ---- Inner, lower half: gear and outside air temperature (hexagon) ----
   const hex = (sx: number, title: string, val: string, col: string, amt: number, roll: { prev: string; e: number; dir: number; col?: string } | null = null): void => {
     const sy = cy + R * 0.36
     const sr = R * 0.14
@@ -341,7 +341,7 @@ export function drawCyber(
     const big = (s: string, y = 0, scale = 1, c = col): void => {
       const px = R * (s.length > 3 ? 0.07 : 0.11)
       if (scale === 1) return text(s, sx, sy + sr * 0.15 + y, px, c, 700, 0)
-      // 大きくするときは、文字の中心を保ったまま拡大する
+      // When enlarging, scale about the center of the text
       g.save()
       g.translate(sx, sy + sr * 0.15 + y)
       g.scale(scale, scale)
@@ -350,10 +350,10 @@ export function drawCyber(
     }
     if (roll && roll.prev !== val) {
       if (roll.e < ROLL_TIME) {
-        // 縦に流れて入れ替わる（枠の内側だけに描く）。新しい数字は入ってくる間に大きくなる
+        // Scroll vertically and swap (drawn only inside the frame). The new digit grows while coming in
         const k0 = roll.e / ROLL_TIME
         const k = k0 * k0 * (3 - 2 * k0)
-        const d = sr * 1.5 // 流れる距離（枠の高さより少し長く、外へ出きる）
+        const d = sr * 1.5 // scroll distance (slightly longer than the frame height, so it fully exits)
         g.save()
         hexPath(sr * 0.93)
         g.clip()
@@ -361,7 +361,7 @@ export function drawCyber(
         big(val, roll.dir * d * (1 - k), 1 + POP_SCALE * k)
         g.restore()
       } else {
-        // 置き換わった瞬間に大きく、POP_TIME 秒で元の大きさへ（枠から少しはみ出してよい）
+        // Large at the moment of replacement, returning to normal size over POP_TIME seconds (may stick out of the frame a little)
         const p = Math.min(1, (roll.e - ROLL_TIME) / POP_TIME)
         big(val, 0, 1 + POP_SCALE * (1 - p) * (1 - p))
       }
@@ -370,19 +370,19 @@ export function drawCyber(
   }
   const gearText = (x: number | undefined): string => (x === undefined || !Number.isFinite(x) ? '--' : x <= 0 ? 'N' : String(Math.round(x)))
   const gear = v.gear
-  // 数字が増えるとき（シフトアップ・気温が上がる）は前の数字が上へ出て下から入り、減るときは逆
+  // When the number increases (upshift, temperature rise) the previous digit moves out upward and the new one comes in from below; when it decreases, the reverse
   const gr = rolls?.gear
   hex(cx - R * 0.17, 'GEAR', gearText(gear), P.text, em.rpm, gr && gear !== undefined ? { prev: gearText(gr.prev), e: gr.e, dir: gear >= gr.prev ? 1 : -1 } : null)
-  // 外気温: ちらつき防止の後の整数（無ければ測った値を丸めたもの）
+  // Outside air temperature: the integer after flicker suppression (otherwise the measured value rounded)
   const temp = rolls?.airShown ?? (v.airTemp === undefined ? undefined : Math.round(v.airTemp))
-  // 単位（℃）は六角形に入りきらないので省く
+  // The unit (deg C) is omitted because it does not fit in the hexagon
   const tempText = (x: number | undefined): string => (x === undefined || !Number.isFinite(x) ? '--' : x.toFixed(0))
-  // 色は温度で変える（5℃ 以下は水色、30℃ 以上は黄色、35℃ 以上はオレンジ、40℃ 以上は赤、それ以外は白）。エンジン停止中は灰色へ
+  // Color changes with temperature (light blue at 5 deg C or below, yellow at 30 or above, orange at 35 or above, red at 40 or above, otherwise white). Gray while the engine is stopped
   const tCol = (x: number | undefined): string => (power >= 1 ? airTempColor(x) : toGrey(airTempColor(x), 1 - clamp(power, 0, 1)))
   const ar = rolls?.air
   hex(cx + R * 0.17, 'AIR', tempText(temp), tCol(temp), 0, ar && temp !== undefined ? { prev: tempText(ar.prev), e: ar.e, dir: temp >= ar.prev ? 1 : -1, col: tCol(ar.prev) } : null)
 
-  // M カラーの細いライン（BMW テーマ）
+  // Thin M color line (BMW theme)
   if (P.stripes) {
     const sw = R * 0.06
     P.stripes.forEach((col, k) => {

@@ -1,9 +1,9 @@
-"""ローリングシャッター補正の向き・読み出し時間・ジャイロ時刻オフセットを比べる。
+"""Compare the direction, readout time and gyro time offset of the rolling shutter correction.
 
-指標:
-  sampson : 連続フレーム間の特徴点で基本行列を当てたときのSampson誤差の中央値[px]。
-            フレーム内の歪み（ローリングシャッター）が残るほど剛体の仮定が崩れて大きくなる
-  jitter  : 映像から推定したカメラ角速度の高周波RMS[deg/s]
+Metrics:
+  sampson : median Sampson error [px] when fitting the essential matrix to feature points between consecutive frames.
+            The more distortion within a frame (rolling shutter) remains, the more the rigid-body assumption breaks and the larger it gets
+  jitter  : high-frequency RMS [deg/s] of the camera angular velocity estimated from the video
 """
 import sys
 import time
@@ -43,7 +43,7 @@ def metrics(frames, hfov):
         num = (x2 * Fx1).sum(1) ** 2
         den = Fx1[:, 0] ** 2 + Fx1[:, 1] ** 2 + Ftx2[:, 0] ** 2 + Ftx2[:, 1] ** 2
         d = np.sqrt(num / den)
-        samp.append(np.median(d[d < np.percentile(d, 90)]))  # 動く物体などの外れ値を除く
+        samp.append(np.median(d[d < np.percentile(d, 90)]))  # remove outliers such as moving objects
         _, R, _, _ = cv2.recoverPose(E, pa, pb, K, mask=mask)
         rots.append(Rot.from_matrix(R.T).as_rotvec())
     w_ = np.degrees(np.array(rots)) * 50
@@ -65,12 +65,12 @@ def run(st, label):
 if __name__ == "__main__":
     mode = sys.argv[4] if len(sys.argv) > 4 else "dir"
     if mode == "final":
-        run(replace(BASE, sigma=0.0, rs_iters=0), "補正なし")
-        run(replace(BASE, rs_iters=0), "スタビのみ(RSなし)")
-        run(BASE, "スタビ+RS (readout 15.36ms)")
+        run(replace(BASE, sigma=0.0, rs_iters=0), "No correction")
+        run(replace(BASE, rs_iters=0), "Stabilization only (no RS)")
+        run(BASE, "Stabilization + RS (readout 15.36ms)")
     elif mode == "dir":
-        run(replace(BASE, sigma=0.0, rs_iters=0), "補正なし")
-        run(replace(BASE, rs_iters=0), "スタビのみ(RSなし)")
+        run(replace(BASE, sigma=0.0, rs_iters=0), "No correction")
+        run(replace(BASE, rs_iters=0), "Stabilization only (no RS)")
         for axis in ("row", "col"):
             for sign in (1, -1):
                 run(replace(BASE, rs_axis=axis, rs_sign=sign), f"RS {axis} {'+' if sign > 0 else '-'}")
