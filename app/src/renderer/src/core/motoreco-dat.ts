@@ -100,10 +100,43 @@ const D = (d: Uint8Array, o: number, n: number): number => d[o + n - 1]
 const LO = (d: Uint8Array, o: number, n: number): number => d[o + n - 1] & 15
 const HI = (d: Uint8Array, o: number, n: number): number => d[o + n - 1] >> 4
 const U32 = (d: Uint8Array, o: number, n: number): number => d[o + n - 1] + d[o + n] * 256 + d[o + n + 1] * 65536 + d[o + n + 2] * 16777216
-/** Angular rate [deg/s] (invalid value is -125) */
-const RATE: Fn = (d, o) => (D(d, o, 2) * 125) / 127 + D(d, o, 1) / 255 - 125
-/** Acceleration [G] */
-const ACCEL: Fn = (d, o) => (D(d, o, 6) + D(d, o, 5) / 255 - 128) / 32
+/**
+ * CAN IDs 0x174 / 0x178 / 0x17C are the messages of a Bosch Motorsport MM5.10 IMU, and its data sheet gives the encoding: every
+ * signal is 16-bit offset binary about 0x8000, 0.005 deg/s per count for the yaw and roll rate (range +-163 deg/s) and
+ * 0.0001274 g per count for the accelerations (+-4.2 g). The data sheet puts the accelerations in bytes 2-3; in the bike's log
+ * they are in bytes 4-5 (Data5 low, Data6 high), where Z averages one gravity. The same rules as MotoRecoViewer's DecodeRule
+ * (commit 352b6bc).
+ *
+ * The rules used before were inferred, not specified: D2*125/127 + D1/255 - 125 for the rates and (D6 + D5/255 - 128)/32 for the
+ * accelerations. They put the rates at about 3/4 of the true value with the zero one count off, and the accelerations about 4% low.
+ * The rate error had been measured from the data before the data sheet was found (MotoRecoViewer commits 60db916 and dfec59b):
+ *   - GPS track curvature against the rate over the 110 corners of 20260919_143356.dat, and d(LeanAngle)/dt against the camera
+ *     gyro (docs/motoreco-lean.md), both put the old rule at 3/4 of true. The data sheet scale is within 2% of that.
+ *   - The roll rate integrated over a ride has to come back near zero, because the bike is upright at both ends: 2190.8 deg
+ *     (6.1 revolutions) with the zero at count 127 of the high byte, 54 deg with the data sheet's 0x8000.
+ * It went unnoticed because nothing here compared these channels to an absolute reference: the roll rate is only
+ * cross-correlated against the camera gyro to align the log to the video, which does not care about scale, and the turn rate used
+ * for geometry comes from the camera.
+ */
+export const IMU_OFFSET = 0x8000
+/** Yaw and roll rate [deg/s per count] */
+export const IMU_RATE_QUANT = 0.005
+/** X, Y and Z acceleration [g per count] */
+export const IMU_ACC_QUANT = 0.0001274
+/** What an all-zero frame decodes to: "the sensor has nothing yet", not a real -163.84 deg/s */
+export const RATE_INVALID = -IMU_OFFSET * IMU_RATE_QUANT
+/**
+ * Whether a roll / yaw rate means "no reading". Besides RATE_INVALID, CSVs exported by older MotoRecoViewer builds carry -125 (the
+ * original rule) or -166.67 (its 4/3 correction, 60db916 to dfec59b); neither is a rate the sensor can report (+-163 deg/s, and
+ * the original rule read 3/4 of true)
+ */
+export function isRateInvalid(r: number): boolean {
+  return r <= RATE_INVALID + 0.01 || r === -125
+}
+/** Angular rate [deg/s]: Data2 high byte, Data1 low byte. RATE_INVALID means no reading */
+const RATE: Fn = (d, o) => (D(d, o, 2) * 256 + D(d, o, 1) - IMU_OFFSET) * IMU_RATE_QUANT
+/** Acceleration [G]: Data6 high byte, Data5 low byte */
+const ACCEL: Fn = (d, o) => (D(d, o, 6) * 256 + D(d, o, 5) - IMU_OFFSET) * IMU_ACC_QUANT
 const FR_SPEED1: Fn = (d, o) => (LO(d, o, 5) * 256 + D(d, o, 4)) / 8
 const RR_SPEED: Fn = (d, o) => (LO(d, o, 2) * 256 + D(d, o, 1)) / 8
 /** Gear: upper 4 bits of Data6 → gear. Anything else is 0 (neutral / unknown) */
@@ -122,7 +155,9 @@ const BUILTIN: Record<string, Fn> = {
   BMW_RrBrake2: (d, o) => D(d, o, 6) / 2,
   BMW_FrStroke: (d, o) => (LO(d, o, 7) * 256 + D(d, o, 6)) / 5,
   BMW_RrStroke: (d, o) => (D(d, o, 8) * 16 + HI(d, o, 7)) / 3,
-  BMW_LeanAngle: (d, o) => (D(d, o, 5) * 90) / 127 - 90,
+  // Data5 is 8-bit offset binary about count 128 (2^7, as the IMU's 0x8000), full scale +-90 deg. 0x10C is another module with no
+  // data sheet; the log starts at count 128 with the bike upright (MotoRecoViewer commit c7cfc27)
+  BMW_LeanAngle: (d, o) => (D(d, o, 5) * 90) / 128 - 90,
   BMW_RrSpeed: RR_SPEED,
   BMW_FrSpeed2: (d, o) => (D(d, o, 3) * 16 + HI(d, o, 2)) / 8,
   BMW_FrSpeed1: FR_SPEED1,
@@ -481,6 +516,6 @@ export function datDurationFromTail(tail: Uint8Array): number {
 export function datRollRate(buf: Uint8Array, ddf: DdfChannel[] | null): { t: Float64Array; rollRate: Float64Array } {
   const def = ddf?.find((x) => builtinKey(x.rule) === 'BMW_RollRate') ?? REQUIRED[1]
   const table = decodeTable(buf, [{ ...def, name: 'RollRate', filter: false }], false)
-  const v = table.columns.get('RollRate') ?? new Float64Array(table.t.length).fill(-125)
-  return { t: table.t, rollRate: v.map((x) => (x <= -124.9 ? NaN : x)) }
+  const v = table.columns.get('RollRate') ?? new Float64Array(table.t.length).fill(RATE_INVALID)
+  return { t: table.t, rollRate: v.map((x) => (isRateInvalid(x) ? NaN : x)) }
 }

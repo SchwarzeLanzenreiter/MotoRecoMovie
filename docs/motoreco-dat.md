@@ -79,7 +79,7 @@ There are two kinds of rules:
 | `#BMW_ThrottelValvePosition` | 10C | D6/255·100 |
 | `#BMW_ThrottelPosition` | 10C | D8/255·100 |
 | `#BMW_ThrottelGripPosition` | 110 | D6/255·100 |
-| `#BMW_LeanAngle` | 10C | D5·90/127 − 90 |
+| `#BMW_LeanAngle` | 10C | D5·90/128 − 90 (offset binary about count 128) |
 | `#BMW_FrBrake1` / `#BMW_FrBrake2` | 120 | D3/4 / D5/4 |
 | `#BMW_RrBrake1` / `#BMW_RrBrake2` | 120 | D4/2 / D6/2 |
 | `#BMW_FrStroke` | 29C | (Lo7·256 + D6)/5 |
@@ -89,8 +89,15 @@ There are two kinds of rules:
 | `#BMW_RrSpeed` | 293 | (Lo2·256 + D1)/8 |
 | `#BMW_SlipRate` | 293 | RrSpeed/FrSpeed1·100 − 100 (0 when the front wheel speed is 0) |
 | `#BMW_Gear` | 2BC | Hi6 of 1, 4, 7, 8, 11, 13 → gears 1 to 6; anything else is 0 |
-| `#BMW_RollRate` / `#BMW_YawRate` | 178 / 174 | D2·125/127 + D1/255 − 125 [deg/s] (−125 is an invalid value) |
-| `#BMW_XAxisG` / `#BMW_YAxisG` / `#BMW_ZAxisG` | 178 / 174 / 17C | (D6 + D5/255 − 128)/32 [G] |
+| `#BMW_RollRate` / `#BMW_YawRate` | 178 / 174 | (D2·256 + D1 − 0x8000) · 0.005 [deg/s] (the all-zero frame, −163.84, means no reading) |
+| `#BMW_XAxisG` / `#BMW_YAxisG` / `#BMW_ZAxisG` | 178 / 174 / 17C | (D6·256 + D5 − 0x8000) · 0.0001274 [G] |
+
+IDs 174 / 178 / 17C are the messages of a Bosch Motorsport MM5.10 IMU, and the rate and acceleration rules follow its data sheet
+(16-bit offset binary about 0x8000; 0.005 deg/s and 0.0001274 g per count; the data sheet puts the accelerations in bytes 2-3, the
+bike's log has them in bytes 4-5). The rules used before, inferred from MotoRecoViewer's output, put the rates at about 3/4 of the
+true value with the zero one count off and the accelerations about 4% low; MotoRecoViewer was corrected the same way (commits
+60db916, dfec59b, 2f78cba, 352b6bc, and c7cfc27 for LeanAngle). CSVs exported before those commits carry the old values, including
+−125 for "no reading" (−166.67 for builds between 60db916 and 352b6bc); `isRateInvalid` treats all of them as no reading.
 | `#BMW_AirTemp` | 3FA | D1·0.75 − 48 |
 | `#BMW_OilTemp` | 3FA | D2 − 25 |
 | `#BMW_WaterTemp` | 2BC | D3·0.76 − 25 |
@@ -147,10 +154,36 @@ The .ddf used when the .dat was read is also recorded in the project (`ddfPath`)
 
 ## How to verify
 
+The test reads the `.dat` directly; no CSV is needed.
+
 ```bash
 cd app
-npx tsx test/motoreco-dat.test.ts                                 # checks the formulas + compares CSV on every column and row against the default real data (if present)
-npx tsx test/motoreco-dat.test.ts <dat> <ddf> <csv> <insv> [other dat…]   # also prints the matching guide
+npx tsx test/motoreco-dat.test.ts                                    # formulas + invariants + golden, on the default real data (if present)
+npx tsx test/motoreco-dat.test.ts <dat> <ddf> <insv> [other dat…]    # also prints the matching guide
+npx tsx test/motoreco-dat.test.ts --csv <csv>                        # additionally compares every column and row against a MotoRecoViewer export
 ```
+
+Three layers, in order of what they can prove:
+
+| Layer | What it checks |
+|---|---|
+| **Formula rules** | unit checks on the expression compiler. No data needed |
+| **Physical invariants** | `Z_Axis_G` averages one gravity; the front wheel speed integrates to the distance GPS reports; the roll rate integrates back to nothing over a ride, because the bike is upright at both ends; and `d(LeanAngle)` tracks the integral of `RollRate` with a slope near 1 and no drift term |
+| **Golden statistics** | min / max / mean of all 40 columns for `20260919_143356.dat`, as a regression guard |
+
+**The invariants are the layer a CSV comparison cannot replace.** When a built-in rule is itself
+wrong, MotoRecoViewer's CSV is wrong in the same way and a row-by-row comparison still passes —
+which is how the roll and yaw rate sat at 3/4 of the true rate, with the zero point one count off,
+without being noticed. Checked by breaking each rule on purpose:
+
+| Regression | Caught by | Value it produced |
+|---|---|---|
+| the rates back at the original rule's scale (125/127 deg/s per count) | the `d(LeanAngle)` slope | about 1.17 instead of 0.90 |
+| the zero point one count of the high byte off (0x7F00) | the roll-rate integral | 1.28 deg/s of false rotation instead of 0.001 |
+| the accelerations back at 1/32 g per count | golden only — `Z_Axis_G` still averages within the bound | `Z_Axis_G` mean 1.003 instead of 1.047 |
+
+The `--csv` comparison remains the only check that the two implementations still agree, so it is
+worth running after either side's rules change. It needs a CSV exported from the **current**
+MotoRecoViewer; a stale one fails on whichever channels have been corrected since.
 
 `proto/motoreco_check.py` is a tool from when the formulas were inferred from the CSV before looking at the source (`check(column name, ID, formula)` prints the match rate).

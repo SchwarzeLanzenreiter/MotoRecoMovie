@@ -4,6 +4,7 @@
 // See docs/telemetry.md for how columns are chosen (e.g. speed uses the 10 ms-update front wheel speed FrSpeed1, not the 1 s-update Speed).
 import type { DisturbTrack } from './disturb'
 import { gaussianFilter, interpSorted, lowpassFiltfilt } from './dsp'
+import { isRateInvalid } from './motoreco-dat'
 import type { BikeLog, LeanTrack, SyncResult } from './motoreco'
 import type { RidingTrack } from './riding'
 import type { NavTrack } from './nav'
@@ -251,9 +252,11 @@ export function buildTelemetry(log: BikeLog, sync: SyncResult, lean: LeanTrack |
     ['xG', 'X_Axis_G', true],
     ['zG', 'Z_Axis_G', true]
   ]
+  // Rates: also remove the invalid values at the start ("no reading", isRateInvalid)
+  const fixRate = (v: Float64Array): Float64Array => v.map((x) => (isRateInvalid(x) ? 0 : x))
   for (const [k, name, isG] of raw) {
     const v = col(name)
-    if (v) ch[k] = linear(isG ? fixG(v) : v)
+    if (v) ch[k] = linear(isG ? fixG(v) : k === 'rollRate' || k === 'yawRate' ? fixRate(v) : v)
   }
   if (lean) ch.lean = Float32Array.from(interpSorted(grid, lean.t, lean.lean))
 

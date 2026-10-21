@@ -2,6 +2,7 @@
 // A port of proto/motoreco.py and proto/leanfusion.py. See docs/motoreco-lean.md for how it works.
 import type { Imu } from './insv'
 import { crossCorrelate, interpSorted, lowpassFiltfilt } from './dsp'
+import { isRateInvalid } from './motoreco-dat'
 import { matVec, type Mat3 } from './quat'
 import { IMU_TO_RIG } from './motion'
 import { mountFwdAt, mountUpAt, type MountTrack } from './mount'
@@ -51,7 +52,8 @@ export function bikeLogFromColumns(t: Float64Array, columns: Map<string, Float64
   }
   const n = t.length
   const lean = need('LeanAngle')
-  const rr = need('RollRate').map((r) => (r <= -124.9 ? NaN : r)) // the logger's invalid value is -125
+  // "No reading" differs between the .dat decode and CSVs from older MotoRecoViewer builds (isRateInvalid)
+  const rr = need('RollRate').map((r) => (isRateInvalid(r) ? NaN : r))
   const opt = (name: string): Float64Array => columns.get(name) ?? new Float64Array(n).fill(NaN)
   const upd = new Uint8Array(n)
   upd[0] = 1

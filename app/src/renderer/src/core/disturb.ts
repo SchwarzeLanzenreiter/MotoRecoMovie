@@ -9,6 +9,7 @@
 // Each is divided by the larger of "that ride's 99.5th percentile" and a "floor" (an absolute value so that quiet rides do not produce too many events),
 // and the largest one becomes the strength at that time. 1.0 corresponds to the top 0.5% of that ride.
 import { fastGaussian, lowpassFiltfilt } from './dsp'
+import { IMU_ACC_QUANT, IMU_RATE_QUANT } from './motoreco-dat'
 import type { Telemetry } from './telemetry'
 
 export type DisturbCause = 'slip' | 'roll' | 'yaw' | 'xG' | 'yG' | 'zG' | 'frSus' | 'rrSus'
@@ -25,8 +26,23 @@ export const CAUSE_NAMES: Record<DisturbCause, string> = {
   rrSus: 'Rear suspension' // i18n-ignore
 }
 
-/** Floor for each metric (about the 99.5th percentile of the sample ride). Units are each metric's own */
-const FLOOR: Record<DisturbCause, number> = { slip: 1.5, roll: 3.5, yaw: 2.0, xG: 0.008, yG: 0.003, zG: 0.025, frSus: 350, rrSus: 450 }
+/**
+ * Floor for each metric (about the 99.5th percentile of the sample ride). Units are each metric's own.
+ * The IMU ones were read off the ride decoded with the original rules, which gave 125/127 deg/s and 1/32 g per count of the high
+ * byte; they are scaled per count to the data sheet encoding (core/motoreco-dat.ts)
+ */
+const OLD_RATE = (256 * IMU_RATE_QUANT) / (125 / 127)
+const OLD_G = 256 * IMU_ACC_QUANT * 32
+const FLOOR: Record<DisturbCause, number> = {
+  slip: 1.5,
+  roll: 3.5 * OLD_RATE,
+  yaw: 2.0 * OLD_RATE,
+  xG: 0.008 * OLD_G,
+  yG: 0.003 * OLD_G,
+  zG: 0.025 * OLD_G,
+  frSus: 350,
+  rrSus: 450
+}
 /** Floor for the slip-ratio deviation from the whole-ride median [%] (sustained spin or lock beyond this is also regarded as a disturbance) */
 const SLIP_ABS_FLOOR = 6
 
