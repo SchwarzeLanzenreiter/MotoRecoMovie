@@ -11,19 +11,21 @@ import { cameraRollRate, type LeanTrack, type SyncResult } from '../core/motorec
 import { DAT_RECORD, datDurationFromTail, datStartFromName } from '../core/motoreco-dat'
 import type { Telemetry } from '../core/telemetry'
 import type { BodyTrack } from '../core/bodymap'
+import type { BikeMaskTrack } from '../core/bikemask'
 import type { FxAudio } from './audiofx'
 import { analyzeLog, localizeError, scoreDatInWorker, seamFitInWorker, imuTelemetryInWorker } from './analysis'
 import { demux, type FileReader, type Track } from '../core/mp4'
 import type { Mat3 } from '../core/quat'
-import { decodeKeyframes, TrackDecoder } from './decoder'
+import { decodeFrames, decodeKeyframes, TrackDecoder } from './decoder'
 import { MotionModel } from './motion-model'
 import type { StabSettings } from './project'
 import { t } from '../i18n'
 import { GlReframer } from '../render/gl-reframe'
-import { findLaneCrossings, LANE_VIEW, laneSide, observeLanes, ownSide, type LaneCrossing, type LaneSample } from '../core/lanes'
-import { findOvertakes, OVERTAKE, type Overtake } from '../core/overtake'
+import { CLOSER_SPAN, CLOSER_STEP, findLaneCrossings, LANE_VIEW, laneSide, needsCloserLook, observeLanes, ownSide, type LaneCrossing, type LaneSample } from '../core/lanes'
+import { findOvertakes, OVERTAKE, vehicleAround, type Overtake } from '../core/overtake'
 import { DET_SIZE, sightingFromBox, type VehicleSighting } from '../core/vehicles'
-import { detectVehicles } from './detector'
+import { segment } from './segmenter'
+import { VEHICLE_CLASSES } from '../core/vehicles'
 
 export interface LogInfo {
   path: string
@@ -36,6 +38,13 @@ export interface LogInfo {
   telemetry: Telemetry
   gpsDelay: { delay: number; corr: number }
 }
+
+/**
+ * Lane crossings shorter than this [s] are quick overtakes: if a vehicle is seen around one at the keyframes, vehicles are also looked for
+ * between the keyframes, every VEHICLE_STEP [s]
+ */
+const SHORT_CROSSING = 4
+const VEHICLE_STEP = 0.25
 
 export class Session {
   decoders!: [TrackDecoder, TrackDecoder] // [lens 0, lens 1]
@@ -58,6 +67,8 @@ export class Session {
   log: LogInfo | null = null
   /** Seam template of the own bike (engine/bodymap.ts. null until built or when not used) */
   body: BodyTrack | null = null
+  /** Where the own bike and rider are, to hide corner signs behind them (engine/bikemask.ts. null until built) */
+  bikeMask: BikeMaskTrack | null = null
   /** Cleaned-up audio (engine/audiofx.ts. null until built or when unused = the video's original audio) */
   fxAudio: FxAudio | null = null
 
@@ -263,7 +274,7 @@ export class Session {
 
   /**
    * Examines, for each keyframe of the video (about every 1 second), which side of the lane the bike is riding on (core/lanes.ts).
-   * Draws a small image looking down at the road ahead and decides left/right of the center line. Takes about 1 minute for a 20-minute video
+   * Draws a small image looking down at the road ahead and decides left/right of the center line. Lone samples in the opposite lane are looked at again between the keyframes (needsCloserLook). Takes about 2 minutes for a 20-minute video
    */
   async scanLanes(onProgress?: (frac: number) => void, signal?: AbortSignal): Promise<LaneSample[]> {
     const { width: w, height: h } = LANE_VIEW
@@ -275,24 +286,39 @@ export class Session {
     const img = new Uint8Array(w * h * 4)
     const out: LaneSample[] = []
     let done = 0
+    const observe = (i: number, fs: VideoFrame[]): void => {
+      gl.upload([fs[0], fs[1]])
+      // Look down at the road ahead with the horizon and lean undone
+      const fp = this.motion.frame(i, { yaw: 0, pitch: LANE_VIEW.pitch, fov: LANE_VIEW.fov, leanRatio: 0 })
+      gl.draw({ view: fp.view, rs: fp.rs, hfovDeg: LANE_VIEW.fov }, w, h)
+      gl.gl.readPixels(0, 0, w, h, gl.gl.RGBA, gl.gl.UNSIGNED_BYTE, buf)
+      // GL rows run from the bottom, so reorder to run from the top
+      for (let y = 0; y < h; y++) img.set(buf.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4)
+      out.push({ t: this.motion.videoTime(i), ...laneSide(observeLanes(img, w, h)) })
+    }
     try {
       await decodeKeyframes(
         this.file,
         this.decoders.map((d) => d.track),
         keys,
         (i, fs) => {
-          gl.upload([fs[0], fs[1]])
-          // Look down at the road ahead with the horizon and lean undone
-          const fp = this.motion.frame(i, { yaw: 0, pitch: LANE_VIEW.pitch, fov: LANE_VIEW.fov, leanRatio: 0 })
-          gl.draw({ view: fp.view, rs: fp.rs, hfovDeg: LANE_VIEW.fov }, w, h)
-          gl.gl.readPixels(0, 0, w, h, gl.gl.RGBA, gl.gl.UNSIGNED_BYTE, buf)
-          // GL rows run from the bottom, so reorder to run from the top
-          for (let y = 0; y < h; y++) img.set(buf.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4)
-          out.push({ t: this.motion.videoTime(i), ...laneSide(observeLanes(img, w, h)) })
+          observe(i, fs)
           if (++done % 20 === 0) onProgress?.(done / keys.length)
         },
         signal
       )
+      out.sort((p, q) => p.t - q.t)
+      // A quick overtake shows up in one keyframe only: look again at the frames around it
+      const have = new Set(keys)
+      const more = new Set<number>()
+      for (const tc of needsCloserLook(out)) {
+        for (let d = -CLOSER_SPAN; d <= CLOSER_SPAN + 1e-6; d += CLOSER_STEP) {
+          const i = this.frameOf(tc + d)
+          if (!have.has(i)) more.add(i)
+        }
+      }
+      if (more.size) await decodeFrames(this.file, this.decoders.map((d) => d.track), [...more], observe, signal)
+      console.log(`Lanes: ${keys.length} keyframes, ${more.size} frames looked at again`)
     } finally {
       gl.gl.getExtension('WEBGL_lose_context')?.loseContext()
     }
@@ -319,8 +345,26 @@ export class Session {
       const tv = this.motion.videoTime(i)
       return crossings.some((c) => tv >= c.start - OVERTAKE.margin - 2 && tv <= c.end + OVERTAKE.margin + 2)
     })
-    const sightings = await this.scanVehicles(keys, (f) => onProgress?.(t('Looking for vehicles {p}', { p: pct(f) })), signal)
-    return { crossings, overtakes: findOvertakes(crossings, sightings, own, keys.length, explain) }
+    const sightings = await this.scanVehicles(keys, (f) => onProgress?.(t('Looking for vehicles {p}', { p: pct(0.8 * f) })), signal)
+    // In a quick overtake the car is right beside for well under a second: where a vehicle was seen around a short crossing, look at the
+    // frames between the keyframes too (only the overtaking side and the rear, where the overtaken car is right beside)
+    const have = new Set(keys)
+    const more: number[] = []
+    for (const c of crossings) {
+      if (c.end - c.start > SHORT_CROSSING || !vehicleAround(c, sightings, own)) continue
+      for (let tv = c.start - OVERTAKE.margin; tv <= c.end + OVERTAKE.margin; tv += VEHICLE_STEP) {
+        const i = this.frameOf(tv)
+        if (!have.has(i)) {
+          have.add(i)
+          more.push(i)
+        }
+      }
+    }
+    console.log(`Vehicles: ${keys.length} keyframes around ${crossings.length} crossings, ${more.length} frames between them`)
+    more.sort((a, b) => a - b)
+    sightings.push(...(await this.scanVehicles(more, (f) => onProgress?.(t('Looking for vehicles {p}', { p: pct(0.8 + 0.2 * f) })), signal, [-90 * own, 180])))
+    sightings.sort((p, q) => p.t - q.t)
+    return { crossings, overtakes: findOvertakes(crossings, sightings, own, have.size, explain) }
   }
 
   /** Keyframe indices of the video (about every 1 second) */
@@ -332,9 +376,10 @@ export class Session {
   }
 
   /**
-   * At the specified keyframes, renders front, right, back, and left (90° each), searches for cars, and returns the direction as seen from the body (core/vehicles.ts)
+   * At the specified frames, renders front, right, back, and left (90° each), searches for cars, and returns the direction as seen from the body (core/vehicles.ts).
+   * Frames between the keyframes are rendered only in the directions betweenYaws
    */
-  async scanVehicles(indices: number[], onProgress?: (frac: number) => void, signal?: AbortSignal): Promise<VehicleSighting[]> {
+  async scanVehicles(indices: number[], onProgress?: (frac: number) => void, signal?: AbortSignal, betweenYaws = [0, 90, 180, -90]): Promise<VehicleSighting[]> {
     const S = DET_SIZE
     const FOV = 90
     const gl = new GlReframer(new OffscreenCanvas(S, S))
@@ -345,24 +390,25 @@ export class Session {
     const out: VehicleSighting[] = []
     let done = 0
     try {
-      await decodeKeyframes(
-        this.file,
-        this.decoders.map((d) => d.track),
-        indices,
-        async (i, fs) => {
+      const kf = this.decoders[0].track.keyframes
+      const decode = (idx: number[], cb: (i: number, fs: VideoFrame[]) => Promise<void>): Promise<void> =>
+        idx.length ? (kf[idx[0]] ? decodeKeyframes : decodeFrames)(this.file, this.decoders.map((d) => d.track), idx, cb, signal) : Promise.resolve()
+      const look = async (i: number, fs: VideoFrame[]): Promise<void> => {
           gl.upload([fs[0], fs[1]])
           const t = this.motion.videoTime(i)
-          for (const yaw of [0, 90, 180, -90]) {
+          for (const yaw of kf[i] ? [0, 90, 180, -90] : betweenYaws) {
             const fp = this.motion.frame(i, { yaw, pitch: 0, fov: FOV, leanRatio: 0 })
             gl.draw({ view: fp.view, rs: fp.rs, hfovDeg: FOV }, S, S)
             gl.gl.readPixels(0, 0, S, S, gl.gl.RGBA, gl.gl.UNSIGNED_BYTE, buf)
             for (let y = 0; y < S; y++) img.set(buf.subarray((S - 1 - y) * S * 4, (S - y) * S * 4), y * S * 4)
-            for (const d of await detectVehicles(img)) out.push(sightingFromBox(d, t, yaw, FOV))
+            const found = await segment(img.slice(), Object.keys(VEHICLE_CLASSES).map(Number), { scoreThr: 0.35 })
+            for (const d of found) out.push(sightingFromBox({ x: (d.x0 + d.x1) / 2, y: (d.y0 + d.y1) / 2, w: d.x1 - d.x0, h: d.y1 - d.y0, score: d.score, cls: d.cls }, t, yaw, FOV))
           }
           if (++done % 5 === 0) onProgress?.(done / indices.length)
-        },
-        signal
-      )
+      }
+      // Keyframes in one go, the frames between them one by one (each from the keyframe before it)
+      await decode(indices.filter((i) => kf[i]), look)
+      await decode(indices.filter((i) => !kf[i]), look)
     } finally {
       gl.gl.getExtension('WEBGL_lose_context')?.loseContext()
     }

@@ -209,4 +209,10 @@ export const JA_PANEL: Record<string, string> = {
   'Detects sudden slip ratio changes and wheelspin, fine shakes in angular velocity and acceleration (wobble, weave), and sudden suspension movement (kicks, bottoming out), judged by their strength within this ride.': 'スリップ率の急な変化・空転、角速度や加速度の細かい揺れ（ふらつき・振られ）、サスペンションの急な伸び縮み（突き上げ・底付き）を、その走行の中での強さで判定します。',
   'Keyframes in the range are replaced (Ctrl+Z to undo). The base view is this layer\'s view before generating.': '範囲内のキーフレームは置き換わります（Ctrl+Z で元に戻せます）。基本の視点は、生成する前のこのレイヤーの視点です。',
   'Adjusts lens 1\'s orientation so both images match in the band where the front and back lenses overlap (fixes seam offset when looking sideways)': '前後のレンズの映像が重なる帯で、両方の映像が一致するようにレンズ1の向きを補正します（横を向いたときの継ぎ目のずれ）',
+  'Finding your bike in the video so that signs are hidden behind it': '標識を自車の陰に隠すため、動画から自車の位置を調べています',
+  'Press "Generate keyframes" to find your bike in the video, so that signs are hidden behind it (a few minutes, once per video).':
+    '「キーフレームを自動生成」を押すと、動画から自車の位置を調べて標識を自車の陰に隠します（動画ごとに初回のみ、数分かかります）。',
+  'Could not find your bike in the video: {msg}': '動画から自車の位置を調べられませんでした: {msg}',
+  'Show where signs are hidden behind your bike (for checking)': '標識を自車の陰に隠す範囲を表示（確認用）',
+  'Blue: the outline of your bike and body found by AI. Red: estimated from the still parts and colors of the video (until the AI result arrives, or if the AI cannot run). Shown in the preview only, never exported.': '青: AI が見つけた自車と体の輪郭。赤: 動画の動かない部分と色から推定した範囲（AI の結果が出るまでの間や、AI が使えないとき）。プレビューにだけ表示し、書き出しには入りません。',
 }

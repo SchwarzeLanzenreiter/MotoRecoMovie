@@ -194,6 +194,11 @@ export class MotionModel {
     return this.lean ? interp(this.videoTime(i), this.lean.t, this.lean.lean) : null
   }
 
+  /** Body attitude of frame i (rig coordinates; columns = body right, down, forward of the upright bike) */
+  bodyInRig(i: number): Mat3 {
+    return mountAt(this.mount, this.tc(i))
+  }
+
   /**
    * Gravity down direction of frame i (rig coordinates): the "down" of the level orientation with the lean undone from the body attitude
    * (used by dynamic stitching to estimate the distance to the ground for directions below the horizon)

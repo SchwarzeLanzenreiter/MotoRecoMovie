@@ -226,6 +226,22 @@ export async function runAutotest(): Promise<void> {
           await new Promise((r) => setTimeout(r, 500))
           while (!st().bodyReady && (st().bodyBusy || performance.now() - t0 < 5000)) await new Promise((r) => setTimeout(r, 200))
           console.log(`Own-bike seam ${(performance.now() - t0).toFixed(0)}ms`, st().bodyReady, st().bodyMsg)
+        } else if (step.until === 'bikemask') {
+          // Wait until the own-bike mask for the signs is ready
+          const t0 = performance.now()
+          await new Promise((r) => setTimeout(r, 500))
+          while (!st().maskReady && (st().maskBusy || performance.now() - t0 < 5000)) await new Promise((r) => setTimeout(r, 300))
+          console.log(`Bike mask ${(performance.now() - t0).toFixed(0)}ms`, st().maskReady)
+        } else if (step.segDump) {
+          // For checking: save each crop the segmentation model sees, with the outline kept and the bike masks (<path>-<frame>.png)
+          ;(globalThis as { __segDump?: unknown }).__segDump = step.segDump
+        } else if (step.bikeMaskShow !== undefined) {
+          // For checking: show where signs are cut (the same as the switch in the side panel)
+          window.dispatchEvent(new CustomEvent('reframe:test', { detail: { action: 'bikeMaskShow', on: !!step.bikeMaskShow } }))
+          await new Promise((r) => setTimeout(r, 200))
+        } else if (step.bikeMaskDump) {
+          // For checking: save the first frame of each stretch with its own-bike mask as PNG (<path>-<stretch>.png)
+          ;(globalThis as { __bikeMaskDump?: unknown }).__bikeMaskDump = step.bikeMaskDump
         } else if (step.bodyRange) {
           ;(globalThis as { __bodyRange?: unknown }).__bodyRange = step.bodyRange
         } else if (step.until === 'saved') {
@@ -350,7 +366,7 @@ export async function runAutotest(): Promise<void> {
       const t0 = performance.now()
       let last = ''
       const r = await s.scanOvertakes((m) => {
-        if (m.split(' ')[0] !== last) console.log(m)
+        if (m.split(' ')[0] !== last) console.log(`${((performance.now() - t0) / 1000).toFixed(1)}s ${m}`)
         last = m.split(' ')[0]
       }, undefined, (c, x) => console.log(`  decisive ${c.start} to ${c.end}: ${x.t}s azimuth ${x.az.toFixed(0)}° size ${x.size.toFixed(1)}° bottom ${x.low.toFixed(1)}° class ${x.cls} ${x.score.toFixed(2)}`))
       const fmt = (x: number): string => `${Math.floor(x / 60)}:${String(Math.round(x % 60)).padStart(2, '0')}`
@@ -368,7 +384,7 @@ export async function runAutotest(): Promise<void> {
       const v = await s.scanVehicles(keys)
       console.log(`Car detection ${keys.length} frames ${((performance.now() - t0) / 1000).toFixed(1)}s`)
       if (args.dump) await window.api.writeText(args.dump, JSON.stringify(v))
-      for (const x of v) console.log(`  ${(x.t / 60) | 0}:${(x.t % 60).toFixed(1).padStart(4, '0')} azimuth ${x.az.toFixed(0)}° size ${x.size.toFixed(1)}° confidence ${x.score.toFixed(2)}`)
+      for (const x of v) console.log(`  ${(x.t / 60) | 0}:${(x.t % 60).toFixed(2).padStart(5, '0')} azimuth ${x.az.toFixed(0)}° size ${x.size.toFixed(1)}° bottom ${x.low.toFixed(1)}° class ${x.cls} confidence ${x.score.toFixed(2)}`)
       await s.close()
     } else if (env.autotest === 'encprobe') {
       // Export encoder: check the settings usable on this PC (combinations of size, codec, hardware, bitrate, quality-first)

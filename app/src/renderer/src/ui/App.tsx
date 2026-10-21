@@ -4,6 +4,8 @@ import './styles.css'
 import { isDatPath, Session, type LogInfo } from '../engine/session'
 import { bodyKey, buildBodyTrack, loadBodyTrack, saveBodyTrack } from '../engine/bodymap'
 import { buildFxAudio, fxAudioKey } from '../engine/audiofx'
+import { buildBikeMasks, loadBikeMasks, saveBikeMasks } from '../engine/bikemask'
+import { initSegmenter } from '../engine/segmenter'
 import { OVERTAKE_SCAN_VERSION } from '../core/overtake'
 import { applySettings, parseSettings, settingsFromProject, SETTINGS_EXT } from '../engine/settings-file'
 import { loadLogPrefs, saveLogPrefs, type LogPrefs } from '../engine/logprefs'
@@ -665,6 +667,81 @@ export function App(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, project?.audioFx])
 
+  // ---- Where the own bike is, to hide corner signs behind it (engine/bikemask.ts). Finding it takes a few minutes, so it is done with
+  // "Generate keyframes" (alongside the overtake search) when a view shows signs; masks found earlier for the video are loaded right away ----
+  const [maskStatus, setMaskStatus] = useState<{ busy: boolean; frac: number; msg: string } | null>(null)
+  const [maskReady, setMaskReady] = useState(false)
+  // For checking: show where signs are cut for the own bike (not saved; the preview only)
+  const [showBikeMask, setShowBikeMask] = useState(false)
+  useEffect(() => {
+    player.current?.setShowBikeMask(showBikeMask)
+  }, [showBikeMask, session])
+  const maskJob = useRef<{ s: Session; signal: { aborted: boolean } } | null>(null)
+  const wantsMask = !!project?.layers.some((l) => l.type === 'view' && l.signs)
+  const applyMasks = (s: Session, tr: NonNullable<Session['bikeMask']>): void => {
+    s.bikeMask = tr
+    setMaskReady(true)
+    setMaskStatus(null)
+    player.current?.redraw()
+    // Load the segmentation model now, so the outline of the own bike is there when the first sign comes near it
+    initSegmenter().catch((e) => console.warn('Segmentation of the own bike is not available', e))
+  }
+  // Masks found earlier for this video (kept in the cache)
+  useEffect(() => {
+    const s = session
+    if (!s || !wantsMask || s.bikeMask) return
+    let gone = false
+    loadBikeMasks(s)
+      .then((tr) => {
+        if (tr && !gone && !s.bikeMask) applyMasks(s, tr)
+      })
+      .catch((e) => console.warn('Could not read the saved own-bike masks', e))
+    return () => {
+      gone = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, wantsMask])
+  /** Finds the own bike in the video (from "Generate keyframes"). A failure is shown beside the signs setting and does not stop the generation */
+  const findBike = async (s: Session, onProgress: (frac: number) => void): Promise<void> => {
+    if (s.bikeMask) return
+    if (maskJob.current) maskJob.current.signal.aborted = true
+    const job = { s, signal: { aborted: false } }
+    maskJob.current = job
+    const msg = t('Finding your bike in the video so that signs are hidden behind it')
+    try {
+      let tr = await loadBikeMasks(s)
+      if (!tr) {
+        setMaskStatus({ busy: true, frac: 0, msg })
+        tr = await buildBikeMasks(s, {
+          signal: job.signal,
+          idle: () => !player.current?.isPlaying,
+          onProgress: (frac) => {
+            if (maskJob.current !== job) return
+            setMaskStatus({ busy: true, frac, msg })
+            onProgress(frac)
+          }
+        })
+        await saveBikeMasks(s, tr)
+      }
+      if (maskJob.current === job) applyMasks(s, tr)
+    } catch (e) {
+      if (maskJob.current !== job || job.signal.aborted) return
+      console.warn('Could not find the own bike in the video', e)
+      setMaskStatus({ busy: false, frac: 0, msg: t('Could not find your bike in the video: {msg}', { msg: e instanceof Error ? e.message : String(e) }) })
+    } finally {
+      if (maskJob.current === job) maskJob.current = null
+    }
+  }
+  useEffect(
+    () => () => {
+      if (maskJob.current) maskJob.current.signal.aborted = true
+      maskJob.current = null
+      setMaskStatus(null)
+      setMaskReady(false)
+    },
+    [session]
+  )
+
   // ---- 2 screens when a bike disturbance occurs ----
   const disturb = project?.logEnabled ? log?.telemetry.disturb : undefined
   const durSec = session ? session.frameCount / session.fps : 0
@@ -693,14 +770,38 @@ export function App(): React.JSX.Element {
     // Overtake effect: if not examined yet, look for overtakes in the video (first time only; the result is kept in the project)
     // re-examine if the detection method has changed (if the saved result has an older version)
     let overtakes = project.overtakesVersion === OVERTAKE_SCAN_VERSION ? project.overtakes : undefined
-    if (project.director.overtake.on && !overtakes) {
+    // Corner signs: find the own bike in the video so that signs are hidden behind it (first time only; kept in the cache). Both run at once
+    const scanOvertakes = project.director.overtake.on && !overtakes
+    const scanBike = wantsMask && !session.bikeMask
+    if (scanOvertakes || scanBike) {
+      const bikeMsg = t('Finding your bike in the video so that signs are hidden behind it')
+      const lines = { ot: scanOvertakes ? t('Looking for overtakes') : '', bike: scanBike ? bikeMsg : '' }
+      let done = false
+      const show = (): void => {
+        if (!done) setLoading([lines.ot, lines.bike].filter(Boolean).join('\n'))
+      }
+      show()
       try {
-        setLoading(t('Looking for overtakes'))
-        overtakes = (await session.scanOvertakes(setLoading)).overtakes.map((o) => ({ start: o.start, end: o.end }))
+        const [r] = await Promise.all([
+          scanOvertakes
+            ? session.scanOvertakes((m) => {
+                lines.ot = m
+                show()
+              })
+            : null,
+          scanBike
+            ? findBike(session, (f) => {
+                lines.bike = `${bikeMsg} ${Math.round(f * 100)}%`
+                show()
+              })
+            : null
+        ])
+        if (r) overtakes = r.overtakes.map((o) => ({ start: o.start, end: o.end }))
       } catch (e) {
         showError(e)
         return
       } finally {
+        done = true
         setLoading(null)
       }
     }
@@ -845,6 +946,8 @@ export function App(): React.JSX.Element {
       seam: project?.stab.seam ?? null,
       bodyBusy: !!bodyStatus?.busy,
       audioBusy: !!audioStatus?.busy,
+      maskBusy: !!maskStatus?.busy,
+      maskReady,
       audioReady: !!session?.fxAudio,
       audioMsg: audioStatus?.msg ?? null,
       bodyMsg: bodyStatus?.msg ?? null,
@@ -899,6 +1002,8 @@ export function App(): React.JSX.Element {
       else if (d.action === 'addMarker') testRef2.current.addMarker()
       else if (d.action === 'generate') testRef2.current.generate(d.range ?? 'all')
       else if (d.action === 'undo') undo()
+      else if (d.action === 'overtake') apply((p) => ({ ...p, director: { ...p.director, overtake: { ...p.director.overtake, ...d.patch } } }))
+      else if (d.action === 'bikeMaskShow') setShowBikeMask(!!d.on)
       else if (d.action === 'refreshRecent') refreshRecent()
       else if (d.action === 'incident') testRef4.current(d.patch)
       else if (d.action === 'close') void closeRef.current()
@@ -1070,6 +1175,10 @@ export function App(): React.JSX.Element {
           seamBusy={seamBusy}
           bodyStatus={bodyStatus}
           audioStatus={audioStatus}
+          maskStatus={maskStatus}
+          maskReady={maskReady}
+          showBikeMask={showBikeMask}
+          onShowBikeMask={setShowBikeMask}
           audioReady={!!session?.fxAudio}
           bodyReady={!!session?.body}
           onRebuildBody={rebuildBody}
@@ -1133,7 +1242,9 @@ export function App(): React.JSX.Element {
       {toast && <div className="toast">{toast}</div>}
       {loading && (
         <div className="overlay">
-          <div className="box">{t(loading)}…</div>
+          <div className="box" style={{ whiteSpace: 'pre-line' }}>
+            {t(loading)}…
+          </div>
         </div>
       )}
       {(error || message) && (

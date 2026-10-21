@@ -36,6 +36,10 @@ export class Player {
     private project: Project
   ) {
     this.comp = new Compositor(canvas)
+    // When the outline of the own bike arrives for a paused frame, draw it again (while playing, the next frame picks it up)
+    this.comp.onSegmentation = () => {
+      if (!this.playing) this.redraw()
+    }
     session.applySeam(project.stab)
     this.comp.setLenses(session.rig)
     this.audio = this.makeAudio()
@@ -95,6 +99,12 @@ export class Player {
     this.redraw()
   }
 
+  /** For checking: show where corner signs are cut out for the own bike and rider (the preview only; export never shows it) */
+  setShowBikeMask(on: boolean): void {
+    this.comp.showBikeMask = on
+    this.redraw()
+  }
+
   setTelemetry(t: Telemetry | null): void {
     this.telemetry = t
     this.redraw()
@@ -143,6 +153,7 @@ export class Player {
     const [w, h] = this.size()
     // Draw with the same compositing as export (the canvas matches the export aspect ratio)
     this.comp.body = this.session.body
+    this.comp.bikeMask = this.session.bikeMask
     const views = this.comp.render(i, this.project, this.session.motion, this.telemetry, w, h)
     this.status = { ...this.status, frame: i, views, correctionDeg: views[0]?.correctionDeg ?? 0, leanDeg: this.session.motion.leanAt(i) }
   }

@@ -208,3 +208,31 @@ export async function decodeKeyframes(
     got.forEach((m) => m.forEach((fr) => fr.close()))
   }
 }
+
+/**
+ * Decode the given frames (any, in increasing order) of all tracks and pass them to onFrames (the frames are closed afterwards).
+ * Each frame is decoded from the keyframe before it, so this is for a few frames here and there (decodeKeyframes is faster for keyframes)
+ */
+export async function decodeFrames(
+  f: FileReader,
+  tracks: Track[],
+  indices: number[],
+  onFrames: (i: number, frames: VideoFrame[]) => void | Promise<void>,
+  signal?: AbortSignal
+): Promise<void> {
+  const decs = tracks.map((track) => new TrackDecoder(f, track))
+  try {
+    for (const i of [...indices].sort((a, b) => a - b)) {
+      if (signal?.aborted) throw new Error(t('Cancelled'))
+      const frs = await Promise.all(decs.map((d) => d.get(i)))
+      try {
+        await onFrames(i, frs)
+      } finally {
+        frs.forEach((fr) => fr.close())
+      }
+    }
+  } finally {
+    for (const d of decs) d.close()
+  }
+}
+

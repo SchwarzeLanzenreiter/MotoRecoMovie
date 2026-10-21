@@ -132,12 +132,44 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
    - Layout guides: "┼ Crosshair" and "╳ Diagonals" at the top right of the preview overlay the vertical and horizontal center lines and the lines joining the corners (the G key toggles both). They appear in the preview only, not in the export. The setting is remembered for the next launch
    - Position and size can also be entered as numbers (% of the output)
    - Signs can look like a "Road sign" or "AR style". AR style shows "CURVE LEFT / R165 / ▸ 70 m (distance left to the entry)" on a translucent hologram-like panel, drops a line of light down to the point on the ground and draws a circular marker on the road. The color depends on the radius (under 60 m red, under 120 m orange, otherwise blue)
-   - Turning on "Corner signs" for a view layer draws the radius of the corner you are about to enter as a sign floating in the air (a yellow diamond with a curve arrow and an "R=165" plate). The sign is fixed on the outside of the curve, 6 m above the road, grows as you approach and goes past you (without a vehicle log, corners estimated from the video motion are used; see "Without a vehicle log" below).
+   - Turning on "Corner signs" for a view layer draws the radius of the corner you are about to enter as a large road sign (a yellow diamond with a curve arrow and an "R=165" plate). The sign stands on a post that grows from the road surface on the outside of the curve (its center 6 m above the road), and faces the riders coming toward it. It is a flat plate in 3D, so it foreshortens when seen at an angle and turns edge-on as you pass it (without a vehicle log, corners estimated from the video motion are used; see "Without a vehicle log" below).
      Its placement is set by "Sign position", as the distance along the route from the corner entry (default −25 m = 25 m before the entry; positive values move it into the corner).
    - Only signs ahead that can be seen from where you are now are shown (`core/sightline.ts`). There is no terrain data, so this is judged from the position and elevation of the road you ride:
      if the line of sight to the sign strays 10 m or more from the road in between, the sign fades, and at 25 m or more it is hidden (so on a twisty mountain road you do not see signs for road on the far side of the hill).
      If the road under the line of sight is 2 m or more above it (beyond a crest), the sign also fades, and it is hidden at 6 m or more. Even on open flat ground, signs whose line of sight passes far from the road are not shown
-   - Signs you have passed are not shown (they fade out starting 0.3 s before you reach the sign's point). They do not appear even in views that show the rear or your own bike after passing.
+   - Signs you have passed stay where they are. Seen from beyond them (in a view looking back, or across a hairpin), they show their back: grey plates with the brackets on the post (the AR-style panel shows through, mirrored).
+     They are kept for 60 s after passing.
+   - Signs are hidden behind your own bike and yourself, in any view (a sign ahead passing behind your helmet with the camera behind you,
+     a sign you have passed standing behind the bike in a view that looks back at it).
+     The app finds where the bike is in the video when you press "Generate keyframes" with signs on in a view (at the same time as the
+     overtake search; `core/bikemask.ts`; kept in the app's cache folder, so only the first time per video, and loaded as soon as signs are on
+     after that). Until then signs are not hidden, and a note beside the signs setting says so. Keyframes taken while riding (15 km/h or faster by the
+     vehicle log; without speed, when the trees and sky overhead have changed), spread over each 5-minute stretch, are rendered as a whole
+     sphere around the camera. From them, per stretch:
+     - the part that is surely the bike: what stays in the same place while the scenery moves (and the flat parts enclosed by it).
+       A level horizon that stays put on a straight road is not taken for the bike, and a part seen in only one stretch (a lens flare) is dropped
+     - where the bike and the rider can be: around that part, where the frames often show bike colors (the rider moves, so the first covers
+       only part of them)
+     - a table of how likely each color is the bike or rider (colors seen on both, such as an aluminum case and an overcast sky, count as scenery)
+     These are only a first guess: the road and the tree line ahead also stay in place while riding. The same keyframes are then cropped
+     around the bike and given to the segmentation model (below), and where its outlines of the bike and riders are counted on the sphere
+     replaces them: the sure part is where they cover 60% of the frames, the area where the bike and riders can be is where they cover 15%
+     (plus 2 pixels). Without the model, the first guess is used. About 45 s for a 25-minute video.
+   - The outline itself comes from the instance segmentation model (RTMDet-Ins tiny, the same model that finds the vehicles for overtakes):
+     each frame, the main part of the area where the bike and rider can be is rendered as a square crop facing it (upright with the bike,
+     640 px, just wide enough for most of it, so the outline stays fine), and the
+     persons, bicycles and motorcycles found there that lie mostly inside that area are the own bike, rider and passenger (other riders and
+     cars are elsewhere). The model runs beside the drawing on the GPU (WebGPU, or the CPU if there is none): playback uses the latest outline
+     (up to 1 s old; it lags the picture by a few frames), export waits for each frame's, but only in frames where a sign is drawn
+     where the bike or rider can be (about 90 ms per such frame on the GPU; the model for the next frame is started before it is drawn). Only the outline itself is hidden, not a margin
+     around it.
+   - The signs are put over the video on the GPU (`drawSigns` in `render/gl-reframe.ts`), removed where the outline is. Until the first
+     outline arrives (or if the model is missing), the stretch's masks decide: the sure part removes the sign; inside the area where the bike
+     and rider can be, the color of the video at that pixel decides, and a pixel that changed a lot since 4 frames ago is scenery flowing by
+     with the speed whatever its color. Where the camera does not see the bike, nothing is hidden.
+   - "Show where signs are hidden behind your bike (for checking)" overlays that area on the preview: blue where the AI outline is used,
+     red where the stretch's masks are used. It is not saved and never exported.
+   - The signs of a view are also not drawn where another view layer drawn above it covers it (picture in picture, split screen).
      Signs are drawn with the same camera orientation and the same projection as the video, so they move with the small shake left in the video and look stuck to the scenery ([telemetry.md](telemetry.md))
 6. "Auto camera" creates keyframes for the selected view layer automatically (over the export range or the whole video)
    - Without a vehicle log, the riding state estimated from the video motion is used (see "Without a vehicle log" below)
@@ -158,8 +190,11 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
    - Overtake (optional, off by default): while overtaking a vehicle across the center line, the view looks up (sky and scenery; default 40° up, FOV 80°, horizon level) so the road is not shown.
      It starts early by the transition time, so the switch is finished before you start crossing the line. Overtakes are found by analyzing the video
      (the stretches where you cross the lane are found from the center line and the road in the forward view, and a stretch counts as an overtake when a vehicle passes right beside you on the overtaking side during it.
-     Vehicles are detected with YOLOX-Nano. `core/lanes.ts`, `core/overtake.ts`, `core/vehicles.ts`.
-     The analysis takes about a minute during the first auto generation, and the result is kept in the project. "Rescan" analyzes the video again on the next generation)
+     Vehicles are detected with RTMDet-Ins tiny (`core/segment.ts`, `engine/segmenter.ts`). `core/lanes.ts`, `core/overtake.ts`, `core/vehicles.ts`.
+     The road is looked at about once a second (keyframes). A quick overtake can show up in the opposite lane at only one of them, so the frames
+     ±1.2 s around such a lone sample are looked at again every 0.2 s; in crossings of 4 s or less with a vehicle seen around them, vehicles are also searched every 0.25 s on the overtaking side and the rear.
+     A vehicle counts only when it looks big enough (8° or more) and its bottom edge is at least 3° below the horizon (parked cars far off are not counted).
+     The analysis takes a few minutes during the first auto generation (4–5 minutes for a 20-minute video), and the result is kept in the project. "Rescan" analyzes the video again on the next generation)
      Overtakes slower than "Min. speed to switch" (default 40 km/h; the average vehicle speed during the overtake) do not switch. 0 always switches.
      The speed comes from the vehicle log (or the estimate from the video motion when there is none); if it is unknown, it switches
    - At each moment the shot with the highest priority (overtake > marker > braking > accelerating > corner > stopped > cruise scenery > forward) is chosen and the view pans to it over the set time. Shots shorter than the shortest shot (including brief returns to forward) are dropped
@@ -304,17 +339,21 @@ app/src/
       corners.ts    corner detection and curve radius estimation (route before and after the entry; chooses sign positions)
       sightline.ts  whether a floating sign can be seen from the current position (from the position and elevation of the road ridden)
       lanes.ts      which side of the center line you are riding on, from the video (yellow line, spread of the road), and lane-crossing stretches
-      vehicles.ts   pre- and post-processing for vehicle detection (YOLOX-Nano), and direction as seen from the bike
+      vehicles.ts   vehicles seen around the bike and their direction as seen from it
+      segment.ts    instance segmentation post-processing (RTMDet-Ins tiny: boxes, NMS, masks)
       overtake.ts   lane-crossing stretches where a vehicle passes right beside you on the overtaking side = overtakes
       seamfit.ts    lens seam alignment (estimates lens 1's edge angle and rotation in the overlap band)
       bodymap.ts    body seam template (median of band images, parts that do not change over time, cut, storage format)
+      bikemask.ts   where the own bike and rider are on the sphere around the camera (to hide signs behind them)
       audiofx.ts    cleaning up riding sound (noise suppression that keeps the harmonics, taming loud parts, ffmpeg filters)
       disturb.ts    chassis disturbance strength (slip ratio, 6-axis, suspension stroke) and events
       dsp.ts / quat.ts
     engine/    decoder, per-frame view computation, player, audio, export, project (layers),
                director.ts (auto camera: shots → keyframes), incident.ts (split screen during disturbances),
-               detector.ts (runs the vehicle detection model with onnxruntime-web; the model is public/models/yolox_nano.onnx),
+               segmenter.ts (runs the instance segmentation model in a worker with onnxruntime-web, WebGPU or CPU;
+               the model is public/models/rtmdet_ins_tiny.onnx, made by proto/export_rtmdet_ins.py),
                analysis Web Worker (analysis.worker.ts: log loading, sync, fusion, telemetry)
+               bikemask.ts (builds the own-bike masks from keyframes, cache; statistics in bikemask.worker.ts)
     render/    WebGL2 shaders (stitching, RS correction, blending), compositor.ts (compositing view layers + overlays;
                shared by preview and export), overlay.ts (overlay widgets),
                meters.ts (shared types and colors for overlays; the individual gauges and the gauge cluster were removed on 2026-10-20), chrono.ts (chronograph gauges), cyber.ts (cyber gauges),
@@ -333,6 +372,7 @@ Project files are v2 (layer structure). v1 files (a single view) are converted a
 ```bash
 npx tsx test/project.test.ts
 npx tsx test/layout.test.ts
+npx tsx test/bikemask.test.ts                             # own-bike mask on synthetic frames (incl. no bike in view)
 npx tsx test/director.test.ts [<.insv> <MotoReco .csv>]
 npx tsx test/view.test.ts <.insv> <MotoReco .csv>
 npx tsx test/corners.test.ts <.insv> <MotoReco .csv>

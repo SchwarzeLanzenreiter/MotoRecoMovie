@@ -2,16 +2,21 @@
 // Preview and export both use this, so what you see is what gets exported.
 import { incidentEvents, incidentLayout, type IncidentEvent } from '../engine/incident'
 import { bodyAt, type BodyTrack } from '../core/bodymap'
+import { bikeCrop, bikeMaskAt, LUT_N, maskAt, MASK_H, MASK_W, type BikeMask, type BikeMaskTrack } from '../core/bikemask'
 import { isFull } from '../engine/layout'
 import { CAUSE_NAMES } from '../core/disturb'
 import type { Telemetry } from '../core/telemetry'
 import type { LensModel } from '../core/lens'
 import type { MotionModel } from '../engine/motion-model'
 import { viewAt, type Project, type Rect } from '../engine/project'
-import { GlReframer, type PixelRect } from './gl-reframe'
+import { GlReframer, type PixelRect, type SignOcclusion, type SignSegmentation } from './gl-reframe'
+import { segment } from '../engine/segmenter'
+import { MASK_FEAT, SEG_SIZE } from '../core/segment'
+import { cropCamera, OWN_CLASSES, OWN_INSIDE, OWN_IOU, OWN_SCORE, planeInCrop } from '../core/owncrop'
+import { focalFor, wideK } from './projection'
 import type { Mat3 } from '../core/quat'
 import { drawOverlayLayer, overlayFrame } from './overlay'
-import { DEFAULT_SIGN_AHEAD, drawCornerSigns } from './signs'
+import { DEFAULT_SIGN_AHEAD, drawCornerSigns, type SignBox } from './signs'
 import { roadTrack, type RoadTrack } from '../core/sightline'
 import { sampleChannel } from '../core/telemetry'
 import { getLang, tr, type Lang } from '../i18n'
@@ -44,13 +49,136 @@ export class Compositor {
   readonly gl: GlReframer
   /** Seam template of the own bike (Session.body; null if absent) */
   body: BodyTrack | null = null
+  /** Where the own bike is (signs behind it are hidden). null = signs are drawn over everything */
+  bikeMask: BikeMaskTrack | null = null
+  /** For checking (preview only): show where signs are cut, in blue (outline from the segmentation model) or red (the stretch's masks) */
+  showBikeMask = false
   private ov: OffscreenCanvas
   private og: OffscreenCanvasRenderingContext2D
+  /** Corner signs of all views, before the own bike is cut out of them on the GPU (GlReframer.drawSigns) */
+  private sc = new OffscreenCanvas(2, 2)
+  private scg = this.sc.getContext('2d')!
+  /** Bike masks in the form drawSigns takes (kept per mask, so the textures are uploaded only when the stretch changes) */
+  private occ = new WeakMap<BikeMask, SignOcclusion>()
 
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas) {
     this.gl = new GlReframer(canvas)
     this.ov = new OffscreenCanvas(2, 2)
     this.og = this.ov.getContext('2d')!
+  }
+
+  // ---- Outline of the own bike and rider by the segmentation model (engine/segmenter.ts) ----
+  // The area where the bike and rider can be (BikeMask.env) is rendered as a square crop facing it, upright with the bike; persons, bicycles and
+  // motorcycles found there that lie mostly inside that area are the own bike, rider and passenger (other riders and cars are elsewhere).
+  // The model runs beside the drawing: playback uses the latest result up to SEG_STALE frames old; export waits for each frame's (segWait)
+
+  /** Called when a new outline arrives (to redraw a paused frame) */
+  onSegmentation: (() => void) | null = null
+  private crops = new WeakMap<BikeMask, { dir: [number, number, number]; fov: number } | null>()
+  private segResult: { frame: number; bike: BikeMask; seg: SignSegmentation } | null = null
+  private segPending: { frame: number; done: Promise<void> } | null = null
+  private segFailed = false
+
+  /**
+   * Export: wait for each frame's outline, but only for frames whose signs come near the bike (segWait); the model is not run for the others.
+   * Playback runs the model all the time, so a recent outline is there when a sign comes near
+   */
+  exactSegmentation = false
+  /** Frame that needs its own outline before it can be exported (set by render, taken by segWait) */
+  private segNeed: { frame: number; bike: BikeMask; crop: { dir: [number, number, number]; fov: number }; motion: MotionModel } | null = null
+
+  private segmentation(i: number, bike: BikeMask, motion: MotionModel, nearBike: boolean): SignSegmentation | null {
+    this.segNeed = null
+    if (this.segFailed) return null
+    if (!this.crops.has(bike)) this.crops.set(bike, bikeCrop(bike))
+    const crop = this.crops.get(bike)
+    if (!crop) return null
+    const r = this.segResult
+    const fresh = r && r.frame === i && r.bike === bike
+    if (this.exactSegmentation) {
+      // Only this frame's outline counts; signs away from the bike need none
+      if (!nearBike) return null
+      if (!fresh) this.segNeed = { frame: i, bike, crop, motion }
+      return fresh ? r.seg : null
+    }
+    if (!this.segPending && !fresh) this.requestSegmentation(i, bike, crop, motion)
+    return r && r.bike === bike && Math.abs(r.frame - i) <= SEG_STALE ? r.seg : null
+  }
+
+  private requestSegmentation(i: number, bike: BikeMask, crop: { dir: [number, number, number]; fov: number }, motion: MotionModel): void {
+    const view = cropCamera(crop.dir, motion.bodyInRig(i))
+    const rgba = this.gl.renderCrop(view, crop.fov, SEG_SIZE)
+    const rgbaCopy = rgba.slice()
+    const prior = planeInCrop(bike.env, view, crop.fov)
+    // The sure part of the bike: what is kept has to connect to it (a pole or person in the distance is not the rider)
+    const anchor = planeInCrop(bike.core, view, crop.fov)
+    // The rider sits right behind (or in front of) the passenger, partly hidden: keep overlapping persons and weaker ones too, their outlines are joined
+    const done = segment(rgba, OWN_CLASSES, { scoreThr: OWN_SCORE, iou: OWN_IOU, masks: true, prior, inside: OWN_INSIDE, anchor })
+      .then((found) => {
+        const mask = new Uint8Array(OUT * OUT)
+        for (const f of found) if (f.mask) upsampleInto(f.mask, mask)
+        // For checking (autotest segDump): the crop with the outline kept (blue), where the bike and rider can be (green) and where it surely is (red)
+        {
+          const dump = (globalThis as { __segDump?: string }).__segDump
+          if (dump) {
+            const cv = new OffscreenCanvas(SEG_SIZE, SEG_SIZE)
+            const g2 = cv.getContext('2d')!
+            const id = g2.createImageData(SEG_SIZE, SEG_SIZE)
+            id.data.set(rgbaCopy)
+            for (let y = 0; y < SEG_SIZE; y++) for (let x = 0; x < SEG_SIZE; x++) {
+              const m = mask[((y * OUT) / SEG_SIZE | 0) * OUT + ((x * OUT) / SEG_SIZE | 0)]
+              const pa = prior[((y * MASK_FEAT) / SEG_SIZE | 0) * MASK_FEAT + ((x * MASK_FEAT) / SEG_SIZE | 0)]
+              const an = anchor[((y * MASK_FEAT) / SEG_SIZE | 0) * MASK_FEAT + ((x * MASK_FEAT) / SEG_SIZE | 0)]
+              const o = (y * SEG_SIZE + x) * 4
+              if (m >= 128) id.data[o + 2] = 255
+              if (pa && (x + y) % 6 === 0) id.data[o + 1] = 255
+              if (an && (x + y) % 6 === 3) id.data[o] = 255
+            }
+            g2.putImageData(id, 0, 0)
+            void cv.convertToBlob({ type: 'image/png' }).then(async (b) => window.api.writeBinary(dump + '-' + i + '.png', new Uint8Array(await b.arrayBuffer())))
+          }
+        }
+        this.segResult = { frame: i, bike, seg: { mask, size: OUT, view, fov: crop.fov } }
+        this.onSegmentation?.()
+      })
+      .catch((e) => {
+        // Without the model (not fetched) or a working runtime, signs are cut by the bike masks alone
+        this.segFailed = true
+        console.warn('Segmentation of the own bike is not available', e)
+      })
+      .finally(() => {
+        if (this.segPending?.done === done) this.segPending = null
+      })
+    this.segPending = { frame: i, done }
+  }
+
+  /** For export: when frame i has signs near the bike and its outline is not there yet, make it (then draw the frame again) */
+  segWait(i: number): Promise<void> | null {
+    const need = this.segNeed
+    if (!need || need.frame !== i) return null
+    this.segNeed = null
+    return (async () => {
+      // Already asked for this frame (prefetchSegmentation)
+      if (this.segPending?.frame === i) return this.segPending.done
+      if (this.segPending) await this.segPending.done
+      const r = this.segResult
+      if (this.segFailed || (r && r.frame === i && r.bike === need.bike)) return
+      this.requestSegmentation(i, need.bike, need.crop, need.motion)
+      await this.segPending?.done
+    })()
+  }
+
+  /**
+   * For export: start making frame i's outline right after its upload, before drawing it (when the frame before needed one, this one most
+   * likely does too; the model then runs while the frame is drawn once instead of after it)
+   */
+  prefetchSegmentation(i: number, motion: MotionModel): void {
+    if (this.segFailed || this.segPending || !this.bikeMask) return
+    const bike = bikeMaskAt(this.bikeMask, motion.videoTime(i))
+    if (!bike) return
+    if (!this.crops.has(bike)) this.crops.set(bike, bikeCrop(bike))
+    const crop = this.crops.get(bike)
+    if (crop) this.requestSegmentation(i, bike, crop, motion)
   }
 
   setLenses(rig: LensModel[]): void {
@@ -96,7 +224,9 @@ export class Compositor {
     } else gl.setBody(null, null, 0)
     const info: ViewInfo[] = []
     let hasOverlay = false
-    const signViews: { l: (typeof project.layers)[number] & { type: 'view' }; v: ReturnType<typeof viewAt>; pr: PixelRect; rot: Mat3 }[] = []
+    const signViews: { l: (typeof project.layers)[number] & { type: 'view' }; v: ReturnType<typeof viewAt>; pr: PixelRect; rot: Mat3; view: Mat3; order: number }[] = []
+    /** Rectangles of the view layers in drawing order (signs of a view are hidden where a later view covers it) */
+    const viewRects: PixelRect[] = []
     // Signs are projected with the same camera direction as the video (the map heading is passed to MotionModel beforehand)
     const nav = telemetry?.nav
     motion.setNav(nav && telemetry ? { rate: telemetry.rate, heading: nav.heading, grade: telemetry.channels.grade ?? null } : null)
@@ -119,10 +249,11 @@ export class Compositor {
       const fp = motion.frame(i, v)
       const pr = toPixels(rect, w, h)
       gl.draw({ view: fp.view, rs: fp.rs, hfovDeg: v.fov }, w, h, pr)
+      viewRects.push(pr)
       if (l.border && l.border.width > 0) gl.strokeRect(pr, w, h, l.border.width * Math.min(w, h), hexToRgb(l.border.color))
       if (l.signs && telemetry?.nav && telemetry.corners?.length) {
         const rot = motion.cameraInMap(i, fp.world)
-        if (rot) signViews.push({ l, v, pr, rot })
+        if (rot) signViews.push({ l, v, pr, rot, view: fp.view, order: viewRects.length - 1 })
       }
       info.push({ layerId: l.id, correctionDeg: fp.correctionDeg })
     }
@@ -141,23 +272,50 @@ export class Compositor {
         const k0 = Math.floor(k)
         const f = k - k0
         const lerp = (a: Float32Array): number => a[k0] + (a[k0 + 1] - a[k0]) * f
+        const bike = this.bikeMask ? bikeMaskAt(this.bikeMask, t) : null
+        // With the bike masks, the signs are drawn aside and put over the video on the GPU with the own bike and rider cut out
+        const sg = bike ? this.scg : g
+        if (bike) {
+          if (this.sc.width !== w || this.sc.height !== h) {
+            this.sc.width = w
+            this.sc.height = h
+          }
+          sg.clearRect(0, 0, w, h)
+        }
+        const drawnViews: { rect: PixelRect; view: Mat3; fov: number; above: PixelRect[] }[] = []
+        // Whether a sign is drawn where the bike or rider can be (then export waits for this frame's outline)
+        let nearBike = false
+        const box: SignBox = { x0: 0, y0: 0, x1: 0, y1: 0 }
         for (const sv of signViews) {
-          drawCornerSigns(
-            g,
-            {
-              x: lerp(nav.x),
-              y: lerp(nav.y),
-              alt: sampleChannel(telemetry, 'alt', t) ?? 0,
-              rot: sv.rot,
-              fov: sv.v.fov,
-              rect: sv.pr
-            },
+          const drawn = drawCornerSigns(
+            sg,
+            { x: lerp(nav.x), y: lerp(nav.y), alt: sampleChannel(telemetry, 'alt', t) ?? 0, rot: sv.rot, fov: sv.v.fov, rect: sv.pr },
             telemetry.corners,
             t,
             sv.l.signStyle ?? 'real',
             sv.l.signAhead ?? DEFAULT_SIGN_AHEAD,
-            roadOf(telemetry)
+            roadOf(telemetry),
+            box
           )
+          if (!drawn) continue
+          if (bike && !nearBike && box.x1 > box.x0 && box.y1 > box.y0) nearBike = boxNearBike(box, sv.pr, sv.view, sv.v.fov, bike.env)
+          // Signs are above all views: erase this view's signs where a view drawn later (picture in picture, split screen) covers it
+          for (const r of viewRects.slice(sv.order + 1)) sg.clearRect(r.x, r.y, r.w, r.h)
+          drawnViews.push({ rect: sv.pr, view: sv.view, fov: sv.v.fov, above: viewRects.slice(sv.order + 1) })
+        }
+        // For checking: the cut area on every view with signs
+        const show = this.showBikeMask
+        // The sphere of this frame, kept to see what flows by (every frame while there are signs, so it is ready when one comes near the bike)
+        if (bike) gl.updateMotion(i)
+        if (bike && (drawnViews.length || show)) {
+          let o = this.occ.get(bike)
+          if (!o) {
+            o = { ...bike, width: MASK_W, height: MASK_H, lutN: LUT_N }
+            this.occ.set(bike, o)
+          }
+          // Outline of the own bike and rider from the segmentation model (a recent result; a new one is asked for this frame)
+          const seg = this.segmentation(i, bike, motion, nearBike)
+          gl.drawSigns(this.sc, w, h, show ? signViews.map((sv) => ({ rect: sv.pr, view: sv.view, fov: sv.v.fov, above: viewRects.slice(sv.order + 1) })) : drawnViews, o, show, seg)
         }
       }
       // Language of the text that goes into the video (the UI language if omitted)
@@ -201,4 +359,67 @@ function drawIncidentLabel(g: OffscreenCanvasRenderingContext2D, r: PixelRect, e
   g.textBaseline = 'middle'
   g.fillText(text, x + pad + fs * 0.9, cy + fs * 0.03)
   g.restore()
+}
+
+/**
+ * How many frames old an outline may be during playback. The model takes a few frames per run, sometimes more; switching to the bike masks
+ * in between would make the cut flicker, and the rider moves little in a second
+ */
+const SEG_STALE = 50
+
+/** Size of the outline handed to the GPU: the model's mask grid upsampled twice */
+const OUT = MASK_FEAT * 2
+
+/**
+ * Upsample an instance mask (MASK_FEAT square probabilities) twice into out (0..255, max with what is there). Interpolated as logits, as
+ * mmdetection does before thresholding: the 0.5 contour follows the model better than interpolating the probabilities
+ */
+function upsampleInto(m: Float32Array, out: Uint8Array): void {
+  const n = MASK_FEAT
+  const logit = new Float32Array(n * n)
+  for (let p = 0; p < n * n; p++) {
+    const v = Math.min(1 - 1e-6, Math.max(1e-6, m[p]))
+    logit[p] = Math.log(v / (1 - v))
+  }
+  for (let y = 0; y < OUT; y++) {
+    const fy = Math.min(n - 1, Math.max(0, (y + 0.5) / 2 - 0.5))
+    const y0 = Math.min(n - 2, Math.floor(fy))
+    const ty = fy - y0
+    for (let x = 0; x < OUT; x++) {
+      const fx = Math.min(n - 1, Math.max(0, (x + 0.5) / 2 - 0.5))
+      const x0 = Math.min(n - 2, Math.floor(fx))
+      const tx = fx - x0
+      const a = logit[y0 * n + x0] * (1 - tx) + logit[y0 * n + x0 + 1] * tx
+      const b = logit[(y0 + 1) * n + x0] * (1 - tx) + logit[(y0 + 1) * n + x0 + 1] * tx
+      const z = a * (1 - ty) + b * ty
+      const v = Math.round(255 / (1 + Math.exp(-z)))
+      const o = y * OUT + x
+      if (v > out[o]) out[o] = v
+    }
+  }
+}
+
+/** Whether any part of the screen box (in view rectangle pr) looks where the bike or rider can be (a grid of rays checked against env) */
+function boxNearBike(box: SignBox, pr: PixelRect, view: Mat3, fov: number, env: Uint8Array): boolean {
+  const k = wideK(fov)
+  const fk = focalFor(pr.w, fov) * (1 + k)
+  const cx = pr.x + pr.w / 2
+  const cy = pr.y + pr.h / 2
+  const N = 12
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i <= N; i++) {
+      const sx = box.x0 + ((box.x1 - box.x0) * i) / N - cx
+      const sy = box.y0 + ((box.y1 - box.y0) * j) / N - cy
+      // Inverse of projectPoint (projection.ts): screen offset -> ray of the view camera
+      const r = Math.hypot(sx, sy)
+      const th = Math.atan(r / fk) * (1 + k)
+      const s = r > 1e-9 ? Math.sin(th) / r : 0
+      const x = sx * s
+      const y = sy * s
+      const z = Math.cos(th)
+      const V = view
+      if (maskAt(env, V[0] * x + V[1] * y + V[2] * z, V[3] * x + V[4] * y + V[5] * z, V[6] * x + V[7] * y + V[8] * z) > 0) return true
+    }
+  }
+  return false
 }

@@ -14,8 +14,11 @@ const MOTORCYCLE = 3
 /**
  * Version of the detection. Bump it when the method changes (if a result saved in a project is from an older version, it is re-examined on the next auto-generation).
  * 2: for sections decided only by road-surface spread, require a clear bias (it was wrong on the pavement of a parking lot beside the road)
+ * 3: vehicles found by the instance segmentation model (RTMDet-Ins) instead of YOLOX, and a minimum apparent size
+ * 4: a lone keyframe in the opposite lane is looked at again between the keyframes (quick overtakes), and so are vehicles in short crossings;
+ *    the car's bottom edge has to be below the horizon
  */
-export const OVERTAKE_SCAN_VERSION = 2
+export const OVERTAKE_SCAN_VERSION = 4
 
 export interface Overtake {
   /** Last time [s] in the own lane (after this, it starts crossing the lane) */
@@ -33,6 +36,16 @@ export const OVERTAKE = {
    * A car passing 2-3 m directly beside is about 35°. Parts of the own bike appear at 40-90° at a distance of 0.5-1 m
    */
   maxSize: 42,
+  /**
+   * Anything that looks smaller than this is too far away to be the car being overtaken [deg] (a car 10 m to the side is about 8°).
+   * The segmentation model also finds parked cars far off the road
+   */
+  minSize: 8,
+  /**
+   * The bottom edge of the car being overtaken is at least this far below the horizon [deg] (it is on the road beside, seen from 1-2 m up:
+   * 10 m away about 8°). A car whose bottom edge is near or above the horizon is far off, e.g. parked on higher ground
+   */
+  minLow: 3,
   /**
    * A motorcycle seen in the rear half (bearing further back than this) is regarded as the own bike [deg].
    * Parts of the own bike look small when only partly visible and are not detected every time, so size and number of sightings cannot exclude them all
@@ -109,10 +122,33 @@ export function findOvertakes(
         Math.abs(s.az) >= OVERTAKE.sideMin &&
         Math.abs(s.az) <= OVERTAKE.sideMax &&
         s.size <= OVERTAKE.maxSize &&
+        s.size >= OVERTAKE.minSize &&
+        s.low >= OVERTAKE.minLow &&
         !(s.cls === MOTORCYCLE && Math.abs(s.az) >= OVERTAKE.ownBikeAz) &&
         !ownBody(s) &&
         !fixed.has(Math.round(s.az / OVERTAKE.staticBin)) &&
         (explain?.(c, s), true)
     )
+  )
+}
+
+/**
+ * Whether a short lane crossing is worth a closer look between the keyframes: at a keyframe around it, a vehicle near enough was seen ahead
+ * or on the overtaking side (in a quick overtake the car may be right beside only between the keyframes, but it is seen ahead before and
+ * behind after). Most short crossings are stray lane readings with no vehicle around
+ */
+export function vehicleAround(c: LaneCrossing, sightings: VehicleSighting[], own: 1 | -1): boolean {
+  const span = OVERTAKE.margin + 2
+  return sightings.some(
+    (s) =>
+      s.t >= c.start - span &&
+      s.t <= c.end + span &&
+      s.score >= OVERTAKE.minScore &&
+      s.size >= OVERTAKE.minSize &&
+      s.low >= OVERTAKE.minLow &&
+      s.low < OVERTAKE.maxLow &&
+      // Ahead or on the overtaking side, not on the oncoming side
+      -own * s.az > -30 &&
+      !(s.cls === MOTORCYCLE && Math.abs(s.az) >= OVERTAKE.ownBikeAz)
   )
 }

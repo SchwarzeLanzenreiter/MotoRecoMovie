@@ -15,9 +15,10 @@ const FFMPEG = join(APP, 'resources', 'ffmpeg')
 
 const models = [
   {
-    file: 'yolox_nano.onnx',
-    url: 'https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx',
-    sha256: 'c789161ed43c8269fcd4e67c67eeeb4e80c622da2eb296a20bc6007bd18a0b7d'
+    // Converted from the mmdetection checkpoint by proto/export_rtmdet_ins.py (see public/models/NOTICE.md)
+    file: 'rtmdet_ins_tiny.onnx',
+    url: 'https://github.com/SchwarzeLanzenreiter/MotoRecoMovie/releases/download/models-1/rtmdet_ins_tiny.onnx',
+    sha256: '49b20c38abc388d11c042cdfdacee12c74a69156a4c05acf675064f1e3b08794'
   },
   {
     file: 'neuflow_mixed.onnx',

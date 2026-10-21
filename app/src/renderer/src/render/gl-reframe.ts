@@ -350,6 +350,32 @@ void main() {
 }
 `
 
+// The whole sphere around the camera as a small equirectangular image in rig coordinates (fixed to the camera, so the own bike stays put
+// and the scenery flows by). Kept for a few frames to see what moved (drawSigns). Each direction takes the lens nearer to its axis
+const MOTION_W = 512
+const MOTION_H = 256
+const SPHERE_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uTex0;
+uniform sampler2D uTex1;
+${LENS_GLSL}
+out vec4 outColor;
+
+void main() {
+  // Row j holds e.y = (j + 0.5) / height (as the textures are sampled in drawSigns: e.y = 0 at the top of the sphere)
+  float lon = (gl_FragCoord.x / ${MOTION_W.toFixed(1)} - 0.5) * 6.2831853;
+  float lat = (0.5 - gl_FragCoord.y / ${MOTION_H.toFixed(1)}) * 3.14159265;
+  vec3 d = vec3(cos(lat) * sin(lon), -sin(lat), cos(lat) * cos(lon));
+  vec3 p0 = projectLens(uL0, d);
+  vec3 p1 = projectLens(uL1, d);
+  vec3 col = p0.z <= p1.z ? texture(uTex0, p0.xy / uL0.size).rgb : texture(uTex1, p1.xy / uL1.size).rgb;
+  outColor = vec4(col, 1.0);
+}
+`
+/** Frames kept, and how many frames back the comparison looks (4 frames = 80 ms at 50 fps) */
+const MOTION_RING = 5
+const MOTION_LAG = 4
+
 const OVERLAY_VS = `#version 300 es
 in vec2 aPos;
 out vec2 vUv;
@@ -365,6 +391,108 @@ in vec2 vUv;
 out vec4 outColor;
 void main() { outColor = texture(uTex, vUv); }
 `
+
+// Corner signs over the video, with the own bike and rider cut out (core/bikemask.ts).
+// For each pixel of a view: the ray of the view (same projection as the main draw) in rig coordinates looks up the bike masks;
+// where the bike surely is (core) the sign is removed; where the bike or rider can be (envelope), the color of the video at that pixel
+// decides through the color table (5 taps, so single pixels do not flicker)
+const SIGNS_FS = `#version 300 es
+precision highp float;
+precision highp sampler3D;
+uniform sampler2D uSigns;  // signs of all views (premultiplied, the whole output)
+uniform sampler2D uFrame;  // the video of this frame (copy of the output)
+uniform sampler2D uCore;   // equirectangular, rig coordinates
+uniform sampler2D uEnv;
+uniform sampler3D uLut;    // likelihood of the bike by color
+uniform vec2 uSize;        // output size
+uniform vec2 uOut;         // view rectangle size
+uniform vec2 uOrigin;      // view rectangle origin (GL coordinates)
+uniform float uFocal;
+uniform float uK;
+uniform mat3 uView;        // output camera -> rig
+uniform int uDebug;        // 1 = show the cut area in red
+uniform vec4 uAbove[8];    // rectangles of views drawn later (GL coordinates x, y, w, h): those pixels belong to them
+uniform int uAboveN;
+uniform sampler2D uNow;    // the sphere now and a few frames back (rig coordinates; SPHERE_FS)
+uniform sampler2D uPast;
+uniform int uMotion;       // 1 = the frames are consecutive (playback, export), so the change between them can be used
+uniform int uSeg;          // 1 = the outline of the own bike and rider from the segmentation model (renderCrop) is fresh: it decides alone
+uniform sampler2D uSegTex; // that outline in the crop (rows from the top)
+uniform mat3 uCrop;        // crop camera -> rig (columns = its right, down, forward)
+uniform float uCropF;      // focal length of the crop [crop pixels / crop size]
+// The outline in the crop (exactly the model's outline: hiding more than the rider and bike shows as a gap in the sign)
+float segAt(sampler2D t, mat3 crop, float f, vec3 d) {
+  vec3 c = transpose(crop) * d;
+  if (c.z <= 0.0) return 0.0;
+  vec2 uv = c.xy / c.z * f + 0.5;
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 0.0;
+  return smoothstep(0.45, 0.55, texture(t, uv).r);
+}
+out vec4 outColor;
+float bike(ivec2 p) {
+  vec3 c = texelFetch(uFrame, p, 0).rgb;
+  return texture(uLut, c * ${(15 / 16).toFixed(6)} + ${(0.5 / 16).toFixed(6)}).r;
+}
+void main() {
+  for (int i = 0; i < 8; i++) {
+    if (i >= uAboveN) break;
+    vec4 a = uAbove[i];
+    if (gl_FragCoord.x >= a.x && gl_FragCoord.x < a.x + a.z && gl_FragCoord.y >= a.y && gl_FragCoord.y < a.y + a.w) discard;
+  }
+  vec4 s = texture(uSigns, vec2(gl_FragCoord.x / uSize.x, 1.0 - gl_FragCoord.y / uSize.y));
+  if (s.a <= 0.0 && uDebug == 0) discard;
+  vec2 local = gl_FragCoord.xy - uOrigin;
+  vec2 px = vec2(local.x, uOut.y - local.y);
+  vec2 q = (px - uOut * 0.5) / uFocal;
+  float r = length(q);
+  float th = (1.0 + uK) * atan(r / (1.0 + uK));
+  vec3 ray = r > 1e-6 ? vec3(q / r * sin(th), cos(th)) : vec3(0.0, 0.0, 1.0);
+  vec3 d = uView * ray;
+  vec2 e = vec2(atan(d.x, d.z) / 6.2831853 + 0.5, 0.5 - atan(-d.y, length(d.xz)) / 3.14159265);
+  float occ = 0.0;
+  if (uSeg == 1) {
+    // Outside the crop there is no own bike
+    occ = segAt(uSegTex, uCrop, uCropF, d);
+    outColor = s * (1.0 - occ);
+    if (uDebug == 1) outColor = outColor * (1.0 - 0.5 * occ) + vec4(0.0, 0.0, 0.5 * occ, 0.5 * occ);
+    return;
+  }
+  float core = texture(uCore, e).r;
+  float env = texture(uEnv, e).r;
+  occ = core;
+  if (env > 0.0) {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    float b = (2.0 * bike(p) + bike(p + ivec2(1, 0)) + bike(p - ivec2(1, 0)) + bike(p + ivec2(0, 1)) + bike(p - ivec2(0, 1))) / 6.0;
+    float c = env * smoothstep(0.35, 0.65, b);
+    // Narrowed down by the flow: what changed a lot since a few frames ago flows by with the speed, so it is scenery whatever its color.
+    // Not applied to the core: paint and chrome on the bike mirror the scenery going by
+    if (uMotion == 1 && c > 0.0) c *= 1.0 - smoothstep(0.08, 0.2, length(texture(uNow, e).rgb - texture(uPast, e).rgb));
+    occ = max(occ, c);
+  }
+  outColor = s * (1.0 - occ);
+  if (uDebug == 1) outColor = outColor * (1.0 - 0.5 * occ) + vec4(0.5 * occ, 0.0, 0.0, 0.5 * occ);
+}
+`
+
+/** Outline of the own bike and rider from the segmentation model, in a square perspective crop (renderCrop) */
+export interface SignSegmentation {
+  /** size × size, 0..255, rows from the top */
+  mask: Uint8Array
+  size: number
+  /** crop camera -> rig (row-major; columns = its right, down, forward) and its field of view [deg] */
+  view: Mat3
+  fov: number
+}
+
+/** Own bike masks as handed to drawSigns (core/bikemask.ts BikeMask) */
+export interface SignOcclusion {
+  core: Uint8Array
+  env: Uint8Array
+  lut: Uint8Array
+  width: number
+  height: number
+  lutN: number
+}
 
 /** Rectangle within the output screen (pixels, origin at the top left) */
 export interface PixelRect {
@@ -387,6 +515,24 @@ export class GlReframer {
   private loc = new Map<string, WebGLUniformLocation | null>()
   private lenses: LensModel[] = []
   private ovProg: WebGLProgram
+  private signsProg: WebGLProgram
+  private signsLoc = new Map<string, WebGLUniformLocation | null>()
+  /** Textures of drawSigns: the signs, the copy of the frame, the masks (the mask set currently loaded) */
+  private signsTex: WebGLTexture[] = []
+  private signsMask: SignOcclusion | null = null
+  private sphereProg: WebGLProgram
+  /** Outline from the segmentation model (drawSigns) and the mask currently in the texture */
+  private segTex: WebGLTexture | null = null
+  private segLoaded: Uint8Array | null = null
+  /** Render target of renderCrop */
+  private cropFb: WebGLFramebuffer | null = null
+  private sphereLoc = new Map<string, WebGLUniformLocation | null>()
+  /** Ring of sphere images (updateMotion): textures, framebuffers, next slot, how many consecutive frames are in it, last frame number */
+  private motionTex: WebGLTexture[] = []
+  private motionFb: WebGLFramebuffer[] = []
+  private motionHead = 0
+  private motionCount = 0
+  private motionLast = -2
   private probeProg: WebGLProgram
   private cutProg: WebGLProgram
   private bandProg: WebGLProgram
@@ -440,6 +586,8 @@ export class GlReframer {
     const p = link(VS, FS)
     this.prog = p
     this.ovProg = link(OVERLAY_VS, OVERLAY_FS)
+    this.signsProg = link(VS, SIGNS_FS)
+    this.sphereProg = link(VS, SPHERE_FS)
     this.probeProg = link(VS, PROBE_FS)
     this.cutProg = link(VS, CUT_FS)
     this.bandProg = link(VS, BAND_FS)
@@ -739,7 +887,8 @@ export class GlReframer {
       [this.prog, (n: string) => this.u(n)],
       [this.probeProg, (n: string) => this.uP(n)],
       [this.cutProg, (n: string) => this.uC(n)],
-      [this.bandProg, (n: string) => this.uB(n)]
+      [this.bandProg, (n: string) => this.uB(n)],
+      [this.sphereProg, (n: string) => this.uSp(n)]
     ] as [WebGLProgram, (n: string) => WebGLUniformLocation | null][]) {
       gl.useProgram(prog)
       lenses.forEach((L, i) => {
@@ -833,6 +982,208 @@ export class GlReframer {
     }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
     gl.disable(gl.SCISSOR_TEST)
+  }
+
+  private uSp(name: string): WebGLUniformLocation | null {
+    if (!this.sphereLoc.has(name)) this.sphereLoc.set(name, this.gl.getUniformLocation(this.sphereProg, name))
+    return this.sphereLoc.get(name)!
+  }
+
+  /**
+   * Keep the sphere of the frame just uploaded (call once per drawn frame, before drawSigns). frame is the frame number: the change between
+   * frames is used only while they are consecutive (after a seek the ring starts over; drawing the same frame again adds nothing)
+   */
+  updateMotion(frame: number): void {
+    if (frame === this.motionLast) return
+    if (frame !== this.motionLast + 1) this.motionCount = 0
+    this.motionLast = frame
+    const gl = this.gl
+    if (!this.motionTex.length) {
+      for (let k = 0; k < MOTION_RING; k++) {
+        const t = gl.createTexture()!
+        gl.bindTexture(gl.TEXTURE_2D, t)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, MOTION_W, MOTION_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+        const fb = gl.createFramebuffer()!
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb)
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0)
+        this.motionTex.push(t)
+        this.motionFb.push(fb)
+      }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.motionFb[this.motionHead])
+    gl.disable(gl.SCISSOR_TEST)
+    gl.disable(gl.BLEND)
+    gl.viewport(0, 0, MOTION_W, MOTION_H)
+    gl.useProgram(this.sphereProg)
+    gl.uniform1i(this.uSp('uTex0'), 0)
+    gl.uniform1i(this.uSp('uTex1'), 1)
+    for (let i = 0; i < 2; i++) {
+      gl.activeTexture(gl.TEXTURE0 + i)
+      gl.bindTexture(gl.TEXTURE_2D, this.tex[i])
+    }
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.useProgram(this.prog)
+    this.motionHead = (this.motionHead + 1) % MOTION_RING
+    this.motionCount = Math.min(MOTION_RING, this.motionCount + 1)
+  }
+
+  /**
+   * Render the uploaded frame as a square perspective view (no wide-angle blend) of size × size, for the segmentation model.
+   * view: camera -> rig (row-major). Returns RGBA from the top row
+   */
+  renderCrop(view: Mat3, fov: number, size: number): Uint8Array {
+    const gl = this.gl
+    if (!this.cropFb) {
+      const t = gl.createTexture()!
+      gl.bindTexture(gl.TEXTURE_2D, t)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+      this.cropFb = gl.createFramebuffer()!
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.cropFb)
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0)
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.cropFb)
+    const k = this.kOverride
+    this.kOverride = 0
+    this.draw({ view, rs: null, hfovDeg: fov }, size, size, { x: 0, y: 0, w: size, h: size })
+    this.kOverride = k
+    const raw = new Uint8Array(size * size * 4)
+    gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, raw)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    // readPixels gives rows bottom-up
+    const out = new Uint8Array(raw.length)
+    const row = size * 4
+    for (let y = 0; y < size; y++) out.set(raw.subarray((size - 1 - y) * row, (size - y) * row), y * row)
+    return out
+  }
+
+  private uS(name: string): WebGLUniformLocation | null {
+    if (!this.signsLoc.has(name)) this.signsLoc.set(name, this.gl.getUniformLocation(this.signsProg, name))
+    return this.signsLoc.get(name)!
+  }
+
+  /**
+   * Draw the corner signs (src: canvas of the whole output, signs only) over the video drawn so far, cutting out the own bike and rider
+   * per view (call after all views are drawn and before the overlay). above: rectangles of the views drawn after each view (they cover it).
+   * debug shows the cut area in red
+   */
+  drawSigns(
+    src: TexImageSource,
+    width: number,
+    height: number,
+    views: { rect: PixelRect; view: Mat3; fov: number; above: PixelRect[] }[],
+    mask: SignOcclusion,
+    debug = false,
+    seg: SignSegmentation | null = null
+  ): void {
+    const gl = this.gl
+    if (!this.signsTex.length) {
+      for (let i = 0; i < 5; i++) {
+        const t = gl.createTexture()!
+        const target = i === 4 ? gl.TEXTURE_3D : gl.TEXTURE_2D
+        gl.bindTexture(target, t)
+        gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, i === 1 ? gl.NEAREST : gl.LINEAR)
+        gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, i === 1 ? gl.NEAREST : gl.LINEAR)
+        // Equirectangular masks wrap around in longitude
+        gl.texParameteri(target, gl.TEXTURE_WRAP_S, i === 2 || i === 3 ? gl.REPEAT : gl.CLAMP_TO_EDGE)
+        gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+        if (i === 4) gl.texParameteri(target, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE)
+        this.signsTex.push(t)
+      }
+    }
+    const [tSigns, tFrame, tCore, tEnv, tLut] = this.signsTex
+    // Copy of the video drawn so far (read per pixel for the colors)
+    gl.activeTexture(gl.TEXTURE9)
+    gl.bindTexture(gl.TEXTURE_2D, tFrame)
+    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, width, height, 0)
+    gl.activeTexture(gl.TEXTURE8)
+    gl.bindTexture(gl.TEXTURE_2D, tSigns)
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src)
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    gl.activeTexture(gl.TEXTURE10)
+    gl.bindTexture(gl.TEXTURE_2D, tCore)
+    if (this.signsMask !== mask) gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, mask.width, mask.height, 0, gl.RED, gl.UNSIGNED_BYTE, mask.core)
+    gl.activeTexture(gl.TEXTURE11)
+    gl.bindTexture(gl.TEXTURE_2D, tEnv)
+    if (this.signsMask !== mask) gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, mask.width, mask.height, 0, gl.RED, gl.UNSIGNED_BYTE, mask.env)
+    gl.activeTexture(gl.TEXTURE12)
+    gl.bindTexture(gl.TEXTURE_3D, tLut)
+    if (this.signsMask !== mask) gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, mask.lutN, mask.lutN, mask.lutN, 0, gl.RED, gl.UNSIGNED_BYTE, mask.lut)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+    this.signsMask = mask
+    gl.useProgram(this.signsProg)
+    gl.uniform1i(this.uS('uSigns'), 8)
+    gl.uniform1i(this.uS('uFrame'), 9)
+    gl.uniform1i(this.uS('uCore'), 10)
+    gl.uniform1i(this.uS('uEnv'), 11)
+    gl.uniform1i(this.uS('uLut'), 12)
+    gl.uniform2f(this.uS('uSize'), width, height)
+    gl.uniform1i(this.uS('uDebug'), debug ? 1 : 0)
+    // The sphere now and MOTION_LAG frames back
+    const motion = this.motionTex.length > 0 && this.motionCount > MOTION_LAG
+    if (this.motionTex.length) {
+      gl.activeTexture(gl.TEXTURE13)
+      gl.bindTexture(gl.TEXTURE_2D, this.motionTex[(this.motionHead - 1 + MOTION_RING) % MOTION_RING])
+      gl.activeTexture(gl.TEXTURE14)
+      gl.bindTexture(gl.TEXTURE_2D, this.motionTex[(this.motionHead - 1 - MOTION_LAG + 2 * MOTION_RING) % MOTION_RING])
+    }
+    gl.uniform1i(this.uS('uNow'), 13)
+    gl.uniform1i(this.uS('uPast'), 14)
+    gl.uniform1i(this.uS('uMotion'), motion ? 1 : 0)
+    // Outline from the segmentation model
+    gl.uniform1i(this.uS('uSeg'), seg ? 1 : 0)
+    gl.uniform1i(this.uS('uSegTex'), 15)
+    if (seg) {
+      if (!this.segTex) {
+        this.segTex = gl.createTexture()!
+        gl.bindTexture(gl.TEXTURE_2D, this.segTex)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      }
+      gl.activeTexture(gl.TEXTURE15)
+      gl.bindTexture(gl.TEXTURE_2D, this.segTex)
+      if (this.segLoaded !== seg.mask) {
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, seg.size, seg.size, 0, gl.RED, gl.UNSIGNED_BYTE, seg.mask)
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+        this.segLoaded = seg.mask
+      }
+      gl.uniformMatrix3fv(this.uS('uCrop'), false, new Float32Array(matT(seg.view)))
+      gl.uniform1f(this.uS('uCropF'), focalFor(1, seg.fov, 0))
+    }
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    gl.enable(gl.SCISSOR_TEST)
+    for (const v of views) {
+      const r = v.rect
+      const glY = height - (r.y + r.h)
+      gl.viewport(r.x, glY, r.w, r.h)
+      gl.scissor(r.x, glY, r.w, r.h)
+      gl.uniform2f(this.uS('uOut'), r.w, r.h)
+      gl.uniform2f(this.uS('uOrigin'), r.x, glY)
+      gl.uniform1f(this.uS('uFocal'), focalFor(r.w, v.fov))
+      gl.uniform1f(this.uS('uK'), wideK(v.fov))
+      gl.uniformMatrix3fv(this.uS('uView'), false, new Float32Array(matT(v.view)))
+      const above = new Float32Array(32)
+      v.above.slice(0, 8).forEach((a, k) => above.set([a.x, height - (a.y + a.h), a.w, a.h], k * 4))
+      gl.uniform4fv(this.uS('uAbove[0]'), above)
+      gl.uniform1i(this.uS('uAboveN'), Math.min(8, v.above.length))
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+    }
+    gl.disable(gl.SCISSOR_TEST)
+    gl.disable(gl.BLEND)
+    gl.viewport(0, 0, width, height)
+    gl.useProgram(this.prog)
   }
 
   /** Draws a border inside the rectangle (drawn as scissored fills, so the stacking order follows the layer order) */

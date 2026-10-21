@@ -1,13 +1,17 @@
 # Bundled models
 
-## yolox_nano.onnx
+## rtmdet_ins_tiny.onnx
 
-- Description: YOLOX-Nano (object detection over the 80 COCO classes). The app uses only car, motorcycle, bus and truck (for overtake detection)
-- Source: release 0.1.1rc0 of Megvii-BaseDetection/YOLOX
-  https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
-- License: Apache License 2.0 (Copyright (c) 2021-2022 Megvii Inc.)
-  https://github.com/Megvii-BaseDetection/YOLOX/blob/main/LICENSE
-- Modifications: none (the downloaded file is used as is)
+- Description: RTMDet-Ins tiny (instance segmentation over the 80 COCO classes). The app uses car, motorcycle, bus and truck (overtake detection)
+  and person, bicycle and motorcycle (the outline of the own bike and rider, to hide corner signs behind them)
+- Source: the COCO checkpoint of OpenMMLab mmdetection
+  https://download.openmmlab.com/mmdetection/v3.0/rtmdet/rtmdet-ins_tiny_8xb32-300e_coco/rtmdet-ins_tiny_8xb32-300e_coco_20221130_151727-ec670f7e.pth
+  https://github.com/open-mmlab/mmdetection/tree/main/configs/rtmdet
+- License: Apache License 2.0 (Copyright 2018-2023 OpenMMLab)
+  https://github.com/open-mmlab/mmdetection/blob/main/LICENSE
+- Modifications: converted to ONNX by proto/export_rtmdet_ins.py in this repository, with the network only (backbone, neck and head);
+  box decoding, non-maximum suppression and the mask head's dynamic convolution are reimplemented in the app (core/segment.ts).
+  The weights are unchanged. Distributed as an asset of this repository's GitHub release models-1
 
 ## neuflow_mixed.onnx
 

@@ -85,6 +85,8 @@ export async function exportVideo(
   session.applySeam(project.stab)
   comp.setLenses(session.rig)
   comp.body = session.body
+  comp.bikeMask = session.bikeMask
+  comp.exactSegmentation = true
   const telemetry = session.telemetry(project.logEnabled)
 
   const tmpPath = outPath.replace(/\.mp4$/i, '') + '.video-only.mp4'
@@ -118,6 +120,8 @@ export async function exportVideo(
     prof[k] += now - tp
     tp = now
   }
+  let segWaits = 0
+  let prevWaited = false
   try {
     for (let k = 0; k < n; k++) {
       if (signal.aborted) throw new DOMException(t('Cancelled'), 'AbortError')
@@ -131,7 +135,17 @@ export async function exportVideo(
       b.close()
       lap('upload')
       lap('motion')
+      // Signs near the own bike in the frame before: start this frame's outline now
+      if (prevWaited) comp.prefetchSegmentation(i, motion)
       comp.render(i, project, motion, telemetry, ex.width, ex.height)
+      // Signs near the own bike: wait for its outline in this frame and draw the frame again
+      const seg = comp.segWait(i)
+      prevWaited = !!seg
+      if (seg) {
+        segWaits++
+        await seg
+        comp.render(i, project, motion, telemetry, ex.width, ex.height)
+      }
       lap('draw')
       const vf = new VideoFrame(canvas, { timestamp: Math.round((k * 1e6) / fps), duration: Math.round(1e6 / fps) })
       enc.encode(vf, { keyFrame: k % (fps * 2) === 0 })
@@ -140,7 +154,7 @@ export async function exportVideo(
       while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 1))
       lap('wait')
       if (k === n - 1)
-        console.log('Export breakdown [ms/frame]', Object.entries(prof).map(([key, v]) => `${key} ${(v / (k + 1)).toFixed(1)}`).join('  '), ` decoders ${decs.map((d) => JSON.stringify(d.stats)).join(' ')} (${n} frames)`)
+        console.log('Export breakdown [ms/frame]', Object.entries(prof).map(([key, v]) => `${key} ${(v / (k + 1)).toFixed(1)}`).join('  '), ` decoders ${decs.map((d) => JSON.stringify(d.stats)).join(' ')} (${n} frames, ${segWaits} waited for the outline of the own bike)`)
       if (k % 10 === 0 || k === n - 1) {
         const el = (performance.now() - t0) / 1000
         const r = (k + 1) / el

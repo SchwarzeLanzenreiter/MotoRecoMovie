@@ -131,7 +131,7 @@ push(
   '2. AI models',
   `${notice.trim()}
 
-About training data: YOLOX was trained on COCO, NeuFlow v2 (mixed) on a combination of FlyingChairs, FlyingThings3D, Sintel, KITTI, HD1K and others,
+About training data: RTMDet-Ins was trained on COCO, NeuFlow v2 (mixed) on a combination of FlyingChairs, FlyingThings3D, Sintel, KITTI, HD1K and others,
 and LaMa and MI-GAN on Places2. Many of these datasets are available on condition of research or non-commercial use.
 This app is distributed free of charge and for non-commercial use.
 
@@ -144,7 +144,7 @@ https://github.com/ibaiGorordo/ONNX-NeuFlowV2-Optical-Flow
 
 ${MIT('Ibai Gorordo')}
 
---- YOLOX (Megvii), NeuFlow v2 (neufieldrobotics), LaMa (advimman; Carve/LaMa-ONNX): Apache License 2.0
+--- RTMDet-Ins (OpenMMLab mmdetection), NeuFlow v2 (neufieldrobotics), LaMa (advimman; Carve/LaMa-ONNX): Apache License 2.0
 
 ${apache.trim()}`
 )

@@ -273,3 +273,24 @@ export function findLaneCrossings(samples: LaneSample[], maxDur = 30): LaneCross
   }
   return out
 }
+
+/** Around a lone sample in the opposite lane, look again this far before and after, this often [s] */
+export const CLOSER_SPAN = 1.2
+export const CLOSER_STEP = 0.2
+
+/**
+ * Times of samples in the opposite lane with no sample in the opposite lane next to them. Keyframes are about 1 s apart, so a quick
+ * overtake (1 to 2 s in the opposite lane) shows up only once, and findLaneCrossings does not trust a lone sample. Looking again at
+ * frames in between (CLOSER_STEP) tells a real crossing from a stray observation
+ */
+export function needsCloserLook(samples: LaneSample[]): number[] {
+  const own = ownSide(samples)
+  if (!own) return []
+  const out: number[] = []
+  samples.forEach((s, i) => {
+    if (s.side !== -own) return
+    if ([samples[i - 1], samples[i + 1]].some((x) => x && x.side === -own)) return
+    out.push(s.t)
+  })
+  return out
+}

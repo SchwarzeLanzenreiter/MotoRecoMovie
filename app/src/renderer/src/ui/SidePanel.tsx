@@ -68,6 +68,13 @@ interface Props {
   onRebuildBody: () => void
   /** Progress of conditioning the audio while riding (null when it is not being done) */
   audioStatus: { busy: boolean; frac: number; msg: string } | null
+  /** Progress of finding the own bike in the video (to hide signs behind it; null when it is not being done) */
+  maskStatus: { busy: boolean; frac: number; msg: string } | null
+  /** The own bike has been found in the video (signs are hidden behind it) */
+  maskReady: boolean
+  /** For checking: show where signs are cut for the own bike in the preview */
+  showBikeMask: boolean
+  onShowBikeMask: (on: boolean) => void
   audioReady: boolean
   onLoadLog: () => void
   /** Save and load the settings file (the settings on the right, the positions of meters, etc.) */
@@ -337,6 +344,27 @@ function LayersSection(p: Props): React.JSX.Element {
             <div className="note status">{t('There is no vehicle log, so the curve radius and sign positions are estimated from the video motion (speed is unknown, so expect errors; without GPS altitude, signs beyond a crest are not hidden).')}</div>
           )}
           {selLayer.type === 'view' && selLayer.signs && <div className="note">{t('Distance along the route from the corner entry (minus = before the entry, plus = into the corner).')}</div>}
+          {selLayer.type === 'view' && selLayer.signs && (
+            <div className="row">
+              <label>
+                <input type="checkbox" checked={p.showBikeMask} onChange={(e) => p.onShowBikeMask(e.target.checked)} /> {t('Show where signs are hidden behind your bike (for checking)')}
+              </label>
+            </div>
+          )}
+          {selLayer.type === 'view' && selLayer.signs && (
+            <div className="note">
+              {t('Blue: the outline of your bike and body found by AI. Red: estimated from the still parts and colors of the video (until the AI result arrives, or if the AI cannot run). Shown in the preview only, never exported.')}
+            </div>
+          )}
+          {selLayer.type === 'view' && selLayer.signs && !p.maskReady && !p.maskStatus && (
+            <div className="note warn">{t('Press "Generate keyframes" to find your bike in the video, so that signs are hidden behind it (a few minutes, once per video).')}</div>
+          )}
+          {selLayer.type === 'view' && selLayer.signs && p.maskStatus && (
+            <div className={p.maskStatus.busy ? 'note status' : 'note warn'}>
+              {p.maskStatus.msg}
+              {p.maskStatus.busy ? ` ${Math.round(p.maskStatus.frac * 100)}%` : ''}
+            </div>
+          )}
           {selLayer.type === 'overlay' &&
             (WIDGET_PROPS[selLayer.widget] ?? []).map((d: PropDef) => {
               const cur = selLayer.props[d.key] ?? d.default

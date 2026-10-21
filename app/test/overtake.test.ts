@@ -1,9 +1,9 @@
 // Overtake effect: checks with synthetic data the sections that cross lanes, how overtakes are selected, post-processing of car detection, and shots.
 // Run: npx tsx test/overtake.test.ts
 import assert from 'node:assert/strict'
-import { findLaneCrossings, laneSide, ownSide, type LaneSample } from '../src/renderer/src/core/lanes'
-import { findOvertakes } from '../src/renderer/src/core/overtake'
-import { decodeVehicles, sightingFromBox, DET_SIZE, type VehicleSighting } from '../src/renderer/src/core/vehicles'
+import { findLaneCrossings, laneSide, needsCloserLook, ownSide, type LaneSample } from '../src/renderer/src/core/lanes'
+import { findOvertakes, vehicleAround } from '../src/renderer/src/core/overtake'
+import { sightingFromBox, DET_SIZE, type VehicleSighting } from '../src/renderer/src/core/vehicles'
 import { DEFAULT_DIRECTOR, DEFAULT_SHOT_VIEWS, generateKeyframes } from '../src/renderer/src/engine/director'
 import { viewAt } from '../src/renderer/src/engine/project'
 
@@ -51,13 +51,30 @@ const R = (t: number, side: -1 | 0 | 1, bias: number): LaneSample => ({ t, side,
   assert.equal(ownSide(s), -1)
   assert.deepEqual(findLaneCrossings(s).map((x) => [x.start, x.end]), [[19, 22]])
 }
+// A quick overtake (6:17 in VID_20261011_092151_00_002): one keyframe in the opposite lane, judged by the road extent only.
+// Alone it is not trusted; it is marked for a closer look, and the frames in between (every 0.2 s) make it a crossing
+{
+  const R = (t: number, side: -1 | 1, bias: number): LaneSample => ({ t, side, yellow: false, bias })
+  const s: LaneSample[] = []
+  for (let t = 0; t < 20; t++) s.push(R(t, 1, 0.4))
+  s.push(R(20, -1, -0.4))
+  for (let t = 21; t < 30; t++) s.push(R(t, 1, 0.4))
+  assert.deepEqual(findLaneCrossings(s), [], 'a lone sample is not trusted')
+  assert.deepEqual(needsCloserLook(s), [20])
+  for (const t of [19.4, 19.6, 19.8, 20.2, 20.4, 20.6]) s.push(R(t, -1, -0.4))
+  s.sort((a, b) => a.t - b.t)
+  assert.deepEqual(findLaneCrossings(s).map((x) => [x.start, x.end]), [[19, 21]])
+  assert.deepEqual(needsCloserLook(s), [])
+}
 
 // ---- How overtakes are selected: only sections where a car passed right beside on the overtaking side ----
 {
   const crossings = [
     { start: 29, end: 33 }, // a car passes right beside on the left (overtake)
     { start: 60, end: 63 }, // an oncoming car merely passes on the right (opposite side)
-    { start: 90, end: 93 } // only the own bike body (always appears large at the rear left)
+    { start: 90, end: 93 }, // only the own bike body (always appears large at the rear left)
+    { start: 120, end: 125 }, // a truck parked far off the road on the left (small)
+    { start: 150, end: 155 } // turning into a car park: cars parked on the left, big enough but their bottom edge above the horizon
   ]
   const v: VehicleSighting[] = [
     { t: 30, az: -16, size: 7, score: 0.8, cls: 2, low: 20 }, // front left (not yet directly beside)
@@ -65,7 +82,9 @@ const R = (t: number, side: -1 | 0 | 1, bias: number): LaneSample => ({ t, side,
     { t: 61, az: 95, size: 20, score: 0.9, cls: 2, low: 20 }, // oncoming car
     { t: 91, az: -127, size: 31, score: 0.7, cls: 2, low: 44.8 }, // only part of the own bike appearing at the rear left (sometimes classified as a passenger car; cut off at the bottom edge)
     { t: 92, az: -127, size: 31, score: 0.7, cls: 2, low: 44.3 },
-    { t: 93, az: -126, size: 29, score: 0.6, cls: 2, low: 39.4 } // the cut-off is shallow but the direction is the same (the direction of the own bike body)
+    { t: 93, az: -126, size: 29, score: 0.6, cls: 2, low: 39.4 }, // the cut-off is shallow but the direction is the same (the direction of the own bike body)
+    { t: 123, az: -103, size: 2.6, score: 0.55, cls: 7, low: -13 }, // far away: not the car being overtaken
+    { t: 153, az: -139, size: 8, score: 0.57, cls: 2, low: -2.7 }
   ]
   // Own bike body: appears large at the rear left at most of the checked times
   for (let t = 0; t < 100; t += 2) v.push({ t, az: -122, size: 50, score: 0.7, cls: 3, low: 20 })
@@ -73,26 +92,22 @@ const R = (t: number, side: -1 | 0 | 1, bias: number): LaneSample => ({ t, side,
   assert.deepEqual(o.map((x) => [x.start, x.end]), [[29, 33]])
 }
 
-// ---- Post-processing of car detection (undo the grid, remove overlaps) ----
+// ---- Which short crossings get a closer look for vehicles between the keyframes ----
 {
-  const n = (416 / 8) ** 2 + (416 / 16) ** 2 + (416 / 32) ** 2
-  assert.equal(n, 3549)
-  const out = new Float32Array(n * 85)
-  // A car (class 2) at (gx, gy) = (10, 20) of the 8-pixel grid. Center offset 0.5, width/height = exp(2)·8
-  const k = 20 * 52 + 10
-  out.set([0.5, 0.5, 2, 1.5, 0.9], k * 85)
-  out[k * 85 + 5 + 2] = 0.95
-  // An overlapping candidate of the same car right next to it (removed)
-  out.set([0.6, 0.5, 2, 1.5, 0.8], (k + 1) * 85 - 85 + 85)
-  out[(k + 1) * 85 + 5 + 2] = 0.9
-  // People (class 0) are not counted
-  out.set([0.5, 0.5, 1, 1, 0.9], (k + 5) * 85)
-  out[(k + 5) * 85 + 5] = 0.9
-  const d = decodeVehicles(out)
-  assert.equal(d.length, 1)
-  assert.ok(Math.abs(d[0].x - 84) < 1e-6 && Math.abs(d[0].y - 164) < 1e-6 && d[0].cls === 2)
+  const c = { start: 376, end: 377.4 }
+  const car = (az: number, extra: Partial<VehicleSighting> = {}): VehicleSighting[] => [{ t: 375, az, size: 20, score: 0.8, cls: 2, low: 15, ...extra }]
+  assert.ok(vehicleAround(c, car(-10), 1), 'a car ahead before a quick overtake')
+  assert.ok(vehicleAround(c, car(-159, { t: 378 }), 1), 'behind on the overtaking side after it')
+  assert.ok(!vehicleAround(c, car(95), 1), 'an oncoming car on the other side')
+  assert.ok(!vehicleAround(c, car(-10, { t: 370 }), 1), 'too long before')
+  assert.ok(!vehicleAround(c, car(-140, { cls: 3 }), 1), 'the own bike behind')
+  assert.ok(!vehicleAround(c, car(-10, { low: -2 }), 1), 'far off')
+}
+
+// ---- Direction of a found vehicle (the boxes themselves come from core/segment.ts, tested in segment.test.ts) ----
+{
   // If the box center is the image center, the direction of that image (right 90°)
-  const s = sightingFromBox({ x: DET_SIZE / 2 - 0.5, y: DET_SIZE / 2 - 0.5, w: 10, h: 20, score: 0.9, cls: 2, low: 20 }, 5, 90, 90)
+  const s = sightingFromBox({ x: DET_SIZE / 2 - 0.5, y: DET_SIZE / 2 - 0.5, w: 10, h: 20, score: 0.9, cls: 2 }, 5, 90, 90)
   assert.ok(Math.abs(s.az - 90) < 1e-6)
 }
 
