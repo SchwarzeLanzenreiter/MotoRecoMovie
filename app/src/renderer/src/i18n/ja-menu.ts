@@ -24,5 +24,10 @@ export const JA_MENU: Record<string, string> = {
   'Settings': '設定',
   'Auto-generated views…': '自動生成の視点…',
   'Help': 'ヘルプ',
-  'License information…': 'ライセンス情報…'
+  'License information…': 'ライセンス情報…',
+  'About MotoRecoMovie…': 'バージョン情報…',
+  'About MotoRecoMovie': 'バージョン情報',
+  'Version': 'バージョン',
+  'Free software under the MIT License': 'MIT ライセンスのフリーソフトウェアです',
+  'Open on GitHub': 'GitHub で開く'
 }

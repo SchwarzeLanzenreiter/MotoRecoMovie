@@ -193,7 +193,32 @@ const MENU_EN: Record<string, string> = {
   view: 'View', reload: 'Reload', devTools: 'Developer tools', resetZoom: 'Actual size', zoomIn: 'Zoom in', zoomOut: 'Zoom out', fullscreen: 'Full screen',
   window: 'Window', minimize: 'Minimize', closeWindow: 'Close window',
   settings: 'Settings', shotViews: 'Auto-generated views…',
-  help: 'Help', licenses: 'License information…'
+  help: 'Help', licenses: 'License information…', about: 'About MotoRecoMovie…',
+  aboutTitle: 'About MotoRecoMovie', version: 'Version', mit: 'Free software under the MIT License', github: 'Open on GitHub'
+}
+const REPO_URL = 'https://github.com/SchwarzeLanzenreiter/MotoRecoMovie'
+
+/** Text of the About dialog: the app's version (package.json) and the versions of the runtime it is built on */
+function aboutText(lang: MenuLang): { title: string; message: string; detail: string } {
+  const m = MENU_TEXT[lang]
+  return {
+    title: m.aboutTitle,
+    message: `MotoRecoMovie ${m.version} ${app.getVersion()}`,
+    detail: [
+      `Electron ${process.versions.electron} / Chromium ${process.versions.chrome} / Node.js ${process.versions.node}`,
+      '',
+      m.mit,
+      REPO_URL
+    ].join('\n')
+  }
+}
+
+async function showAbout(lang: MenuLang): Promise<void> {
+  const m = MENU_TEXT[lang]
+  const win = BrowserWindow.getFocusedWindow()
+  const opts = { ...aboutText(lang), type: 'info' as const, buttons: ['OK', m.github], defaultId: 0, cancelId: 0, noLink: true }
+  const r = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
+  if (r.response === 1) await shell.openExternal(REPO_URL)
 }
 const MENU_TEXT: Record<MenuLang, Record<string, string>> = {
   ja: Object.fromEntries(Object.entries(MENU_EN).map(([k, en]) => [k, JA_MENU[en] ?? en])),
@@ -253,14 +278,20 @@ function buildMenu(lang: MenuLang): void {
       label: m.help,
       submenu: [
         // License notices for software and data made by others (built by tools/notices.ts; placed next to the app in a distribution)
-        { label: m.licenses, click: () => void shell.openPath(noticesPath()) }
+        { label: m.licenses, click: () => void shell.openPath(noticesPath()) },
+        { type: 'separator' },
+        { label: m.about, click: () => void showAbout(lang) }
       ]
     }
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(tpl))
   // In automated tests, log the menu headings (the menu does not appear in screen captures)
-  if (process.env['REFRAME_AUTOTEST']) process.stdout.write(`[main] menu (${lang}): ${tpl.map((x) => `${x.label}[${(x.submenu as MenuItemConstructorOptions[]).map((y) => y.label ?? '-').join('/')}]`).join(' ')}
+  if (process.env['REFRAME_AUTOTEST']) {
+    process.stdout.write(`[main] menu (${lang}): ${tpl.map((x) => `${x.label}[${(x.submenu as MenuItemConstructorOptions[]).map((y) => y.label ?? '-').join('/')}]`).join(' ')}
 `)
+    const a = aboutText(lang)
+    process.stdout.write(`[main] about (${lang}): ${a.title} | ${a.message} | ${a.detail.replace(/\n/g, ' | ')}\n`)
+  }
 }
 let menuLang: MenuLang | null = null
 ipcMain.handle('menu:lang', (_e, lang: MenuLang) => {

@@ -246,6 +246,7 @@ The app is meant to be distributed free of charge for non-commercial use. `npm r
 - **License notices**: `tools/notices.ts` generates `build/THIRD-PARTY-NOTICES.txt`, which is placed in the same folder as the app in the package. Open it from "Help › License information…" in the menu.
   Contents: ffmpeg (version, source location, full texts of LGPL v3 and GPL v3), the AI models (`models/NOTICE.md`, notes on training data, full texts of MIT and Apache 2.0),
   MotoRecoViewer (MIT), the npm packages bundled into the app (20, excluding type-definition-only packages), Electron and Chromium (LICENSE.electron.txt and LICENSES.chromium.html in the same folder)
+- **Version**: "Help › About MotoRecoMovie…" shows the app's version (`version` in `app/package.json`), the Electron / Chromium / Node.js versions it runs on, the license and a button that opens the GitHub repository.
 - **AI models**: the code and weights are MIT and Apache 2.0, but much of the training data (Places2, KITTI, Sintel and others) is restricted to research or non-commercial use. Review this before any commercial distribution
 
 Package size: win-unpacked 842 MB, installer 418 MB (including ffmpeg 150 MB and the AI models 280 MB).
