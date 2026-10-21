@@ -179,6 +179,10 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
      Signs are drawn with the same camera orientation and the same projection as the video, so they move with the small shake left in the video and look stuck to the scenery ([telemetry.md](telemetry.md))
 6. "Auto camera" creates keyframes for the selected view layer automatically (over the export range or the whole video)
    - Without a vehicle log, the riding state estimated from the video motion is used (see "Without a vehicle log" below)
+   - A corner starts when the lean passes 15° and ends below 10°. In an S-bend the lean only passes through zero on the way to the other side, too briefly
+     to end the corner, so a corner section that leans past 15° to one side and then past 15° to the other is split where the lean crosses zero
+     (`splitAtReversals` in `core/riding.ts`). Before, both halves were one corner taken by its stronger lean: on the 0830 Shiretoko pass at 3:20 an R50 left corner
+     right before a right one had no sign, and the view already turned right while still in the left corner
    - Shots by riding state: side scenery inserted on long cruises, and wide scenery when stopped (looking down ahead when braking and zooming ahead when accelerating were removed on 2026-10-20)
    - Corner entry: normally ① turns slightly into the corner (max lean × amount). Every few long corners (default 2.5 s or longer; default every 2 corners), it inserts in turn ② show yourself (facing back, FOV 165°, horizon level, so the bike is seen leaning; the view turns round to the back through the inside of the corner, and back the same way, even right after a corner the other way, where the short way round would pass the outside: the keyframes say which way to turn, `turn` in `Keyframe`), ③ sideways, inside, and ④ sideways, outside (90°, FOV 165°, horizon level; the corner entry and the road already ridden in one frame). ②–④ can each be turned on or off
    - Default views: the four views it switches between (forward, corner entry ①, side ③④, rear ②) are changed from the menu "Settings → Auto-generated views…"

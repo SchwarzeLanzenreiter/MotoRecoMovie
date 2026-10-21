@@ -101,6 +101,37 @@ export function leanHoldTrack(lean: ArrayLike<number>): Float32Array {
   return out
 }
 
+/**
+ * Parts of the corner section [a, b) (sample indices): split where the bike leans past `enter` to one side and then past it to the other,
+ * at the sample where the lean crosses zero between them
+ */
+export function splitAtReversals(lean: ArrayLike<number>, a: number, b: number, enter: number): [number, number][] {
+  const cuts: number[] = []
+  let side = 0
+  let lastStrong = a
+  for (let i = a; i < b; i++) {
+    const l = lean[i]
+    if (!(Math.abs(l) > enter)) continue
+    const s = Math.sign(l)
+    if (side && s !== side) {
+      // Zero crossing after the last strong lean to the old side
+      let k = lastStrong
+      while (k < i && Math.sign(lean[k]) === side) k++
+      cuts.push(k)
+    }
+    side = s
+    lastStrong = i
+  }
+  const out: [number, number][] = []
+  let from = a
+  for (const c of cuts) {
+    out.push([from, c])
+    from = c
+  }
+  out.push([from, b])
+  return out
+}
+
 export function detectRiding(tel: Telemetry, p: RidingParams = DEFAULT_RIDING): RidingTrack {
   const n = tel.n
   const rate = tel.rate
@@ -191,15 +222,20 @@ export function detectRiding(tel: Telemetry, p: RidingParams = DEFAULT_RIDING): 
   }
 
   // ---- Maximum lean angle per corner ----
+  // A corner section that turns into one the other way (an S-bend: the lean only passes zero, too briefly to leave the section) is two
+  // corners, split where the lean crosses zero
   const peakLean = new Float32Array(n)
   const segments: RidingTrack['segments'] = []
   for (const r of runs()) {
-    segments.push({ state: STATES[r.s], start: r.a / rate, end: r.b / rate })
-    if (r.s !== S.corner) continue
-    let pk = 0
-    for (let i = r.a; i < r.b; i++) {
-      if (Math.abs(lean[i]) > Math.abs(pk)) pk = lean[i]
-      peakLean[i] = pk
+    const parts = r.s === S.corner ? splitAtReversals(lean, r.a, r.b, p.cornerEnter) : [[r.a, r.b]]
+    for (const [a, b] of parts) {
+      segments.push({ state: STATES[r.s], start: a / rate, end: b / rate })
+      if (r.s !== S.corner) continue
+      let pk = 0
+      for (let i = a; i < b; i++) {
+        if (Math.abs(lean[i]) > Math.abs(pk)) pk = lean[i]
+        peakLean[i] = pk
+      }
     }
   }
   return { rate, state, weights, peakLean, leanHold: leanHoldTrack(lean), segments }

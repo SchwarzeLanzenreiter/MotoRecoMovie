@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { DEFAULT_DIRECTOR, DEFAULT_SHOT_VIEWS, mergeDirector, mergeShotViews, generateKeyframes, resolveShots, makeShots, shotPreviewView, SHOT_NAMES, changeShot, choiceView, shotPair } from '../src/renderer/src/engine/director'
 import { newProject, viewAt, type ViewLayer } from '../src/renderer/src/engine/project'
 import { editView } from '../src/renderer/src/engine/edit'
-import type { RidingTrack } from '../src/renderer/src/core/riding'
+import { splitAtReversals, type RidingTrack } from '../src/renderer/src/core/riding'
 
 // ---- Synthetic data: 0-10 cruise, 10-14 decelerate, 14-20 right corner (max 30°), 20-23 accelerate, 23-60 cruise ----
 const rate = 100
@@ -188,6 +188,17 @@ assert.deepEqual([8, 20].map((t) => viewAt(g5, t).yaw), [-90, 90]) // ④ only: 
   const before = [...g].reverse().find((k) => k.t < back.t)!
   const out = viewAt(g, (before.t + back.t) / 2).yaw
   assert.ok(out > 0 && out < 180, `turns back through the right as well: ${out}`)
+}
+
+// ---- An S-bend in one corner section is two corners, split where the lean crosses zero ----
+{
+  // left to -34°, through zero at index 30, right to +36°
+  const lean = Float32Array.from({ length: 60 }, (_, i) => (i < 30 ? -34 * Math.sin((Math.PI * i) / 30) : 36 * Math.sin((Math.PI * (i - 30)) / 30)) || 0.0)
+  lean[30] = 0.5
+  assert.deepEqual(splitAtReversals(lean, 0, 60, 15), [[0, 30], [30, 60]])
+  // A wobble to the other side that never passes the corner threshold is not a new corner
+  const wob = Float32Array.from({ length: 60 }, (_, i) => (i > 28 && i < 32 ? 8 : -25))
+  assert.deepEqual(splitAtReversals(wob, 0, 60, 15), [[0, 60]])
 }
 
 // ---- Hand-placed keyframes are kept by auto generation; the view pans to them and back ----
