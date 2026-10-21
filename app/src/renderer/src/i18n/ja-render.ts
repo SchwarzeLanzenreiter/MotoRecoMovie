@@ -68,7 +68,6 @@ export const JA_RENDER: Record<string, string> = {
   'Yaw rate (vehicle)': 'ヨー角速度（車両）',
   'Longitudinal G (vehicle sensor)': '前後G（車両のセンサー）',
   'Vertical G (vehicle sensor)': '上下G（車両のセンサー）',
-  'Markers': '注目ポイント',
   'Accelerating (forward zoom)': '加速（前方ズーム）',
   'Corner 1: inside': 'コーナー①内側',
   'Corner 2: rider': 'コーナー②ライダー',

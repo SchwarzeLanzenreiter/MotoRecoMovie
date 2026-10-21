@@ -125,7 +125,11 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
      while zoomed in, drag the thumb to pan (clicking outside the thumb jumps there and you can keep dragging). If the playhead leaves the visible range, the view follows it.
      Tick spacing adapts to the visible length, from 0.1 s to 10 min
    - Keyframe (◆) colors: auto-generated keyframes are colored by shot type: forward white, corner entry green, side purple, rear pink, overtake yellow.
-     Hand-placed keyframes and markers are blue. Stops use the forward color, and side scenery while cruising uses the side color.
+   - Right-clicking a keyframe (◆) opens a menu that changes the shot it holds to another view: forward, corner entry (left / right), side (left / right), rear, or overtake (look up).
+     A generated shot is held between two keyframes with the same view (the one where the switch to it completes and the one where the switch to the next shot starts);
+     both change together, with their times kept (`shotPair` / `changeShot` in `engine/director.ts`). The views are the "Auto-generated views" of the settings menu
+     (corner entry looks inward by the strongest lean while the shot is held). The menu names the shot and its times; zoom in when keyframes are close together. Ctrl+Z undoes it
+     Hand-placed keyframes are blue. Stops use the forward color, and side scenery while cruising uses the side color.
      A legend of the types present in the layer appears at the top left of the graph. Hover over a ◆ to see its type
    - Clicking on the preview selects that layer; dragging and the wheel change that layer's view
    - Resize the selected layer with the handles on its frame, and move it with the grip at the top (or Shift+drag). It snaps to the edges, center and thirds of the frame and to the edges of other layers. Overlay layers can also be moved by dragging inside them
@@ -161,7 +165,9 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
      persons, bicycles and motorcycles found there that lie mostly inside that area are the own bike, rider and passenger (other riders and
      cars are elsewhere). The model runs beside the drawing on the GPU (WebGPU, or the CPU if there is none): playback uses the latest outline
      (up to 1 s old; it lags the picture by a few frames), export waits for each frame's, but only in frames where a sign is drawn
-     where the bike or rider can be (about 90 ms per such frame on the GPU; the model for the next frame is started before it is drawn). Only the outline itself is hidden, not a margin
+     where the bike or rider can be (about 90 ms per such frame on the GPU; the model for the next frame is started before it is drawn).
+     That is decided from the sign pixels drawn, not from the box around a sign: the box reaches from the plate down to the foot of the post and overlapped
+     the bike in the forward view while the sign was well away from it (`signsNearBike` in `render/compositor.ts`; the export log counts the frames that waited, per view). Only the outline itself is hidden, not a margin
      around it.
    - The signs are put over the video on the GPU (`drawSigns` in `render/gl-reframe.ts`), removed where the outline is. Until the first
      outline arrives (or if the model is missing), the stretch's masks decide: the sure part removes the sign; inside the area where the bike
@@ -174,7 +180,7 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
 6. "Auto camera" creates keyframes for the selected view layer automatically (over the export range or the whole video)
    - Without a vehicle log, the riding state estimated from the video motion is used (see "Without a vehicle log" below)
    - Shots by riding state: side scenery inserted on long cruises, and wide scenery when stopped (looking down ahead when braking and zooming ahead when accelerating were removed on 2026-10-20)
-   - Corner entry: normally ① turns slightly into the corner (max lean × amount). Every few long corners (default 2.5 s or longer; default every 2 corners), it inserts in turn ② show yourself (facing back, FOV 165°, horizon level, so the bike is seen leaning), ③ sideways, inside, and ④ sideways, outside (90°, FOV 165°, horizon level; the corner entry and the road already ridden in one frame). ②–④ can each be turned on or off
+   - Corner entry: normally ① turns slightly into the corner (max lean × amount). Every few long corners (default 2.5 s or longer; default every 2 corners), it inserts in turn ② show yourself (facing back, FOV 165°, horizon level, so the bike is seen leaning; the view turns round to the back through the inside of the corner, and back the same way, even right after a corner the other way, where the short way round would pass the outside: the keyframes say which way to turn, `turn` in `Keyframe`), ③ sideways, inside, and ④ sideways, outside (90°, FOV 165°, horizon level; the corner entry and the road already ridden in one frame). ②–④ can each be turned on or off
    - Default views: the four views it switches between (forward, corner entry ①, side ③④, rear ②) are changed from the menu "Settings → Auto-generated views…"
      (or "Default views (front, corner entry, side, rear)…" under "Auto camera"). They are stored as app settings on this PC and used from the next generation
      (existing keyframes do not change; they are not part of projects or settings files)
@@ -186,7 +192,23 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
        Corner entry and side are shown for a right-hand corner at 30° lean as an example (for side you can pick ③ inside / ④ outside)
      - "Reset this view" and "Reset all to app defaults" go back to the app defaults (the defaults listed above)
      - The base view used to be taken from the layer's view before generation. Now the forward default is used
-   - Markers: add one with the B key during preview, and set the direction (left, right, back, sky, or an angle) and the hold time. Markers take priority over every rule except overtakes
+7. Text added by hand (`core/annotations.ts`, drawn by `render/annotations.ts`; saved in the project, included in the export)
+   - Captions, place labels and the opening title share the look of the cyber gauges (`render/hud.ts`): translucent dark glass with scan lines, glowing lines,
+     HUD brackets on cut corners, the gauges' typeface (Bahnschrift; Japanese in Yu Gothic) and their colors (the scheme of the cyber gauges layer, BMW M colors when there is none)
+   - **Captions**: "+ Add at playhead" (T key) adds one at the current time. Set the text (Enter starts a new line) and the seconds shown.
+     All captions appear in the same place: the "Captions" overlay layer, made with the first caption and moved and sized on the screen like any overlay
+     (the text is as large as fits in it, on a glass panel centered in it; when two overlap, the one that started last is shown). Without the layer (deleted),
+     captions appear at its default place at the bottom. A caption fades in just before its time and out at its end (0.3 s), so a caption added while paused shows at once
+   - **Place labels**: a dot on a point in a view (a crossing, a building, a mountain), a leader line and its name. "+ Add, then click the place" (L key; Esc cancels),
+     then click the place in the video. The label belongs to that view and is drawn while the point is on it; type the name in the list.
+     - The point is followed in the video right after the click (`engine/tracker.ts`, `core/track.ts`): every 2 frames a small crop around the expected direction is rendered
+       level with the horizon (so it does not turn as the bike leans) and the patch seen at the previous step is searched for by normalized cross-correlation;
+       the patch is renewed a little each step so it keeps up as the point grows nearer. The crop is rendered 4× larger and averaged down (picking single pixels from the
+       video flickered from frame to frame). Following stops when the point leaves the view, when it cannot be found any more (score below 0.4), or after 120 s.
+       The directions (on the sphere around the camera) are stored in the project, so playback and export draw the same thing
+     - If the label slips off the point (it passed behind something, or its look changed quickly), pause where it slipped and press "Place again here", then click the point:
+       what was followed before that time is kept and the point is followed again from there
+     - Measured on the chase-cam clip: a car ahead was followed for the whole 6 s (match score 0.8 to 0.96); trees close to the road at the edge of the view leave the view within a second
    - Overtake (optional, off by default): while overtaking a vehicle across the center line, the view looks up (sky and scenery; default 40° up, FOV 80°, horizon level) so the road is not shown.
      It starts early by the transition time, so the switch is finished before you start crossing the line. Overtakes are found by analyzing the video
      (the stretches where you cross the lane are found from the center line and the road in the forward view, and a stretch counts as an overtake when a vehicle passes right beside you on the overtaking side during it.
@@ -197,10 +219,13 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
      The analysis takes a few minutes during the first auto generation (4–5 minutes for a 20-minute video), and the result is kept in the project. "Rescan" analyzes the video again on the next generation)
      Overtakes slower than "Min. speed to switch" (default 40 km/h; the average vehicle speed during the overtake) do not switch. 0 always switches.
      The speed comes from the vehicle log (or the estimate from the video motion when there is none); if it is unknown, it switches
-   - At each moment the shot with the highest priority (overtake > marker > braking > accelerating > corner > stopped > cruise scenery > forward) is chosen and the view pans to it over the set time. Shots shorter than the shortest shot (including brief returns to forward) are dropped
+   - At each moment the shot with the highest priority (overtake > corner > stopped > cruise scenery > forward) is chosen and the view pans to it over the set time. Shots shorter than the shortest shot (including brief returns to forward) are dropped
    - So that the line of sight does not drop toward the ground when you look sideways while leaned over, the sideways rotation is referenced to the horizon (gravity). The screen tilt is "Keep lean × cos(yaw) × lean angle" (+ facing forward, 0 sideways, − facing back; when there is a vehicle log. `test/view.test.ts` checks that 100% keep lean tilts the same way as a camera fixed to the bike, both facing forward and facing back)
-   - The result is ordinary keyframes, so you can adjust it by hand. Keyframes inside the range are replaced
-7. Turning on "Chassis disturbance" finds the moments in the vehicle log where the bike got unsettled, and automatically splits the screen to show your own bike just for those moments
+   - The result is ordinary keyframes, so you can adjust it by hand. Generated keyframes inside the range are replaced, but keyframes placed by hand (K, or a keyframe whose view was changed by hand) are kept:
+     the view pans from the generated view to them over the transition time and back after them, and hand-placed keyframes less than 3 s apart (or with the same view) form one stretch
+     (two keyframes with the same view hold that view between them). The layer's own first keyframe at 0 s is not counted. On the timeline, hand-placed keyframes are blue (`isHandPlaced` in
+     `engine/project.ts`, `keepHandPlaced` in `engine/director.ts`)
+8. Turning on "Chassis disturbance" finds the moments in the vehicle log where the bike got unsettled, and automatically splits the screen to show your own bike just for those moments
    - Inputs: slip ratio (sudden changes, and sustained offsets such as wheelspin or lock-up; above 25 km/h), the bike's 6-axis sensor (1.5–12 Hz shake in roll and yaw rate and in longitudinal, lateral and vertical G), and front and rear suspension stroke speed (kicks, extension, bottoming out). Only while riding above 15 km/h
    - Each is divided by "the top 0.5% magnitude in that ride" (with a floor, so quiet rides do not trigger too often), and the largest becomes the disturbance strength. Scenes above the threshold (default 1.5×) become events (`core/disturb.ts`)
    - For each event plus margins (defaults 1 s before and 2.5 s after, at least 4 s), the full-screen main view shrinks to half and the "Own bike (disturbance)" pane slides into the free half over 0.4 s. Split: left/right (ahead on the left or right) or top/bottom
@@ -208,13 +233,21 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
    - The own-bike pane shows "Disturbance" and the strongest indicator (e.g. yaw rate) at the top left (can be turned off)
    - The list lets you choose for each event whether to split the screen, and jump to its time. The split ranges are shown as red bars on the timeline
    - In this sample, a threshold of 1.5× gives 9 events and 8 split-screen intervals (36 s in total out of 25 min). The strongest is at 21:28: yaw shake right after the front suspension topped out (20 mm)
-8. Settings files ("Save settings…" / "Load settings…" at the top of the right panel, `*.motorecomovie-settings.json`; `*.reframe-settings.json` from the old name can also be read): the right-panel settings and the position and size of gauges and other items on screen go into one file that you can reuse with other videos (`engine/settings-file.ts`)
+9. Settings files ("Save settings…" / "Load settings…" at the top of the right panel, `*.motorecomovie-settings.json`; `*.reframe-settings.json` from the old name can also be read): the right-panel settings and the position and size of gauges and other items on screen go into one file that you can reuse with other videos (`engine/settings-file.ts`)
    - Included: stabilization, seam blend width and similar settings; all layers (draw order, position, size, visibility, name, border, signs, own-bike pane role, overlay type and settings);
      the direction of view layers (those with a single keyframe); Auto camera; Chassis disturbance; export size, codec, bitrate and the language of text in the video
-   - Not included (per video): the motion of views with two or more keyframes, markers, overtake results, lens seam alignment estimates, export range, per-event "don't split" for disturbances, the vehicle log
+   - Not included (per video): the motion of views with two or more keyframes, captions, place labels, the opening title, overtake results, lens seam alignment estimates, export range, per-event "don't split" for disturbances, the vehicle log
    - On load, the layers are replaced by the ones in the file. Each view layer takes over the matching layer in the target (the own-bike pane by its role, others by name; default names count as the same whether they were created in Japanese or English;
      if nothing matches, in order from the top), and layers whose direction moves (such as Main) keep their keyframes. Ctrl+Z undoes it
-9. Choose the export range (I / O keys), size and codec, then click "Export…". Export uses the same compositing as the preview, so you get exactly what you see
+10. Choose the export range (I / O keys), size and codec, then click "Export…". Export uses the same compositing as the preview, so you get exactly what you see
+   - **Opening title**: a title and a subtitle (at 1/3 its size) in the middle of the frame from the start of the export range, for the seconds set (default 5), in the look of the
+     cyber gauges: a glass band with scan lines, glowing lines that draw out from the title to the sides as it comes in (0.9 s), and out over 0.8 s. Like the cyber gauges it is grey while the engine is stopped and comes back to color as it starts (vehicle log rpm). Shown in the preview at those times too.
+     Kept per video (not in settings files)
+   - The sound is added with ffmpeg after the picture is encoded, without `+faststart` (moving the index to the front rewrote the whole file once more:
+     a 13.9 GB 4K export on a hard disk spent about 24 minutes in "Mixing audio"). Players and video sites read the file either way
+   - **Fade out at the end**: over the last seconds of the export range (default 2, 0 = off) the picture fades to black (drawn by the compositor, so the preview shows it too)
+     and the sound fades out (ffmpeg `afade` when the audio is muxed). On the test clip the picture went from a mean gray of 84 to 7 in the last frame and the last second of sound
+     averaged −24 dB against −14 dB before
    - The encoder is the first one that works, trying HEVC then H.264, in three tiers (`pickEncoder` in `engine/exporter.ts`; the one used is printed to the console):
      ① hardware at the video's frame rate, ② hardware told the frame rate is 30 fps, ③ software (slow)
    - ②: Windows hardware encoders (WebCodecs → Media Foundation) are only registered up to 30 fps above 1920×1080 (confirmed on an RTX 3070).
@@ -234,9 +267,10 @@ Edits are saved automatically to `<video name>.insv.motorecomovie.json` in the s
 | ← / → | Step one frame (one second with Shift) |
 | ↑ / ↓ | Next / previous keyframe |
 | K / Delete | Add / delete keyframe |
+| T | Add a caption at the current position |
+| L | Add a place label (then click the place in the video; Esc cancels) |
 | I / O | Set export start / end to the current position |
 | Home / End | Go to start / end |
-| B | Add a marker |
 | G | Show / hide the layout guides (crosshair and diagonals) together |
 | Ctrl+Z / Ctrl+Y | Undo / redo (continuous changes within 0.5 s, such as a drag, count as one step) |
 
@@ -342,6 +376,8 @@ app/src/
       vehicles.ts   vehicles seen around the bike and their direction as seen from it
       segment.ts    instance segmentation post-processing (RTMDet-Ins tiny: boxes, NMS, masks)
       overtake.ts   lane-crossing stretches where a vehicle passes right beside you on the overtaking side = overtakes
+      annotations.ts  captions and place labels added by hand (timing, the followed directions of a label)
+      track.ts      following a point in the 360° video (level crop camera, patch matching)
       seamfit.ts    lens seam alignment (estimates lens 1's edge angle and rotation in the overlap band)
       bodymap.ts    body seam template (median of band images, parts that do not change over time, cut, storage format)
       bikemask.ts   where the own bike and rider are on the sphere around the camera (to hide signs behind them)
@@ -354,10 +390,12 @@ app/src/
                the model is public/models/rtmdet_ins_tiny.onnx, made by proto/export_rtmdet_ins.py),
                analysis Web Worker (analysis.worker.ts: log loading, sync, fusion, telemetry)
                bikemask.ts (builds the own-bike masks from keyframes, cache; statistics in bikemask.worker.ts)
+               tracker.ts (follows the point of a place label through the video)
     render/    WebGL2 shaders (stitching, RS correction, blending), compositor.ts (compositing view layers + overlays;
                shared by preview and export), overlay.ts (overlay widgets),
                meters.ts (shared types and colors for overlays; the individual gauges and the gauge cluster were removed on 2026-10-20), chrono.ts (chronograph gauges), cyber.ts (cyber gauges),
-               gps.ts (map, elevation, compass tape), signs.ts (floating corner signs), projection.ts (output projection: perspective → stereographic)
+               gps.ts (map, elevation, compass tape), signs.ts (floating corner signs), projection.ts (output projection: perspective → stereographic),
+               annotations.ts (captions and place labels), hud.ts (the cyber-gauge look for captions, labels and the opening title)
     ui/        React UI
   test/        core.test.ts (checked against the Python version on real data), project.test.ts
 ```
@@ -381,6 +419,7 @@ npx tsx test/seamfit.test.ts <.insv>          # reads frames with ffmpeg
 npx tsx test/seamdepth.test.ts
 npx tsx test/sightline.test.ts
 npx tsx test/overtake.test.ts
+npx tsx test/annotations.test.ts                          # captions and place labels: timing, patch matching, clicks to directions
 npx tsx test/cyber.test.ts [<.insv> <MotoReco .csv>]
 npx tsx test/settings.test.ts
 npx tsx test/mount.test.ts
@@ -437,4 +476,5 @@ In `render` mode, `gyroShiftMs` shifts the correction from frame time to gyro ti
 
 ## Removed features
 
+- Markers (B key: a direction and a hold time that auto camera showed at a time, taking priority over every rule except overtakes) were removed on 2026-10-21: they limited the view to a few directions, and a keyframe placed by hand shows any view. Markers left in old projects are dropped when the project is opened
 - Route commentary (captions gathered from Wikipedia and geological maps) was removed because it will be added by a separate tool (2026-10-19). Commentary and "route commentary (captions)" layers left in old projects are discarded when the project is opened

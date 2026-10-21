@@ -1,24 +1,15 @@
-// Auto camera: decide "shots" from the riding state and markers, and output them as editable keyframes.
+// Auto camera: decide "shots" from the riding state (and overtakes), and output them as editable keyframes.
 //
-//   1. From the riding-state sections and markers, build shots (time range and view)
+//   1. From the riding-state sections and overtakes, build shots (time range and view)
 //   2. At each time pick the shot with the highest priority and make a sequence with cut points (drop shots that are too short)
 //   3. At each cut point place two keyframes: "switch start (previous view)" and "switch complete (new view)"
 //      (keyframes are interpolated with ease-in-out, so the switch becomes a smooth pan)
 import type { RidingTrack, RidingState } from '../core/riding'
 // project.ts and this module import each other, so do not use project.ts values during module initialization
 // (viewAt is used only inside functions)
-import { viewAt, type Keyframe } from './project'
+import { isHandPlaced, viewAt, type Keyframe } from './project'
 
 type View = Omit<Keyframe, 't'>
-
-export interface Marker {
-  id: string
-  t: number // video time [s]
-  yaw: number // body coordinates [deg]
-  pitch: number
-  fov: number
-  hold: number // how long to show [s]
-}
 
 /**
  * Default views to switch to in auto-generation (an app setting. Remembered on this computer and changed from "Auto-generated views" in the settings menu).
@@ -142,13 +133,12 @@ export function mergeDirector(saved: Partial<DirectorSettings> | undefined): Dir
 }
 
 /** Shot kinds and priorities (larger = higher priority) */
-export const SHOT_PRIORITY = { overtake: 7, marker: 6, cornerRider: 3, cornerSide: 3, cornerSideOut: 3, corner: 3, stop: 2, cruise: 1, base: 0 } as const
+export const SHOT_PRIORITY = { overtake: 7, cornerRider: 3, cornerSide: 3, cornerSideOut: 3, corner: 3, stop: 2, cruise: 1, base: 0 } as const
 export type ShotKind = keyof typeof SHOT_PRIORITY
 
-/** Shot kind → keyframe tag (front, corner entry, side, rear, overtake. Markers are treated the same as hand-placed ones) */
+/** Shot kind → keyframe tag (front, corner entry, side, rear, overtake) */
 export const SHOT_TAG: Record<ShotKind, Keyframe['tag']> = {
   overtake: 'overtake',
-  marker: undefined,
   stop: 'front',
   base: 'front',
   corner: 'corner',
@@ -160,7 +150,6 @@ export const SHOT_TAG: Record<ShotKind, Keyframe['tag']> = {
 
 export const SHOT_NAMES: Record<ShotKind, string> = {
   overtake: 'Overtake', // i18n-ignore
-  marker: 'Markers', // i18n-ignore
   corner: 'Corner 1: inside', // i18n-ignore
   cornerRider: 'Corner 2: rider', // i18n-ignore
   cornerSide: 'Corner 3: side (inside)', // i18n-ignore
@@ -177,6 +166,8 @@ export interface Shot {
   view: View
   /** View that changes with time (follows a landmark). If present, view is the view at the start */
   track?: (t: number) => View
+  /** Way to turn to this shot (Keyframe.turn); the way back from it is the other way */
+  turn?: 1 | -1
 }
 
 /** Lean angle at time t (uses the corner's maximum lean angle) */
@@ -196,10 +187,9 @@ export interface OvertakeSpan {
   speed?: number
 }
 
-/** Builds the list of shots from riding states and markers (and overtake sections) */
+/** Builds the list of shots from riding states (and overtake sections) */
 export function makeShots(
   r: RidingTrack | null,
-  markers: Marker[],
   s: DirectorSettings,
   t0: number,
   t1: number,
@@ -238,8 +228,10 @@ export function makeShots(
         const kind = specials[specialCount++ % specials.length]
         const end = Math.min(x.end, x.start + sp.maxDur)
         if (kind === 'cornerRider') {
-          // Show the rider (rear. Default is facing back, wide angle, fixed horizon; the screen stays level and the bike looks tilted)
-          shots.push({ kind, start: x.start, end, view: { ...v.rear } })
+          // Show the rider (rear. Default is facing back, wide angle, fixed horizon; the screen stays level and the bike looks tilted).
+          // It turns round through the inside of the corner and back the same way, whatever the view was before (after a corner the other way,
+          // the short way round would pass the outside): the keyframes say which way to turn (Keyframe.turn)
+          shots.push({ kind, start: x.start, end, view: { ...v.rear, yaw: dir * Math.abs(v.rear.yaw) }, turn: dir > 0 ? 1 : -1 })
         } else {
           // Directly beside (side. ③ inside / ④ outside), wide angle: fit the corner entrance and the exit on one screen.
           // When looking sideways the lean kept on screen naturally becomes 0 (motion-model.ts), but by default the horizon is fixed so it does not tilt during the switch
@@ -272,10 +264,6 @@ export function makeShots(
       }
     }
   }
-  for (const m of markers) {
-    if (m.t + m.hold < t0 || m.t > t1) continue
-    shots.push({ kind: 'marker', start: m.t, end: m.t + m.hold, view: { yaw: m.yaw, pitch: m.pitch, fov: m.fov, leanRatio: B.leanRatio } })
-  }
   return shots
 }
 
@@ -296,12 +284,12 @@ export function resolveShots(shots: Shot[], s: DirectorSettings, t0: number, t1:
     if (last && last.shot === pick[i]) last.end = t0 + (i + 1) * dt
     else runs.push({ start: t0 + i * dt, end: t0 + (i + 1) * dt, shot: pick[i] })
   }
-  // Drop shots that are too short (keep markers). Merge consecutive shots with the same view
+  // Drop shots that are too short. Merge consecutive shots with the same view
   for (let pass = 0; pass < 3; pass++) {
     const out: typeof runs = []
     for (const r of runs) {
       // A brief return to the front (e.g. a special shot followed by 0.3 s of front, then the next shot) is also flicker, so front is included
-      const short = r.end - r.start < s.minShot && r.shot.kind !== 'marker'
+      const short = r.end - r.start < s.minShot
       const prev = out[out.length - 1]
       if (short && prev) prev.end = r.end
       else if (prev && !prev.shot.track && !r.shot.track && sameView(prev.shot.view, r.shot.view)) prev.end = r.end
@@ -317,25 +305,30 @@ function sameView(a: View, b: View): boolean {
   return Math.abs(a.yaw - b.yaw) < 0.5 && Math.abs(a.pitch - b.pitch) < 0.5 && Math.abs(a.fov - b.fov) < 0.5 && Math.abs(a.leanRatio - b.leanRatio) < 0.01
 }
 
+/** Hand-placed keyframes closer together than this [s] (or with the same view) are one hand-placed stretch */
+export const HAND_JOIN = 3
+
 /**
  * Generates keyframes and replaces the [t0, t1] part of the existing keyframes.
  * Keyframes outside the range are kept, and both ends of the range connect to the original view.
+ * Hand-placed keyframes inside the range (isHandPlaced) are kept too: the generated view pans to them over the transition time and back
+ * after them, and hand-placed keyframes close together (HAND_JOIN, or with the same view) are joined into one stretch. The layer's own first
+ * keyframe at the start of the video is not counted as hand-placed
  */
 export function generateKeyframes(
   existing: Keyframe[],
   r: RidingTrack | null,
-  markers: Marker[],
   s: DirectorSettings,
   t0: number,
   t1: number,
   overtakes: OvertakeSpan[] = [],
   views: ShotViews = DEFAULT_SHOT_VIEWS
 ): { keyframes: Keyframe[]; shots: { start: number; shot: Shot }[] } {
-  const runs = resolveShots(makeShots(r, markers, s, t0, t1, overtakes, views), s, t0, t1, views)
+  const runs = resolveShots(makeShots(r, s, t0, t1, overtakes, views), s, t0, t1, views)
   const keys: Keyframe[] = []
-  const add = (t: number, v: View, linear = false, tag?: Keyframe['tag']): void => {
+  const add = (t: number, v: View, linear = false, tag?: Keyframe['tag'], turn?: 1 | -1): void => {
     if (t < t0 - 1e-6 || t > t1 + 1e-6) return
-    const k: Keyframe = { t, ...v, ...(linear && { linear: true }), ...(tag && { tag }) }
+    const k: Keyframe = { t, ...v, ...(linear && { linear: true }), ...(tag && { tag }), ...(turn && { turn }) }
     // For keyframes at the same time, the later one overwrites
     const i = keys.findIndex((x) => Math.abs(x.t - t) < 0.01)
     if (i >= 0) keys[i] = k
@@ -356,16 +349,105 @@ export function generateKeyframes(
     if (cur.shot.track) {
       // Follow a landmark: connect keyframes every 0.4 s at constant speed
       for (let t = cur.start + T; t < end - 0.2; t += 0.4) add(t, cur.shot.track(t), true)
-    } else add(cur.start + T, cur.shot.view, false, tagOf(cur)) // switch complete
+    } else {
+      // Switch complete. Turning to a shot that says which way (the rear), or back from one (the other way)
+      const prevTurn = prev.shot.turn ? (prev.shot.turn > 0 ? -1 : 1) : undefined
+      add(cur.start + T, cur.shot.view, false, tagOf(cur), cur.shot.turn ?? prevTurn)
+    }
   }
   add(t1, viewOf(runs[runs.length - 1], t1), false, tagOf(runs[runs.length - 1]))
+  keepHandPlaced(keys, existing, s.transition, t0, t1)
   // Keep existing keyframes outside the range. The outer boundary of the range connects from the existing view to the generated view
   const outside = existing.filter((k) => k.t < t0 - 0.01 || k.t > t1 + 0.01)
   const before = existing.length ? viewAt(existing, t0) : null
   const merged = [...outside, ...keys].sort((a, b) => a.t - b.t)
   if (before && outside.some((k) => k.t < t0)) {
     // Right before the range keep the original view, then go to the generated view at the start of the range
-    merged.splice(merged.findIndex((k) => k.t >= t0 - 0.01), 0, { t: Math.max(0, t0 - 0.02), ...before })
+    merged.splice(merged.findIndex((k) => k.t >= t0 - 0.01), 0, { t: Math.max(0, t0 - 0.02), ...before, joint: true })
   }
   return { keyframes: merged, shots: runs }
 }
+
+/**
+ * Puts the hand-placed keyframes of `existing` inside [t0, t1] into the generated keys (in place): generated keys within T of a hand-placed
+ * stretch are dropped, and keys with the generated view are put at T before and after it, so the view pans to the hand-placed one and back
+ */
+function keepHandPlaced(keys: Keyframe[], existing: Keyframe[], T: number, t0: number, t1: number): void {
+  const hand = existing.filter((k) => isHandPlaced(k) && k.t >= t0 - 0.01 && k.t <= t1 + 0.01 && k.t > 0.01).sort((a, b) => a.t - b.t)
+  if (!hand.length) return
+  const gen = [...keys].sort((a, b) => a.t - b.t)
+  // Stretches of hand-placed keyframes, widened by the transition, overlapping ones merged
+  const spans: [number, number][] = []
+  hand.forEach((k, i) => {
+    const prev = hand[i - 1]
+    const last = spans[spans.length - 1]
+    if (prev && last && (k.t - prev.t <= HAND_JOIN || sameView(k, prev))) last[1] = k.t + T
+    else if (last && k.t - T <= last[1]) last[1] = k.t + T
+    else spans.push([k.t - T, k.t + T])
+  })
+  const tagAt = (t: number): Keyframe['tag'] => [...gen].reverse().find((k) => k.t <= t + 1e-6)?.tag ?? gen[0]?.tag
+  const out = gen.filter((k) => !spans.some(([a, b]) => k.t > a - 0.01 && k.t < b + 0.01))
+  for (const [a, b] of spans) {
+    if (a > t0 + 0.01) out.push({ t: a, ...viewAt(gen, a), ...(tagAt(a) && { tag: tagAt(a) }) })
+    if (b < t1 - 0.01) out.push({ t: b, ...viewAt(gen, b), ...(tagAt(b) && { tag: tagAt(b) }) })
+  }
+  out.push(...hand.map((k) => ({ ...k })))
+  keys.splice(0, keys.length, ...out.sort((x, y) => x.t - y.t))
+}
+
+// ---- Changing a generated shot to another view (right click on its keyframe in the timeline) ----
+
+/** Views a shot can be changed to */
+export type ShotChoice = 'front' | 'cornerLeft' | 'cornerRight' | 'sideLeft' | 'sideRight' | 'rear' | 'overtake'
+export const SHOT_CHOICES: ShotChoice[] = ['front', 'cornerLeft', 'cornerRight', 'sideLeft', 'sideRight', 'rear', 'overtake']
+export const SHOT_CHOICE_NAMES: Record<ShotChoice, string> = {
+  front: 'Forward', // i18n-ignore
+  cornerLeft: 'Corner entry (left)', // i18n-ignore
+  cornerRight: 'Corner entry (right)', // i18n-ignore
+  sideLeft: 'Side (left)', // i18n-ignore
+  sideRight: 'Side (right)', // i18n-ignore
+  rear: 'Rear', // i18n-ignore
+  overtake: 'Overtake (look up)' // i18n-ignore
+}
+
+/**
+ * View and tag of a choice, from the auto-generated views and the auto camera settings. lean: how far the bike leans there [deg] (for corner
+ * entry, which looks inward by the lean)
+ */
+export function choiceView(c: ShotChoice, views: ShotViews, s: DirectorSettings, lean = 30): { view: View; tag: NonNullable<Keyframe['tag']> } {
+  const L = Math.max(1, Math.abs(lean))
+  switch (c) {
+    case 'front':
+      return { view: { ...views.front }, tag: 'front' }
+    case 'cornerLeft':
+    case 'cornerRight':
+      return { view: cornerView(views, c === 'cornerLeft' ? -L : L), tag: 'corner' }
+    case 'sideLeft':
+    case 'sideRight':
+      return { view: { ...views.side, yaw: (c === 'sideLeft' ? -1 : 1) * Math.abs(views.side.yaw) }, tag: 'side' }
+    case 'rear':
+      return { view: { ...views.rear }, tag: 'rear' }
+    case 'overtake':
+      return { view: { yaw: views.front.yaw + s.overtake.yaw, pitch: s.overtake.pitch, fov: s.overtake.fov, leanRatio: 0 }, tag: 'overtake' }
+  }
+}
+
+/**
+ * Indices of the keyframe at time t and of the one holding the same shot with it. A generated shot is held between two keyframes with the
+ * same view: the one where the switch to it completes and the one where the switch to the next shot starts
+ */
+export function shotPair(keys: Keyframe[], t: number, tol = 0.01): number[] {
+  const i = keys.findIndex((k) => Math.abs(k.t - t) <= tol)
+  if (i < 0) return []
+  const same = (j: number): boolean => j >= 0 && j < keys.length && keys[j].tag === keys[i].tag && sameView(keys[j], keys[i])
+  if (same(i + 1)) return [i, i + 1]
+  if (same(i - 1)) return [i - 1, i]
+  return [i]
+}
+
+/** Sets the shot held at the keyframe at time t (it and its pair, shotPair) to another view */
+export function changeShot(keys: Keyframe[], t: number, view: View, tag: Keyframe['tag']): Keyframe[] {
+  const idx = shotPair(keys, t)
+  return keys.map((k, j) => (idx.includes(j) ? { t: k.t, ...view, ...(k.linear && { linear: true }), ...(tag && { tag }) } : k))
+}
+

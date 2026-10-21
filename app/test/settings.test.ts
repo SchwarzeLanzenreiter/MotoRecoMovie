@@ -18,15 +18,15 @@ const riderA = { ...newViewLayer('Own bike (disturbance)', { x: 0.5, y: 0, w: 0.
 const meterA: OverlayLayer = { id: 'm1', type: 'overlay', name: 'Cyber-style meter', rect: { x: 0.7, y: 0.6, w: 0.25, h: 0.4 }, visible: true, widget: 'cyber', props: { theme: 'neon' } }
 a.layers = [mainA, rearA, riderA, meterA]
 a.stab = { ...a.stab, sigma: [1, 0.5, 0.3], seam: { rot: [0.1, 0, 0], edge: 1.9 }, seamBlend: 14 }
-a.export = { ...a.export, width: 3840, height: 2160, bitrateMbps: 60, inSec: 5, outSec: 50, textLang: 'en' }
+a.export = { ...a.export, width: 3840, height: 2160, bitrateMbps: 60, inSec: 5, outSec: 50, textLang: 'en', title: { text: 'Pass', sub: 'Day 1', dur: 5 }, fadeOutSec: 3 }
 a.director = { ...a.director, transition: 1.2, overtake: { ...a.director.overtake, on: true } }
 a.incident = { ...a.incident, on: true, threshold: 2, skip: [12.3] }
-a.markers = [{ id: 'k', t: 3, yaw: 90, pitch: 0, fov: 100, hold: 2 }]
+a.captions = [{ id: 'k', t: 3, dur: 2, text: 'x' }]
 
 const file = settingsFromProject(a)
 // File contents: per-video items are not included
 const text = JSON.stringify(file)
-assert.ok(!text.includes('"seam":{') && !text.includes('"skip"') && !text.includes('"inSec"') && !text.includes('"markers"') && !text.includes('keyframes'))
+assert.ok(!text.includes('"seam":{') && !text.includes('"skip"') && !text.includes('"inSec"') && !text.includes('"captions"') && !text.includes('"title"') && text.includes('"fadeOutSec":3') && !text.includes('keyframes'))
 assert.equal(file.layers.length, 4)
 
 // ---- Loading side: another video. The main layer has 3 keyframes, the meter is at a different position, and the seam estimate, export range and disturbance selection differ ----
@@ -43,7 +43,7 @@ b.layers = [mainB, meterB]
 b.stab = { ...b.stab, seam: { rot: [0.2, 0.1, 0], edge: 1.7 } }
 b.export = { ...b.export, inSec: 100, outSec: 200 }
 b.incident = { ...b.incident, skip: [77.7] }
-b.markers = [{ id: 'z', t: 9, yaw: -90, pitch: 0, fov: 100, hold: 2 }]
+b.captions = [{ id: 'z', t: 9, dur: 2, text: 'y' }]
 
 const sameName = (x: string, y: string): boolean => x === y || ([mainA.name, 'Main'].includes(x) && [mainA.name, 'Main'].includes(y))
 const c = applySettings(b, parseSettings(JSON.stringify(file)), sameName)
@@ -80,7 +80,7 @@ assert.equal(c.director.transition, 1.2)
 assert.equal(c.director.overtake.on, true)
 assert.equal(c.incident.threshold, 2)
 assert.deepEqual(c.incident.skip, [77.7])
-assert.deepEqual(c.markers, b.markers)
+assert.deepEqual(c.captions, b.captions)
 
 // A settings file without view layers keeps the current view layers
 {

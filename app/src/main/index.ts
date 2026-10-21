@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type MenuItemConstructorOptions } from 'electron'
 import { dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { constants, setPriority, tmpdir } from 'node:os'
 import { JA_MENU } from '../renderer/src/i18n/ja-menu'
 
@@ -10,6 +10,13 @@ import { JA_MENU } from '../renderer/src/i18n/ja-menu'
 if (process.env['REFRAME_AUTOTEST']) {
   process.stdout.write(`[main] user data (normal): ${app.getPath('userData')}\n`)
   app.setPath('userData', mkdtempSync(join(tmpdir(), 'reframe-test-')))
+  // REFRAME_TEST_MASKS: a cache folder whose own-bike masks are copied in (they take minutes to build; the originals are not touched)
+  const masks = process.env['REFRAME_TEST_MASKS']
+  if (masks && existsSync(masks)) {
+    const dst = join(app.getPath('userData'), 'cache')
+    mkdirSync(dst, { recursive: true })
+    for (const f of readdirSync(masks)) if (/^bikemask-.*\.bin$/.test(f)) cpSync(join(masks, f), join(dst, f))
+  }
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
   app.commandLine.appendSwitch('disable-renderer-backgrounding')
 } else {

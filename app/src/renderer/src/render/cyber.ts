@@ -11,7 +11,7 @@ import { airTempColor, M_COLORS } from './chrono'
 import { POP_TIME, ROLL_TIME, type Roll } from './overlay'
 import type { Ctx, Values } from './meters'
 
-const MONO = "Bahnschrift, 'Cascadia Mono', Consolas, monospace"
+export const MONO = "Bahnschrift, 'Cascadia Mono', Consolas, monospace"
 
 export type CyberTheme = 'bmw' | 'neon'
 
@@ -25,7 +25,7 @@ export interface CyberOpts {
 
 export const DEFAULT_CYBER: CyberOpts = { rpmMax: 9000, rpmRed: 8000, brakeMax: 20, leanMax: 60, theme: 'bmw' }
 
-interface Pal {
+export interface CyberPal {
   line: string // main line color
   line2: string // secondary color (high-RPM side)
   hot: string // red zone, brake, MAX
@@ -39,7 +39,7 @@ interface Pal {
   stripes: string[] | null
 }
 
-const PALS: Record<CyberTheme, Pal> = {
+export const CYBER_PALS: Record<CyberTheme, CyberPal> = {
   bmw: {
     line: M_COLORS.light,
     line2: M_COLORS.dark,
@@ -98,13 +98,13 @@ function toGrey(c: string, k: number): string {
 }
 
 /** The color scheme moved toward gray by k */
-function greyPal(P: Pal, k: number): Pal {
+export function greyPal(P: CyberPal, k: number): CyberPal {
   const out = { ...P } as Record<string, unknown>
   for (const [key, v] of Object.entries(P)) {
     if (typeof v === 'string') out[key] = toGrey(v, k)
     else if (Array.isArray(v)) out[key] = v.map((c: string) => toGrey(c, k))
   }
-  return out as unknown as Pal
+  return out as unknown as CyberPal
 }
 
 /**
@@ -124,7 +124,7 @@ export function drawCyber(
    */
   rolls: { gear: Roll | null; air: Roll | null; airShown: number | null } | null = null
 ): void {
-  const base = PALS[o.theme] ?? PALS.bmw
+  const base = CYBER_PALS[o.theme] ?? CYBER_PALS.bmw
   const P = power >= 1 ? base : greyPal(base, 1 - clamp(power, 0, 1))
   const R = Math.min(rect.w, rect.h) / 2
   const cx = rect.x + rect.w / 2

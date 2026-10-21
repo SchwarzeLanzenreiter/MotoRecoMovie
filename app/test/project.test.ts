@@ -91,13 +91,13 @@ assert.equal('keyframes' in m, false)
   const p = newProject('a.insv')
   const v = p.layers[0] as ViewLayer
   v.keyframes = [{ t: 0, yaw: 0, pitch: 0, fov: 110, leanRatio: 1 }, { t: 10, yaw: 30, pitch: 0, fov: 110, leanRatio: 1 }]
-  p.markers = [{ t: 5 } as never]
+  p.captions = [{ id: 'c', t: 5, dur: 2, text: 'x' }]
   p.export = { ...p.export, inSec: 2, outSec: -1 }
   p.overtakes = [{ start: 20, end: 25 }]
   p.incident = { ...p.incident, skip: [30] }
   const q = shiftProjectTimes(p, 0.7675)
   assert.deepEqual((q.layers[0] as ViewLayer).keyframes.map((k) => k.t), [0, 10.7675], 'the first keyframe (0 s) stays at the start of the video')
-  assert.equal(q.markers[0].t, 5.7675)
+  assert.equal(q.captions[0].t, 5.7675)
   assert.equal(q.export.inSec, 2.7675)
   assert.equal(q.export.outSec, -1, 'to the end (−1) is kept as is')
   assert.deepEqual(q.overtakes, [{ start: 20.7675, end: 25.7675 }])

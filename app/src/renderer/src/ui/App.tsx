@@ -7,6 +7,8 @@ import { buildFxAudio, fxAudioKey } from '../engine/audiofx'
 import { buildBikeMasks, loadBikeMasks, saveBikeMasks } from '../engine/bikemask'
 import { initSegmenter } from '../engine/segmenter'
 import { OVERTAKE_SCAN_VERSION } from '../core/overtake'
+import { CAPTION_DUR, labelEnd, trackBefore, type Caption, type PlaceLabel } from '../core/annotations'
+import { followPoint, TRACK_STEP } from '../engine/tracker'
 import { applySettings, parseSettings, settingsFromProject, SETTINGS_EXT } from '../engine/settings-file'
 import { loadLogPrefs, saveLogPrefs, type LogPrefs } from '../engine/logprefs'
 import { findLayer, migrateProject, shiftProjectTimes, newProject, viewAt, viewLayers, type Keyframe, type Layer, type Project, type Rect, type ViewLayer, type WidgetKind } from '../engine/project'
@@ -16,7 +18,8 @@ import { addKey, addOverlayLayer, addViewLayer, editView, keyIndex, keyTolerance
 import { exportVideo, type ExportProgress } from '../engine/exporter'
 import { applyTemplate } from '../engine/layout'
 import { newViewLayer } from '../engine/project'
-import { generateKeyframes, shotPreviewView, type DirectorSettings, type Marker, type ShotViewKind, type ShotViews } from '../engine/director'
+import { changeShot, choiceView, generateKeyframes, shotPair, shotPreviewView, type DirectorSettings, type ShotChoice, type ShotViewKind, type ShotViews } from '../engine/director'
+import { sampleChannel } from '../core/telemetry'
 import { loadShotViews, saveShotViews } from '../engine/shotprefs'
 import { ShotViewsDialog } from './ShotViewsDialog'
 import { incidentEvents, RIDER_VIEW, type IncidentSettings } from '../engine/incident'
@@ -516,14 +519,115 @@ export function App(): React.JSX.Element {
     })
   }
 
-  // ---- Markers and auto camera ----
-  const addMarker = (): void => {
-    const now = currentTime()
-    apply((p) => ({ ...p, markers: [...p.markers, { id: newId(), t: now, yaw: 90, pitch: 0, fov: 90, hold: 4 }] }))
-  }
-  const updateMarker = (id: string, patch: Partial<Marker>): void => apply((p) => ({ ...p, markers: p.markers.map((m) => (m.id === id ? { ...m, ...patch } : m)) }))
-  const removeMarker = (id: string): void => apply((p) => ({ ...p, markers: p.markers.filter((m) => m.id !== id) }))
+  // ---- Auto camera ----
   const updateDirector = (d: DirectorSettings): void => apply((p) => ({ ...p, director: d }))
+  /** Right click on a keyframe in the timeline: the shot it holds (it and its pair) becomes another view of the selected view layer */
+  const changeShotAt = (t: number, c: ShotChoice): void => {
+    const s = sessionRef.current
+    const l = selView
+    if (!s || !l) return
+    const keys = l.keyframes
+    const idx = shotPair(keys, t)
+    if (!idx.length) return
+    // Corner entry looks inward by the lean: the strongest lean while the shot is held
+    const tel = s.telemetry(projectRef.current?.logEnabled ?? true)
+    let lean = 0
+    const ta = keys[idx[0]].t
+    const tb = keys[idx[idx.length - 1]].t
+    for (let x = ta; x <= tb + 1e-6; x += 0.1) lean = Math.max(lean, Math.abs((tel && sampleChannel(tel, 'lean', x)) ?? 0))
+    const { view, tag } = choiceView(c, shotViews, projectRef.current?.director ?? project!.director, lean || 30)
+    apply((p) => updateLayer(p, l.id, { keyframes: changeShot(keys, t, view, tag) }))
+  }
+
+  // ---- Captions and place labels (core/annotations.ts) ----
+  const addCaption = (): void => {
+    const now = currentTime()
+    apply((p) => {
+      // The first caption brings the layer that sets where captions appear (on top of the other layers)
+      const q = p.layers.some((l) => l.type === 'overlay' && l.widget === 'captions')
+        ? p
+        : addOverlayLayer(p, 'captions', t(WIDGET_NAMES.captions), defaultWidgetRect('captions', p.export.width / p.export.height))
+      return { ...q, captions: [...q.captions, { id: newId(), t: now, dur: CAPTION_DUR, text: '' }] }
+    })
+  }
+  const updateCaption = (id: string, patch: Partial<Caption>): void => apply((p) => ({ ...p, captions: p.captions.map((c) => (c.id === id ? { ...c, ...patch } : c)) }))
+  const removeCaption = (id: string): void => apply((p) => ({ ...p, captions: p.captions.filter((c) => c.id !== id) }))
+  /** A label waiting for a click on the video: 'new', or the id of a label placed again from the current time */
+  const [placing, setPlacing] = useState<string | null>(null)
+  /** Labels being followed in the video and the seconds followed so far */
+  const [following, setFollowing] = useState<Record<string, number>>({})
+  const follows = useRef(new Map<string, { aborted: boolean }>())
+  const stopFollowing = (id: string): void => {
+    const sig = follows.current.get(id)
+    if (sig) sig.aborted = true
+    follows.current.delete(id)
+    setFollowing((f) => {
+      const n = { ...f }
+      delete n[id]
+      return n
+    })
+  }
+  /** Follows the label's point in the video from frame (where it is at dir), after the samples it keeps (prefix) */
+  const follow = (s: Session, p: Project, label: PlaceLabel, frame: number, dir: [number, number, number], prefix: number[]): void => {
+    stopFollowing(label.id)
+    const layer = p.layers.find((l): l is ViewLayer => l.id === label.layerId && l.type === 'view')
+    if (!layer) return
+    const sig = { aborted: false }
+    follows.current.set(label.id, sig)
+    setFollowing((f) => ({ ...f, [label.id]: 0 }))
+    const req = { frame, dir, keyframes: layer.keyframes, viewW: layer.rect.w * p.export.width, viewH: layer.rect.h * p.export.height }
+    followPoint(s, req, (sec) => follows.current.get(label.id) === sig && setFollowing((f) => ({ ...f, [label.id]: sec })), sig)
+      .then((r) => {
+        if (follows.current.get(label.id) !== sig) return
+        const track = { step: TRACK_STEP / s.fps, dirs: prefix.concat(r.dirs), end: r.end }
+        apply((q) => ({ ...q, labels: q.labels.map((x) => (x.id === label.id ? { ...x, track } : x)) }))
+      })
+      .catch((e) => {
+        if (!sig.aborted) showError(e)
+      })
+      .finally(() => {
+        if (follows.current.get(label.id) === sig) stopFollowing(label.id)
+      })
+  }
+  /** A click on the video while a label waits for one: place it there (a new label, or one placed again from the current time) */
+  const placeLabel = (layerId: string, u: number, v: number): void => {
+    const s = sessionRef.current
+    const at = player.current?.directionAt(layerId, u, v)
+    const target = placing
+    setPlacing(null)
+    if (!s || !at || !project || !target) return
+    const now = s.motion.videoTime(at.frame)
+    const old = target !== 'new' ? project.labels.find((l) => l.id === target) : undefined
+    const prefix = old && old.layerId === layerId ? trackBefore(old, now) : []
+    let label: PlaceLabel
+    let frame = at.frame
+    if (old && prefix.length) {
+      // Keep what was followed before this time and follow again from here (the earlier part stays shown meanwhile)
+      label = { ...old, track: { step: old.track!.step, dirs: prefix, end: 'limit' } }
+      frame = s.frameOf(old.t) + (prefix.length / 3) * TRACK_STEP
+    } else label = { id: old?.id ?? newId(), text: old?.text ?? t('Place name'), layerId, t: now, dir: at.dir }
+    apply((p) => ({ ...p, labels: old ? p.labels.map((l) => (l.id === old.id ? label : l)) : [...p.labels, label] }))
+    follow(s, project, label, frame, at.dir, prefix)
+  }
+  const startPlacing = (id: string | null): void => {
+    player.current?.pause()
+    setPlacing((cur) => (cur === (id ?? 'new') ? null : (id ?? 'new')))
+  }
+  const updateLabel = (id: string, patch: Partial<PlaceLabel>): void => apply((p) => ({ ...p, labels: p.labels.map((l) => (l.id === id ? { ...l, ...patch } : l)) }))
+  const removeLabel = (id: string): void => {
+    stopFollowing(id)
+    apply((p) => ({ ...p, labels: p.labels.filter((l) => l.id !== id) }))
+  }
+  // Following stops with the video
+  useEffect(
+    () => () => {
+      for (const sig of follows.current.values()) sig.aborted = true
+      follows.current.clear()
+      setFollowing({})
+      setPlacing(null)
+    },
+    [session]
+  )
 
   // ---- Lens seam alignment (estimated in the background and applied) ----
   const [seamBusy, setSeamBusy] = useState(false)
@@ -814,7 +918,7 @@ export function App(): React.JSX.Element {
     // average vehicle speed for each overtake span (because of the setting not to switch on low-speed overtakes)
     const tel = session.telemetry(project.logEnabled)
     const spans = (overtakes ?? []).map((o) => ({ ...o, speed: meanSpeed(tel, o.start, o.end) }))
-    const g = generateKeyframes(selView.keyframes, riding, project.markers, project.director, t0, t1, project.director.overtake.on ? spans : [], shotViews)
+    const g = generateKeyframes(selView.keyframes, riding, project.director, t0, t1, project.director.overtake.on ? spans : [], shotViews)
     updateProject({ ...updateLayer(project, selView.id, { keyframes: g.keyframes }), overtakes, overtakesVersion: overtakes ? OVERTAKE_SCAN_VERSION : undefined })
     setToast(
       t('Set "{name}" to {n} keyframes ({shots} shots, {from}–{to}). Press Ctrl+Z to undo.', {
@@ -869,7 +973,7 @@ export function App(): React.JSX.Element {
   // ---- Keyboard operation ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (!session || !project || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
+      if (!session || !project || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return
       const f = player.current?.status.frame ?? 0
       const step = e.shiftKey ? session.fps : 1
       const vid = selView?.id
@@ -891,7 +995,9 @@ export function App(): React.JSX.Element {
       } else if (e.key === 'ArrowRight') seek(f + step)
       else if (e.key === 'ArrowLeft') seek(f - step)
       else if (e.key === 'm' || e.key === 'M') toggleMute()
-      else if (e.key === 'b' || e.key === 'B') addMarker()
+      else if (e.key === 't' || e.key === 'T') addCaption()
+      else if (e.key === 'l' || e.key === 'L') startPlacing(null)
+      else if (e.key === 'Escape') setPlacing(null)
       else if (e.key === 'Home') seek(0)
       else if (e.key === 'End') seek(session.frameCount - 1)
       else if ((e.key === 'k' || e.key === 'K') && vid) updateProject(addKey(project, vid, time, keyTol))
@@ -941,13 +1047,17 @@ export function App(): React.JSX.Element {
       message,
       exporting: !!exporting,
       layers: project?.layers.map((l) => `${l.type}:${l.name}${l.type === 'view' ? `(${l.keyframes.length})` : ''}`) ?? [],
-      markers: project?.markers.length ?? 0,
       seamBusy,
       seam: project?.stab.seam ?? null,
       bodyBusy: !!bodyStatus?.busy,
       audioBusy: !!audioStatus?.busy,
       maskBusy: !!maskStatus?.busy,
       maskReady,
+      following: Object.keys(following).length,
+      duration: session ? session.frameCount / session.fps : 0,
+      // Keyframes of the selected view within 10 s of the playhead (for checking edits)
+      keys: selView?.keyframes.filter((k) => Math.abs(k.t - (session ? session.motion.videoTime(status.frame) : 0)) <= 10).map((k) => `${k.t.toFixed(2)} ${k.tag ?? (k.joint ? 'joint' : 'hand')} ${Math.round(k.yaw)}/${Math.round(k.pitch)}/${Math.round(k.fov)}${k.turn ? ` turn ${k.turn}` : ''}`) ?? [],
+      labels: project?.labels.map((l) => `${l.text}@${l.t.toFixed(2)}:${l.track ? `${l.track.dirs.length / 3} samples, ${l.track.end}` : '-'}`) ?? [],
       audioReady: !!session?.fxAudio,
       audioMsg: audioStatus?.msg ?? null,
       bodyMsg: bodyStatus?.msg ?? null,
@@ -980,8 +1090,8 @@ export function App(): React.JSX.Element {
   testRef.current = { addView, addOverlay }
   const settingsRef = useRef({ save: saveSettings, load: loadSettings })
   settingsRef.current = { save: saveSettings, load: loadSettings }
-  const testRef2 = useRef({ addMarker, generate })
-  testRef2.current = { addMarker, generate }
+  const testRef2 = useRef({ generate })
+  testRef2.current = { generate }
   const testRef4 = useRef(updateIncident)
   testRef4.current = updateIncident
   useEffect(() => {
@@ -993,13 +1103,13 @@ export function App(): React.JSX.Element {
       else if (d.action === 'pause') player.current?.pause()
       else if (d.action === 'edit') onEditView(d.patch)
       else if (d.action === 'project') apply((p) => ({ ...p, ...d.patch }))
+      else if (d.action === 'title') apply((p) => ({ ...p, export: { ...p.export, inSec: 0, title: d.title } }))
       else if (d.action === 'addKey') {
         const id = selViewRef.current
         if (id) apply((p) => addKey(p, id, currentTime()))
       } else if (d.action === 'addView') testRef.current.addView()
       else if (d.action === 'addOverlay') testRef.current.addOverlay(d.widget)
       else if (d.action === 'layerRect') apply((p) => updateLayer(p, p.layers[d.index].id, { rect: d.rect }))
-      else if (d.action === 'addMarker') testRef2.current.addMarker()
       else if (d.action === 'generate') testRef2.current.generate(d.range ?? 'all')
       else if (d.action === 'undo') undo()
       else if (d.action === 'overtake') apply((p) => ({ ...p, director: { ...p.director, overtake: { ...p.director.overtake, ...d.patch } } }))
@@ -1106,6 +1216,8 @@ export function App(): React.JSX.Element {
           onStatus={setStatus}
           onError={showError}
           onEditView={onEditView}
+          placing={!!placing}
+          onPlace={placeLabel}
         />
       ) : (
         <div className="viewer">
@@ -1160,9 +1272,20 @@ export function App(): React.JSX.Element {
           hasRiding={!!session?.telemetry(project.logEnabled)?.riding}
           ridingFromImu={session?.telemetry(project.logEnabled)?.source === 'imu'}
           leanAvailable={!!(project.logEnabled && log) || !!session?.imuTel}
-          onAddMarker={addMarker}
-          onUpdateMarker={updateMarker}
-          onRemoveMarker={removeMarker}
+          annotations={{
+            captions: project.captions,
+            labels: project.labels,
+            placing,
+            following,
+            layerName: (id) => layerName(project.layers.find((l) => l.id === id)?.name ?? '?'),
+            onSeekTime: (sec) => seek(session!.frameOf(sec)),
+            onAddCaption: addCaption,
+            onUpdateCaption: updateCaption,
+            onRemoveCaption: removeCaption,
+            onPlaceLabel: startPlacing,
+            onUpdateLabel: updateLabel,
+            onRemoveLabel: removeLabel
+          }}
           onSeekTime={(sec) => seek(session!.frameOf(sec))}
           onUpdateDirector={updateDirector}
           onGenerate={generate}
@@ -1216,7 +1339,7 @@ export function App(): React.JSX.Element {
           </span>
           {selView && <span className="note">{t('Keyframes: {name}', { name: layerName(selView.name) })}</span>}
           <span className="spacer" />
-          <span className="note">{t('Space play · M mute · B marker · ←→ step frame (Shift: 1 s) · ↑↓ jump between keyframes · K add · Del delete · I/O export range')}</span>
+          <span className="note">{t('Space play · M mute · ←→ step frame (Shift: 1 s) · ↑↓ jump between keyframes · K add · Del delete · T caption · L place label · I/O export range')}</span>
         </div>
         {session && project && selView ? (
           <Timeline
@@ -1229,7 +1352,8 @@ export function App(): React.JSX.Element {
             lean={leanData}
             speed={speedData}
             riding={session.telemetry(project.logEnabled)?.riding ?? null}
-            markers={project.markers}
+            onShotChange={changeShotAt}
+            notes={[...project.captions.map((c) => ({ start: c.t, end: c.t + c.dur })), ...project.labels.map((l) => ({ start: l.t, end: Math.max(l.t + 0.2, labelEnd(l)) }))]}
             incidents={project.incident.on && disturb ? incidentList.filter((e) => !project.incident.skip.some((k) => Math.abs(k - e.peak) < 0.06)) : []}
             onSeek={seek}
             frameOf={(sec) => session.frameOf(sec)}

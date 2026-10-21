@@ -47,7 +47,9 @@ export function editView(p: Project, layerId: string, t: number, patch: ViewPatc
     }
     const cur = keys[idx]
     const d = typeof patch === 'function' ? patch(cur) : patch
-    keys[idx] = { ...cur, ...d, t: cur.t }
+    // A keyframe changed by hand is a hand-placed one from now on (auto generation keeps it); it turns the short way again
+    const { tag: _tag, joint: _joint, turn: _turn, ...own } = cur
+    keys[idx] = { ...own, ...d, t: cur.t }
     keys.sort((a, b) => a.t - b.t)
     return { ...l, keyframes: keys }
   })

@@ -17,6 +17,12 @@ import { focalFor, wideK } from './projection'
 import type { Mat3 } from '../core/quat'
 import { drawOverlayLayer, overlayFrame } from './overlay'
 import { DEFAULT_SIGN_AHEAD, drawCornerSigns, type SignBox } from './signs'
+import { captionsAt, drawCaptions, drawPlaceLabels, labelsAt } from './annotations'
+import { hudTheme, hudTitle } from './hud'
+import { defaultWidgetRect, enginePower } from './overlay'
+import { greyPal } from './cyber'
+import { FADE_OUT, TITLE_DUR } from '../engine/project'
+import { unprojectPoint } from './projection'
 import { roadTrack, type RoadTrack } from '../core/sightline'
 import { sampleChannel } from '../core/telemetry'
 import { getLang, tr, type Lang } from '../i18n'
@@ -32,6 +38,26 @@ function roadOf(tel: Telemetry): RoadTrack | null {
 export interface ViewInfo {
   layerId: string
   correctionDeg: number
+}
+
+/** Where a view layer was drawn in the last frame and how it looked (to turn a click on it into a direction) */
+export interface DrawnView {
+  layerId: string
+  rect: PixelRect
+  /** Output camera -> rig (row-major) and the horizontal field of view [deg] */
+  view: Mat3
+  fov: number
+  /** Output frame size */
+  w: number
+  h: number
+}
+
+/** Direction (rig coordinates) seen at output pixel (x, y) in a drawn view */
+export function directionIn(d: DrawnView, x: number, y: number): [number, number, number] {
+  const k = wideK(d.fov)
+  const c = unprojectPoint(x - (d.rect.x + d.rect.w / 2), y - (d.rect.y + d.rect.h / 2), focalFor(d.rect.w, d.fov), k)
+  const V = d.view
+  return [V[0] * c[0] + V[1] * c[1] + V[2] * c[2], V[3] * c[0] + V[4] * c[1] + V[5] * c[2], V[6] * c[0] + V[7] * c[1] + V[8] * c[2]]
 }
 
 export function toPixels(r: Rect, w: number, h: number): PixelRect {
@@ -60,6 +86,8 @@ export class Compositor {
   private scg = this.sc.getContext('2d')!
   /** Bike masks in the form drawSigns takes (kept per mask, so the textures are uploaded only when the stretch changes) */
   private occ = new WeakMap<BikeMask, SignOcclusion>()
+  /** View layers of the last frame, frontmost last */
+  lastViews: DrawnView[] = []
 
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas) {
     this.gl = new GlReframer(canvas)
@@ -84,6 +112,8 @@ export class Compositor {
    * Playback runs the model all the time, so a recent outline is there when a sign comes near
    */
   exactSegmentation = false
+  /** Name of the view whose signs came near the bike in the last frame (null if none; for the export log) */
+  nearBikeView: string | null = null
   /** Frame that needs its own outline before it can be exported (set by render, taken by segWait) */
   private segNeed: { frame: number; bike: BikeMask; crop: { dir: [number, number, number]; fov: number }; motion: MotionModel } | null = null
 
@@ -150,6 +180,47 @@ export class Compositor {
         if (this.segPending?.done === done) this.segPending = null
       })
     this.segPending = { frame: i, done }
+  }
+
+  private probe = new OffscreenCanvas(NEAR_GRID, NEAR_GRID)
+  private probeG = this.probe.getContext('2d', { willReadFrequently: true })!
+
+  /**
+   * Whether a sign drawn in this view (on the signs canvas, within box) covers a place where the bike or rider can be (env).
+   * The drawn pixels count, not the box: a sign's box reaches from its plate down to the foot of its post and often overlaps the bike
+   * while the sign itself is well away from it (the plate high up, a thin post beside the bike). The box is shrunk to a small grid
+   * (each cell averages its pixels, so a thin post still shows) and each cell holding sign is looked up in env
+   */
+  private signsNearBike(box: SignBox, pr: PixelRect, view: Mat3, fov: number, env: Uint8Array): boolean {
+    const bw = box.x1 - box.x0
+    const bh = box.y1 - box.y0
+    const gw = Math.max(1, Math.min(NEAR_GRID, Math.ceil(bw)))
+    const gh = Math.max(1, Math.min(NEAR_GRID, Math.ceil(bh)))
+    const g = this.probeG
+    g.clearRect(0, 0, NEAR_GRID, NEAR_GRID)
+    g.drawImage(this.sc, box.x0, box.y0, bw, bh, 0, 0, gw, gh)
+    const a = g.getImageData(0, 0, gw, gh).data
+    const k = wideK(fov)
+    const fk = focalFor(pr.w, fov) * (1 + k)
+    const cx = pr.x + pr.w / 2
+    const cy = pr.y + pr.h / 2
+    const V = view
+    for (let j = 0; j < gh; j++) {
+      for (let i = 0; i < gw; i++) {
+        if (a[(j * gw + i) * 4 + 3] < 8) continue
+        // Inverse of projectPoint (projection.ts): screen offset -> ray of the view camera
+        const sx = box.x0 + ((i + 0.5) * bw) / gw - cx
+        const sy = box.y0 + ((j + 0.5) * bh) / gh - cy
+        const r = Math.hypot(sx, sy)
+        const th = Math.atan(r / fk) * (1 + k)
+        const s = r > 1e-9 ? Math.sin(th) / r : 0
+        const x = sx * s
+        const y = sy * s
+        const z = Math.cos(th)
+        if (maskAt(env, V[0] * x + V[1] * y + V[2] * z, V[3] * x + V[4] * y + V[5] * z, V[6] * x + V[7] * y + V[8] * z) > 0) return true
+      }
+    }
+    return false
   }
 
   /** For export: when frame i has signs near the bike and its outline is not there yet, make it (then draw the frame again) */
@@ -223,6 +294,7 @@ export class Compositor {
       gl.setBody(body.maps[ba.a] ?? null, body.maps[ba.b] ?? null, ba.mix)
     } else gl.setBody(null, null, 0)
     const info: ViewInfo[] = []
+    const drawn: DrawnView[] = []
     let hasOverlay = false
     const signViews: { l: (typeof project.layers)[number] & { type: 'view' }; v: ReturnType<typeof viewAt>; pr: PixelRect; rot: Mat3; view: Mat3; order: number }[] = []
     /** Rectangles of the view layers in drawing order (signs of a view are hidden where a later view covers it) */
@@ -256,9 +328,21 @@ export class Compositor {
         if (rot) signViews.push({ l, v, pr, rot, view: fp.view, order: viewRects.length - 1 })
       }
       info.push({ layerId: l.id, correctionDeg: fp.correctionDeg })
+      drawn.push({ layerId: l.id, rect: pr, view: fp.view, fov: v.fov, w, h })
     }
+    this.lastViews = drawn
     const incLabel = inc && inc.w > 0 && inc.event && project.incident.label ? inc : null
-    if (hasOverlay || signViews.length || incLabel) {
+    const labels = drawn.some((d) => labelsAt(project.labels, d.layerId, t))
+    // Captions are drawn by their overlay layer; without one (deleted), at its default place
+    const captions = captionsAt(project.captions, t) && !project.layers.some((l) => l.type === 'overlay' && l.widget === 'captions')
+    // Opening title from the start of the export range, and the fade to black over its end
+    const ex = project.export
+    const tIn = Math.max(0, ex.inSec)
+    const title = ex.title && (ex.title.text.trim() || ex.title.sub.trim()) && t >= tIn && t <= tIn + (ex.title.dur || TITLE_DUR) ? ex.title : null
+    const tEnd = ex.outSec < 0 ? motion.videoTime(motion.frameCount - 1) : ex.outSec
+    const fadeSec = ex.fadeOutSec ?? FADE_OUT
+    const fade = fadeSec > 0 && t > tEnd - fadeSec && t <= tEnd + 0.5 ? Math.min(1, (t - (tEnd - fadeSec)) / fadeSec) : 0
+    if (hasOverlay || signViews.length || incLabel || labels || captions || title || fade > 0) {
       if (this.ov.width !== w || this.ov.height !== h) {
         this.ov.width = w
         this.ov.height = h
@@ -285,6 +369,7 @@ export class Compositor {
         const drawnViews: { rect: PixelRect; view: Mat3; fov: number; above: PixelRect[] }[] = []
         // Whether a sign is drawn where the bike or rider can be (then export waits for this frame's outline)
         let nearBike = false
+        this.nearBikeView = null
         const box: SignBox = { x0: 0, y0: 0, x1: 0, y1: 0 }
         for (const sv of signViews) {
           const drawn = drawCornerSigns(
@@ -298,9 +383,12 @@ export class Compositor {
             box
           )
           if (!drawn) continue
-          if (bike && !nearBike && box.x1 > box.x0 && box.y1 > box.y0) nearBike = boxNearBike(box, sv.pr, sv.view, sv.v.fov, bike.env)
           // Signs are above all views: erase this view's signs where a view drawn later (picture in picture, split screen) covers it
           for (const r of viewRects.slice(sv.order + 1)) sg.clearRect(r.x, r.y, r.w, r.h)
+          if (bike && !nearBike && box.x1 > box.x0 && box.y1 > box.y0) {
+            nearBike = this.signsNearBike(box, sv.pr, sv.view, sv.v.fov, bike.env)
+            if (nearBike) this.nearBikeView = sv.l.name
+          }
           drawnViews.push({ rect: sv.pr, view: sv.view, fov: sv.v.fov, above: viewRects.slice(sv.order + 1) })
         }
         // For checking: the cut area on every view with signs
@@ -318,12 +406,29 @@ export class Compositor {
           gl.drawSigns(this.sc, w, h, show ? signViews.map((sv) => ({ rect: sv.pr, view: sv.view, fov: sv.v.fov, above: viewRects.slice(sv.order + 1) })) : drawnViews, o, show, seg)
         }
       }
+      // Captions, labels and the title look like the cyber gauges (in their colors)
+      const pal = hudTheme(project)
+      // Place labels of each view (hidden where a view drawn later covers it)
+      if (labels) drawn.forEach((d, k) => drawPlaceLabels(g, project.labels, d.layerId, t, d.rect, d.view, d.fov, drawn.slice(k + 1).map((x) => x.rect), pal))
       // Language of the text that goes into the video (the UI language if omitted)
       const lang = project.export.textLang ?? getLang()
       if (incLabel) drawIncidentLabel(g, toPixels(incLabel.rider, w, h), incLabel.event!, incLabel.w, lang)
       const f = overlayFrame(t, real, w, h, lang)
+      f.captions = project.captions
+      f.pal = pal
       // Overlays are drawn in layer order (overlays placed behind a view layer also appear on top of the video)
       for (const l of project.layers) if (l.visible && l.type === 'overlay') drawOverlayLayer(g, l, toPixels(l.rect, w, h), f)
+      if (captions) drawCaptions(g, project.captions, t, toPixels(defaultWidgetRect('captions', w / h), w, h), pal)
+      if (title) {
+        // Grey while the engine is stopped and back to color as it starts, like the cyber gauges (with a vehicle log that has rpm)
+        const power = enginePower(real, t)
+        hudTitle(g, title.text, title.sub, w, h, t - tIn, title.dur || TITLE_DUR, power < 1 ? greyPal(pal, 1 - Math.max(0, power)) : pal)
+      }
+      // Fade to black over the end of the export range (the sound fades with it in the export)
+      if (fade > 0) {
+        g.fillStyle = `rgba(0, 0, 0, ${fade.toFixed(3)})`
+        g.fillRect(0, 0, w, h)
+      }
       gl.drawOverlay(this.ov, w, h)
     }
     return info
@@ -366,6 +471,8 @@ function drawIncidentLabel(g: OffscreenCanvasRenderingContext2D, r: PixelRect, e
  * in between would make the cut flicker, and the rider moves little in a second
  */
 const SEG_STALE = 50
+/** Grid the signs of a view are shrunk to when checking whether they cover the bike (Compositor.signsNearBike) */
+const NEAR_GRID = 96
 
 /** Size of the outline handed to the GPU: the model's mask grid upsampled twice */
 const OUT = MASK_FEAT * 2
@@ -399,27 +506,3 @@ function upsampleInto(m: Float32Array, out: Uint8Array): void {
   }
 }
 
-/** Whether any part of the screen box (in view rectangle pr) looks where the bike or rider can be (a grid of rays checked against env) */
-function boxNearBike(box: SignBox, pr: PixelRect, view: Mat3, fov: number, env: Uint8Array): boolean {
-  const k = wideK(fov)
-  const fk = focalFor(pr.w, fov) * (1 + k)
-  const cx = pr.x + pr.w / 2
-  const cy = pr.y + pr.h / 2
-  const N = 12
-  for (let j = 0; j <= N; j++) {
-    for (let i = 0; i <= N; i++) {
-      const sx = box.x0 + ((box.x1 - box.x0) * i) / N - cx
-      const sy = box.y0 + ((box.y1 - box.y0) * j) / N - cy
-      // Inverse of projectPoint (projection.ts): screen offset -> ray of the view camera
-      const r = Math.hypot(sx, sy)
-      const th = Math.atan(r / fk) * (1 + k)
-      const s = r > 1e-9 ? Math.sin(th) / r : 0
-      const x = sx * s
-      const y = sy * s
-      const z = Math.cos(th)
-      const V = view
-      if (maskAt(env, V[0] * x + V[1] * y + V[2] * z, V[3] * x + V[4] * y + V[5] * z, V[6] * x + V[7] * y + V[8] * z) > 0) return true
-    }
-  }
-  return false
-}

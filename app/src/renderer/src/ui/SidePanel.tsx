@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { layerName } from './layerName'
 import type { ExportProgress } from '../engine/exporter'
-import { viewAt, type Keyframe, type Layer, type Project, type Rect, type ViewLayer, type WidgetKind } from '../engine/project'
+import { FADE_OUT, TITLE_DUR, viewAt, type Keyframe, type Layer, type OpeningTitle, type Project, type Rect, type ViewLayer, type WidgetKind } from '../engine/project'
 import type { LogInfo } from '../engine/session'
 import type { LogPrefs } from '../engine/logprefs'
 import { OVERTAKE_SCAN_VERSION } from '../core/overtake'
@@ -9,11 +9,12 @@ import type { ViewPatch } from '../engine/edit'
 import { WIDGET_NAMES, WIDGET_PROPS, type PropDef } from '../render/overlay'
 import { DEFAULT_SIGN_AHEAD } from '../render/signs'
 import { IncidentSection } from './IncidentPanel'
+import { CaptionsSection, LabelsSection, type AnnotationProps } from './AnnotationsSection'
 import type { IncidentEvent, IncidentSettings } from '../engine/incident'
 import { Slider } from './Slider'
 import { DEFAULT_BORDER, TEMPLATES } from '../engine/layout'
 import { t, getLang, LANG_NAMES } from '../i18n'
-import type { DirectorSettings, Marker } from '../engine/director'
+import type { DirectorSettings } from '../engine/director'
 
 export const PRESETS: { label: string; w: number; h: number }[] = [
   { label: '1920×1080 (16:9)', w: 1920, h: 1080 }, // i18n-ignore
@@ -48,9 +49,8 @@ interface Props {
   ridingFromImu: boolean
   /** Whether the lean angle is known (from the vehicle log, or estimated from the video IMU) */
   leanAvailable: boolean
-  onAddMarker: () => void
-  onUpdateMarker: (id: string, patch: Partial<Marker>) => void
-  onRemoveMarker: (id: string) => void
+  /** Captions and place labels */
+  annotations: AnnotationProps
   onSeekTime: (t: number) => void
   onUpdateDirector: (d: DirectorSettings) => void
   /** Opens the settings menu "Auto-generated views" (defaults for the front, corner entry, side and rear views) */
@@ -128,7 +128,7 @@ function AddOverlay({ onAdd }: { onAdd: (w: WidgetKind) => void }): React.JSX.El
   return (
     <>
       <select value={kind} onChange={(e) => setKind(e.target.value as WidgetKind)} style={{ flex: 1, minWidth: 0 }}>
-        {(Object.keys(WIDGET_NAMES) as WidgetKind[]).map((w) => (
+        {(Object.keys(WIDGET_NAMES) as WidgetKind[]).filter((w) => w !== 'captions').map((w) => (
           <option key={w} value={w}>
             {t(WIDGET_NAMES[w])}
           </option>
@@ -154,7 +154,7 @@ function DirectorSection(p: Props): React.JSX.Element {
       <h3>
         {t('Auto camera')}<span className="hint">{t('Creates keyframes for {name}', { name: layerName(p.selView.name) })}</span>
       </h3>
-      {!p.hasRiding && <div className="note status">{t('Switching by riding state needs a vehicle log (markers alone also work).')}</div>}
+      {!p.hasRiding && <div className="note status">{t('Switching by riding state needs a vehicle log.')}</div>}
       {p.ridingFromImu && <div className="note status">{t('There is no vehicle log, so the riding state is estimated from the video motion (gyro and accelerometer). It is less accurate than with a log.')}</div>}
       <div className="rules">
         <Rule k="corner" label={t('Corner entry shots')} />
@@ -213,45 +213,6 @@ function DirectorSection(p: Props): React.JSX.Element {
         </button>
       </div>
       <div className="note">{t('Keyframes in the range are replaced (Ctrl+Z to undo). Views use the defaults in Settings > Auto-generated views.')}</div>
-    </div>
-  )
-}
-
-const DIRS: { label: string; yaw: number; pitch: number }[] = [
-  { label: 'Left', yaw: -90, pitch: 0 }, // i18n-ignore
-  { label: 'Right', yaw: 90, pitch: 0 }, // i18n-ignore
-  { label: 'Back', yaw: 180, pitch: 0 }, // i18n-ignore
-  { label: 'Sky', yaw: 0, pitch: -45 } // i18n-ignore
-]
-
-function MarkersSection(p: Props): React.JSX.Element {
-  const ms = [...p.project.markers].sort((a, b) => a.t - b.t)
-  return (
-    <div className="section">
-      <h3>
-        {t('Markers')}<span className="hint">{t('{n} total', { n: ms.length })}</span>
-      </h3>
-      <div className="row">
-        <button onClick={p.onAddMarker}>{t('◎ Add at playhead (B)')}</button>
-      </div>
-      {ms.map((m) => (
-        <div key={m.id} className="marker-row">
-          <button className="time-btn" onClick={() => p.onSeekTime(m.t)} title={t('Go to this time')}>
-            {fmtTime(m.t)}
-          </button>
-          {DIRS.map((d) => (
-            <button key={d.label} className={'dir' + (m.yaw === d.yaw && m.pitch === d.pitch ? ' on' : '')} onClick={() => p.onUpdateMarker(m.id, { yaw: d.yaw, pitch: d.pitch })}>
-              {t(d.label)}
-            </button>
-          ))}
-          <input type="number" title={t('Yaw (°)')} value={Math.round(m.yaw)} step={5} onChange={(e) => p.onUpdateMarker(m.id, { yaw: parseFloat(e.target.value) || 0 })} style={{ width: 48 }} />
-          <input type="number" title={t('Hold time (s)')} value={m.hold} step={0.5} min={1} onChange={(e) => p.onUpdateMarker(m.id, { hold: Math.max(1, parseFloat(e.target.value) || 1) })} style={{ width: 44 }} />
-          <button title={t('Delete')} onClick={() => p.onRemoveMarker(m.id)}>
-            ×
-          </button>
-        </div>
-      ))}
-      {ms.length > 0 && <div className="note">{t('The numbers are direction (yaw °) and hold time (s). Auto camera shows this direction at this time.')}</div>}
     </div>
   )
 }
@@ -405,6 +366,7 @@ export function SidePanel(p: Props): React.JSX.Element {
   }
   const ex = project.export
   const setEx = (patch: Partial<typeof ex>): void => p.onChange({ ...project, export: { ...ex, ...patch } })
+  const setTitle = (patch: Partial<OpeningTitle>): void => setEx({ title: { text: '', sub: '', dur: TITLE_DUR, ...ex.title, ...patch } })
   const logOn = !!log && project.logEnabled
   const preset = PRESETS.findIndex((q) => q.w === ex.width && q.h === ex.height)
 
@@ -421,7 +383,7 @@ export function SidePanel(p: Props): React.JSX.Element {
           </button>
         </div>
         <div className="note">
-          {t('Saves the settings on the right and the position and size of meters and other layers to one file that you can use with other videos. The main view\'s motion (keyframes), markers, export range and seam estimate are per video and are not included.')}
+          {t('Saves the settings on the right and the position and size of meters and other layers to one file that you can use with other videos. The main view\'s motion (keyframes), captions, place labels, the opening title, export range and seam estimate are per video and are not included.')}
         </div>
       </div>
       <LayoutSection {...p} />
@@ -446,7 +408,8 @@ export function SidePanel(p: Props): React.JSX.Element {
       </div>
 
       <DirectorSection {...p} />
-      <MarkersSection {...p} />
+      <CaptionsSection {...p.annotations} />
+      <LabelsSection {...p.annotations} />
       <IncidentSection
         settings={p.project.incident}
         events={p.incidentEvents}
@@ -618,6 +581,26 @@ export function SidePanel(p: Props): React.JSX.Element {
         </div>
         <div className="note">{t('Language of text drawn into the video, such as disturbance labels and caption headings')}</div>
         <Slider name={t('Bitrate')} value={ex.bitrateMbps} min={5} max={150} step={5} unit="M" onChange={(x) => setEx({ bitrateMbps: x })} />
+        <div className="row">
+          <label className="name">{t('Opening title')}</label>
+          <input type="text" value={ex.title?.text ?? ''} placeholder={t('Title')} onChange={(e) => setTitle({ text: e.target.value })} style={{ flex: 1, minWidth: 0 }} />
+        </div>
+        <div className="row">
+          <label className="name">{t('Subtitle')}</label>
+          <input type="text" value={ex.title?.sub ?? ''} placeholder={t('Subtitle')} onChange={(e) => setTitle({ sub: e.target.value })} style={{ flex: 1, minWidth: 0 }} />
+        </div>
+        <div className="row">
+          <label className="name">{t('Title shown')}</label>
+          <input type="number" value={ex.title?.dur ?? TITLE_DUR} min={1} max={30} step={0.5} onChange={(e) => setTitle({ dur: Math.max(1, parseFloat(e.target.value) || TITLE_DUR) })} style={{ width: 56 }} />
+          <span>{t('s')}</span>
+        </div>
+        <div className="note">{t('Shown in the middle of the frame from the start of the export range, in the look of the cyber gauges (the subtitle at 1/3 the size). Leave both empty for no title.')}</div>
+        <div className="row">
+          <label className="name">{t('Fade out at the end')}</label>
+          <input type="number" value={ex.fadeOutSec ?? FADE_OUT} min={0} max={10} step={0.5} onChange={(e) => setEx({ fadeOutSec: Math.max(0, Math.min(10, parseFloat(e.target.value) || 0)) })} style={{ width: 56 }} />
+          <span>{t('s')}</span>
+        </div>
+        <div className="note">{t('The picture fades to black and the sound fades out over the last seconds of the export range (0 = off).')}</div>
         <div className="row">
           <label className="name">{t('Range')}</label>
           <span>

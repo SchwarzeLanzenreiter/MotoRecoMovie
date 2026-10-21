@@ -1,6 +1,6 @@
 // Preview playback control. Handles only the latest display request, and redraws without decoding when only the view changed.
 import type { Telemetry } from '../core/telemetry'
-import { Compositor, type ViewInfo } from '../render/compositor'
+import { Compositor, directionIn, type ViewInfo } from '../render/compositor'
 import { AudioPlayer } from './audio'
 import { FX_BUILD_GAIN } from '../core/audiofx'
 import type { Project } from './project'
@@ -143,6 +143,15 @@ export class Player {
 
   get isPlaying(): boolean {
     return this.playing
+  }
+
+  /**
+   * Direction (rig coordinates) at a point of the shown frame in a view layer, as drawn in the last frame. u, v: position on the output
+   * frame (0..1 from the top left). null if that view is not drawn
+   */
+  directionAt(layerId: string, u: number, v: number): { frame: number; dir: [number, number, number] } | null {
+    const d = this.comp.lastViews.find((x) => x.layerId === layerId)
+    return d ? { frame: this.status.frame, dir: directionIn(d, u * d.w, v * d.h) } : null
   }
 
   redraw(): void {

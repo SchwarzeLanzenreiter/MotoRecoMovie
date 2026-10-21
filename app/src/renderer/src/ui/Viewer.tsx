@@ -45,9 +45,12 @@ interface Props {
   onError: (e: unknown) => void
   /** If layerId is given, edits that layer (if omitted, the selected view layer) */
   onEditView: (patch: (cur: Omit<Keyframe, 't'>) => ViewPatch, layerId?: string) => void
+  /** Waiting for a click that places a label: the click goes to onPlace (view layer, position on the frame 0..1) instead */
+  placing: boolean
+  onPlace: (layerId: string, u: number, v: number) => void
 }
 
-export function Viewer({ session, project, status, selected, onSelect, onUpdateRect, onPlayer, onStatus, onError, onEditView }: Props): React.JSX.Element {
+export function Viewer({ session, project, status, selected, onSelect, onUpdateRect, onPlayer, onStatus, onError, onEditView, placing, onPlace }: Props): React.JSX.Element {
   useLang()
   const wrap = useRef<HTMLDivElement>(null)
   const stage = useRef<HTMLDivElement>(null)
@@ -55,6 +58,8 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
   const player = useRef<Player | null>(null)
   const projRef = useRef(project)
   projRef.current = project
+  const placeRef = useRef({ placing, onPlace })
+  placeRef.current = { placing, onPlace }
 
   // create the player (per session)
   useEffect(() => {
@@ -145,6 +150,13 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
     }
     const down = (e: PointerEvent): void => {
       const h = hit(e)
+      if (placeRef.current.placing) {
+        if (h?.type === 'view') {
+          const r = c.getBoundingClientRect()
+          placeRef.current.onPlace(h.id, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height)
+        }
+        return
+      }
       if (h) onSelect(h.id)
       // overlay mode, or dragging with Shift held, moves the layer
       if (h && (h.type === 'overlay' || e.shiftKey)) {
@@ -228,7 +240,7 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
   return (
     <div className="viewer" ref={wrap}>
       <div className="stage" ref={stage}>
-        <canvas ref={canvas} />
+        <canvas ref={canvas} className={placing ? 'placing' : undefined} />
         {(guides.cross || guides.diagonal) && (
           <svg className="guides" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {[0, 1].map((pass) => (

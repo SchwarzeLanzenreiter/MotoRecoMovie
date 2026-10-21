@@ -116,7 +116,7 @@ const R = (t: number, side: -1 | 0 | 1, bias: number): LaneSample => ({ t, side,
   const s = structuredClone(DEFAULT_DIRECTOR)
   const base = DEFAULT_SHOT_VIEWS.front
   s.overtake.on = true
-  const g = generateKeyframes([{ t: 0, ...base }], null, [], s, 0, 60, [{ start: 20, end: 25 }])
+  const g = generateKeyframes([{ t: 0, ...base }], null, s, 0, 60, [{ start: 20, end: 25 }])
   const v = viewAt(g.keyframes, 21)
   assert.equal(v.pitch, s.overtake.pitch)
   assert.equal(v.fov, s.overtake.fov)
@@ -130,7 +130,7 @@ const R = (t: number, side: -1 | 0 | 1, bias: number): LaneSample => ({ t, side,
   assert.ok(g.keyframes.filter((k) => k.tag !== 'overtake').every((k) => k.pitch === base.pitch && k.tag === 'front'))
   // Does nothing when off
   s.overtake.on = false
-  const g2 = generateKeyframes([{ t: 0, ...base }], null, [], s, 0, 60, [{ start: 20, end: 25 }])
+  const g2 = generateKeyframes([{ t: 0, ...base }], null, s, 0, 60, [{ start: 20, end: 25 }])
   assert.equal(viewAt(g2.keyframes, 21).pitch, base.pitch)
 }
 // ---- No switch for a slow overtake (when the mean vehicle speed of the section is below overtake.minSpeed) ----
@@ -139,7 +139,7 @@ const R = (t: number, side: -1 | 0 | 1, bias: number): LaneSample => ({ t, side,
   const base = DEFAULT_SHOT_VIEWS.front
   s.overtake.on = true
   assert.equal(s.overtake.minSpeed, 40, 'default is 40 km/h')
-  const pitchAt = (spans: { start: number; end: number; speed?: number }[]): number => viewAt(generateKeyframes([{ t: 0, ...base }], null, [], s, 0, 60, spans).keyframes, 21).pitch
+  const pitchAt = (spans: { start: number; end: number; speed?: number }[]): number => viewAt(generateKeyframes([{ t: 0, ...base }], null, s, 0, 60, spans).keyframes, 21).pitch
   assert.equal(pitchAt([{ start: 20, end: 25, speed: 30 }]), base.pitch, 'a 30 km/h overtake does not switch')
   assert.equal(pitchAt([{ start: 20, end: 25, speed: 60 }]), s.overtake.pitch, '60 km/h switches')
   assert.equal(pitchAt([{ start: 20, end: 25 }]), s.overtake.pitch, 'switches if the vehicle speed is unknown')

@@ -32,3 +32,12 @@ export function projectPoint(p: ArrayLike<number>, focal: number, k: number): [n
   const r = focal * (1 + k) * Math.tan(a)
   return [(p[0] / rxy) * r, (p[1] / rxy) * r]
 }
+
+/** Inverse of projectPoint: the unit ray in camera coordinates (x right, y down, z forward) seen at an offset (sx, sy) [px] from the screen center */
+export function unprojectPoint(sx: number, sy: number, focal: number, k: number): [number, number, number] {
+  const r = Math.hypot(sx, sy)
+  if (r < 1e-9) return [0, 0, 1]
+  const th = Math.atan(r / (focal * (1 + k))) * (1 + k)
+  const s = Math.sin(th) / r
+  return [sx * s, sy * s, Math.cos(th)]
+}

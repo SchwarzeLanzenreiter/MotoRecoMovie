@@ -821,3 +821,71 @@ button.mini {
   transform: rotate(45deg);
   flex: none;
 }
+
+/* Captions and place labels (AnnotationsSection.tsx) */
+.caption-row textarea {
+  flex-basis: 100%;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+  min-height: 22px;
+}
+.label-row .label-status {
+  flex-basis: 100%;
+  margin: 0 0 0 66px;
+}
+.marker-row button.on,
+.section .row button.on {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+.viewer canvas.placing {
+  cursor: crosshair;
+}
+
+/* Right-click menu on a timeline keyframe: change the shot to another view */
+.tl-menu {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  transform: translateY(-100%);
+}
+.tl-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 5px;
+  font-size: 11px;
+  color: #9aa4b5;
+}
+.tl-menu-head .swatch {
+  width: 8px;
+  height: 8px;
+  transform: rotate(45deg);
+}
+.tl-menu button {
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+}
+.tl-menu button:hover {
+  background: #2b3240;
+}
+.tl-menu-sub {
+  padding: 0 6px 3px;
+  font-size: 11px;
+  color: #9aa4b5;
+}
+.tl-menu-head {
+  color: var(--text, #e6e9ef);
+  font-variant-numeric: tabular-nums;
+}

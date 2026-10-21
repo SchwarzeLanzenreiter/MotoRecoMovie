@@ -7,9 +7,15 @@ import { drawCompass, drawElevation, drawMap } from './gps'
 import { DEFAULT_CHRONO, drawChrono, type ChronoOpts } from './chrono'
 import { DEFAULT_CYBER, drawCyber, type CyberOpts } from './cyber'
 import { getLang, tr, type Lang } from '../i18n'
+import type { Caption } from '../core/annotations'
+import type { CyberPal } from './cyber'
+import { drawCaptions } from './annotations'
 
 export interface OverlayFrame {
   t: number // video time [s]
+  /** Captions of the project and the colors of the cyber gauges (set by the compositor; for the captions layer) */
+  captions?: Caption[]
+  pal?: CyberPal
   telemetry: Telemetry | null
   values: Partial<Record<ChannelKey, number>> // telemetry at that time (already computed)
   /** Weights of the riding states (in STATES order). Cruise only if there is no log */
@@ -223,7 +229,10 @@ const WIDGETS: Record<WidgetKind, Widget> = {
   map: (g, r, f, props) => drawMap(g, r, f.telemetry, f.t, props, f.lang),
   elevation: (g, r, f, props) => drawElevation(g, r, f.telemetry, f.t, props, f.lang),
   compass: (g, r, f, props) => drawCompass(g, r, f.telemetry, f.t, props, f.lang),
-  readout
+  readout,
+  captions: (g, r, f) => {
+    if (f.captions && f.pal) drawCaptions(g, f.captions, f.t, r, f.pal)
+  }
 }
 
 export const WIDGET_NAMES: Record<WidgetKind, string> = {
@@ -232,7 +241,8 @@ export const WIDGET_NAMES: Record<WidgetKind, string> = {
   map: 'Map', // i18n-ignore
   elevation: 'Elevation profile', // i18n-ignore
   compass: 'Compass tape', // i18n-ignore
-  readout: 'Readout' // i18n-ignore
+  readout: 'Readout', // i18n-ignore
+  captions: 'Captions' // i18n-ignore
 }
 
 /** Settings per overlay (edited in the side panel) */
@@ -323,6 +333,8 @@ export function defaultWidgetRect(w: WidgetKind, aspect: number): Rect {
       return box(0.16, 0.11, 0.42, 0.17)
     case 'compass':
       return box(0.5, 0.06, 0.5, 0.09)
+    case 'captions':
+      return tall ? { x: 0.05, y: 0.72, w: 0.9, h: 0.11 } : { x: 0.15, y: 0.75, w: 0.7, h: 0.2 }
     default:
       return box(0.14, 0.78, 0.26, 0.36)
   }

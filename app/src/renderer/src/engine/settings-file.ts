@@ -5,7 +5,7 @@
 //   - Layers (draw order): position, size, visibility, name; for view layers, border, signs, role and direction (the view of a layer with a single keyframe),
 //     and the type and settings of overlay meters
 //   - Auto camera, body disturbance (per-event "no 2 screens" is per video, so it is not included), export (the range is not included)
-// Not included: view motion of views with 2 or more keyframes, markers, overtake results, vehicle log
+// Not included: view motion of views with 2 or more keyframes, captions and place labels, overtake results, vehicle log
 import { mergeDirector, type DirectorSettings } from './director'
 import { mergeIncident, type IncidentSettings } from './incident'
 import { DEFAULT_AUDIO_FX, type AudioFx } from '../core/audiofx'
@@ -65,7 +65,8 @@ export function settingsFromProject(p: Project): SettingsFile {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { skip: _skip, ...incident } = p.incident
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { inSec: _in, outSec: _out, ...ex } = p.export
+  // The range and the opening title belong to the video
+  const { inSec: _in, outSec: _out, title: _title, ...ex } = p.export
   const layers = p.layers.map((l): ViewLayerSettings | OverlayLayerSettings =>
     l.type === 'view'
       ? {

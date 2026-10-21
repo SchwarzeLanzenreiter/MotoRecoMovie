@@ -1,9 +1,10 @@
 // Data structure of a project (the edits). Saved as JSON.
+import type { Caption, PlaceLabel } from '../core/annotations'
 import type { SeamFix } from '../core/seamfit'
 import { DEFAULT_AUDIO_FX, OLD_DEFAULT_LOWPASS_HZ, type AudioFx } from '../core/audiofx'
 import { DEFAULT_INCIDENT, mergeIncident, OLD_RIDER_FOV, RIDER_VIEW, type IncidentSettings } from './incident'
 import { t } from '../i18n'
-import { DEFAULT_DIRECTOR, mergeDirector, type DirectorSettings, type Marker, type OvertakeSpan } from './director'
+import { DEFAULT_DIRECTOR, mergeDirector, type DirectorSettings, type OvertakeSpan } from './director'
 
 /** Shot-kind marker (for auto-generated shots) */
 export type KeyTag = 'front' | 'corner' | 'side' | 'rear' | 'overtake'
@@ -18,10 +19,23 @@ export interface Keyframe {
   linear?: boolean
   /**
    * Shot kind when generated automatically (color-coded on the timeline): front, corner entry, side, rear, overtake (yellow).
-   * Not set on manually placed keyframes or markers
+   * Not set on manually placed keyframes
    */
   tag?: KeyTag
+  /** Put in by auto generation where its range meets the keyframes outside it (so it is not taken for a hand-placed keyframe) */
+  joint?: boolean
+  /**
+   * Way the view turns from the previous keyframe: 1 = to the right (yaw growing), -1 = to the left, even the long way round.
+   * The short way round when omitted. Auto generation sets it to turn to the rear through the inside of the corner
+   */
+  turn?: 1 | -1
 }
+
+/**
+ * Whether a keyframe was placed (or edited) by hand: auto generation keeps these. Generated ones carry a shot tag, follow a landmark
+ * (linear) or join the generated range to the rest (joint)
+ */
+export const isHandPlaced = (k: Keyframe): boolean => !k.tag && !k.linear && !k.joint
 
 export interface StabSettings {
   enabled: boolean
@@ -57,7 +71,22 @@ export interface ExportSettings {
   outSec: number // negative = to the end
   /** Language of the text burned into the video (disturbance display, subtitle headings, etc.). Defaults to the UI language when omitted */
   textLang?: 'ja' | 'en'
+  /** Opening title at the start of the export range (shown when title or sub is set) */
+  title?: OpeningTitle
+  /** Picture and sound fade out over the last this many seconds of the export range (0 = no fade; FADE_OUT when omitted) */
+  fadeOutSec?: number
 }
+
+export interface OpeningTitle {
+  text: string
+  /** Subtitle below the title, at 1/3 its size */
+  sub: string
+  /** Seconds shown from the start of the export range */
+  dur: number
+}
+
+export const TITLE_DUR = 5
+export const FADE_OUT = 2
 
 /** Fractions of the output screen (0 to 1). The origin is the top left */
 export interface Rect {
@@ -97,7 +126,8 @@ export interface ViewLayer extends LayerBase {
   role?: 'incident'
 }
 
-export type WidgetKind = 'chrono' | 'cyber' | 'map' | 'elevation' | 'compass' | 'readout'
+/** captions: where the captions are shown (one layer, made when the first caption is added; core/annotations.ts) */
+export type WidgetKind = 'chrono' | 'cyber' | 'map' | 'elevation' | 'compass' | 'readout' | 'captions'
 
 /** Removed overlays (meter set, speedometer, tachometer, gear, lean angle, front/rear G, outside temperature). Removed on load if found in a saved project */
 export const REMOVED_WIDGETS = ['dashboard', 'speed', 'gear', 'rpm', 'lean', 'gforce', 'temp']
@@ -122,8 +152,10 @@ export interface Project {
   /** Draw order (first is the bottom) */
   layers: Layer[]
   export: ExportSettings
-  /** Markers (auto camera shows that direction at that time) */
-  markers: Marker[]
+  /** Captions added by hand (shown over the whole frame) */
+  captions: Caption[]
+  /** Place labels added by hand (a leader line and a name following a point in a view) */
+  labels: PlaceLabel[]
   /** Auto camera settings */
   director: DirectorSettings
   /** Overtake sections (result of scanning the video; absent if not scanned yet) */
@@ -159,7 +191,8 @@ export function newProject(insvPath: string): Project {
     stab: { enabled: true, sigma: [0.6, 0.3, 0.2], rollingShutter: true, rollComp: true },
     layers: [newViewLayer(t('Main'))],
     export: { width: 1920, height: 1080, codec: 'hevc', bitrateMbps: 40, inSec: 0, outSec: -1 },
-    markers: [],
+    captions: [],
+    labels: [],
     director: structuredClone(DEFAULT_DIRECTOR),
     incident: { ...DEFAULT_INCIDENT },
     audioFx: { ...DEFAULT_AUDIO_FX },
@@ -167,14 +200,15 @@ export function newProject(insvPath: string): Project {
   }
 }
 
-/** Shift all video times in the project (keyframes, markers, export range, overtake sections, events excluded from 2-screen) by dt [s] */
+/** Shift all video times in the project (keyframes, captions, labels, export range, overtake sections, events excluded from 2-screen) by dt [s] */
 export function shiftProjectTimes(p: Project, dt: number): Project {
   if (!dt) return p
   const sh = (x: number): number => Math.round((x + dt) * 1e6) / 1e6
   return {
     ...p,
     layers: p.layers.map((l) => (l.type === 'view' ? { ...l, keyframes: l.keyframes.map((k, i) => (i === 0 && k.t === 0 ? k : { ...k, t: Math.max(0, sh(k.t)) })) } : l)),
-    markers: p.markers.map((m) => ({ ...m, t: Math.max(0, sh(m.t)) })),
+    captions: p.captions.map((c) => ({ ...c, t: Math.max(0, sh(c.t)) })),
+    labels: p.labels.map((l) => ({ ...l, t: Math.max(0, sh(l.t)) })),
     export: { ...p.export, inSec: p.export.inSec > 0 ? sh(p.export.inSec) : p.export.inSec, outSec: p.export.outSec >= 0 ? sh(p.export.outSec) : p.export.outSec },
     overtakes: p.overtakes?.map((o) => ({ ...o, start: sh(o.start), end: sh(o.end) })),
     incident: { ...p.incident, skip: p.incident.skip.map(sh) }
@@ -195,7 +229,10 @@ export function migrateProject(raw: Record<string, unknown>, insvPath: string): 
   if (raw.timeBase === undefined) delete p.timeBase
   // Fill settings added later with defaults
   p.director = mergeDirector(p.director)
-  p.markers = p.markers ?? []
+  // Markers (a direction for auto camera to show at a time) were removed: hand-placed keyframes do that with any view
+  delete (p as Record<string, unknown>).markers
+  p.captions = p.captions ?? []
+  p.labels = p.labels ?? []
   // Riding-location commentary (subtitles) is now added by a separate tool and was removed from this app. Contents of old projects are discarded
   delete (p as Record<string, unknown>).commentary
   delete (p as Record<string, unknown>).commentaryLang
@@ -238,6 +275,8 @@ export function viewAt(keys: Keyframe[], t: number): Omit<Keyframe, 't'> {
   const s = a.linear ? x : ease(x)
   let dy = (((b.yaw - a.yaw) % 360) + 540) % 360 - 180
   if (dy === -180 && b.yaw > a.yaw) dy = 180
+  if (b.turn === 1 && dy < 0) dy += 360
+  else if (b.turn === -1 && dy > 0) dy -= 360
   return {
     yaw: a.yaw + dy * s,
     pitch: a.pitch + (b.pitch - a.pitch) * s,

@@ -4,7 +4,7 @@ import { Muxer, StreamTarget } from 'mp4-muxer'
 import { openLocal } from '../core/file'
 import { Compositor } from '../render/compositor'
 import { TrackDecoder } from './decoder'
-import type { Project } from './project'
+import { FADE_OUT, type Project } from './project'
 import type { Session } from './session'
 import { t } from '../i18n'
 import { Dynamics, FX_BUILD_GAIN } from '../core/audiofx'
@@ -121,6 +121,8 @@ export async function exportVideo(
     tp = now
   }
   let segWaits = 0
+  /** Frames that waited for the outline, per view whose signs came near the bike */
+  const waitsBy: Record<string, number> = {}
   let prevWaited = false
   try {
     for (let k = 0; k < n; k++) {
@@ -143,6 +145,8 @@ export async function exportVideo(
       prevWaited = !!seg
       if (seg) {
         segWaits++
+        const v = comp.nearBikeView ?? '?'
+        waitsBy[v] = (waitsBy[v] ?? 0) + 1
         await seg
         comp.render(i, project, motion, telemetry, ex.width, ex.height)
       }
@@ -154,7 +158,7 @@ export async function exportVideo(
       while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 1))
       lap('wait')
       if (k === n - 1)
-        console.log('Export breakdown [ms/frame]', Object.entries(prof).map(([key, v]) => `${key} ${(v / (k + 1)).toFixed(1)}`).join('  '), ` decoders ${decs.map((d) => JSON.stringify(d.stats)).join(' ')} (${n} frames, ${segWaits} waited for the outline of the own bike)`)
+        console.log('Export breakdown [ms/frame]', Object.entries(prof).map(([key, v]) => `${key} ${(v / (k + 1)).toFixed(1)}`).join('  '), ` decoders ${decs.map((d) => JSON.stringify(d.stats)).join(' ')} (${n} frames, ${segWaits} waited for the outline of the own bike: ${JSON.stringify(waitsBy)})`)
       if (k % 10 === 0 || k === n - 1) {
         const el = (performance.now() - t0) / 1000
         const r = (k + 1) / el
@@ -172,6 +176,8 @@ export async function exportVideo(
   }
 
   // ---- Audio muxing ----
+  // Without +faststart: moving the index to the front rewrites the whole file once more, and with a long, high-bitrate video on a hard disk
+  // that took most of the time (a 13.9 GB file: about 24 minutes of muxing). Players and video sites read the file either way
   // When tidying the riding audio, apply the same processing as the preview (Dynamics in core/audiofx.ts: cut high sounds, reduce loudness) and encode to AAC.
   // If the tidied audio (declip, suppress non-engine sound) exists, use it as the source; otherwise use the video audio. When not tidying, copy untouched
   onProgress({ done: n, total: n, fps: 0, etaSec: 0, phase: 'audio' })
@@ -179,15 +185,19 @@ export async function exportVideo(
   let log: string | undefined
   if (session.audioTrack) {
     const fx = project.audioFx
+    // The sound fades out with the picture over the end (the compositor draws the picture's fade)
+    const fade = fadeOutFilter(n / fps, ex.fadeOutSec ?? FADE_OUT)
     let r: { code: number; log: string }
     if (fx.on) {
-      r = await processedAudio(session, fx, i0 / fps, n / fps, tmpPath, outPath)
+      r = await processedAudio(session, fx, i0 / fps, n / fps, tmpPath, outPath, fade)
     } else {
       r = await window.api.runFfmpeg([
         '-y', '-v', 'error',
         '-i', tmpPath,
         '-ss', (i0 / fps).toFixed(6), '-t', (n / fps).toFixed(6), '-i', project.insvPath,
-        '-map', '0:v:0', '-map', '1:a:0', '-c', 'copy', '-shortest', '-movflags', '+faststart', outPath
+        '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy',
+        ...(fade ? ['-af', fade, '-c:a', 'aac', '-b:a', '192k'] : ['-c:a', 'copy']),
+        '-shortest', outPath
       ])
     }
     if (r.code === 0) {
@@ -210,7 +220,14 @@ export async function exportVideo(
  * Apply the same processing as the preview (Dynamics) to the audio of the section [t0, t0+dur) [s] and export it together with the video (videoPath).
  * Process from 1 second earlier so the processing state settles, and trim the part that comes out late by the limiter lookahead
  */
-async function processedAudio(session: Session, fx: Project['audioFx'], t0: number, dur: number, videoPath: string, outPath: string): Promise<{ code: number; log: string }> {
+/** ffmpeg filter fading the sound out over the last sec seconds of dur seconds (null for no fade) */
+function fadeOutFilter(dur: number, sec: number): string | null {
+  if (!(sec > 0)) return null
+  const d = Math.min(sec, dur)
+  return `afade=t=out:st=${Math.max(0, dur - d).toFixed(3)}:d=${d.toFixed(3)}`
+}
+
+async function processedAudio(session: Session, fx: Project['audioFx'], t0: number, dur: number, videoPath: string, outPath: string, fade: string | null): Promise<{ code: number; log: string }> {
   const tr = session.audioTrack!
   const fs = tr.sampleRate
   const C = tr.channels
@@ -262,7 +279,7 @@ async function processedAudio(session: Session, fx: Project['audioFx'], t0: numb
       '-y', '-v', 'error',
       '-i', videoPath,
       '-f', 'f32le', '-ar', String(fs), '-ac', String(C), '-i', tmpOut,
-      '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', outPath
+      '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', ...(fade ? ['-af', fade] : []), '-c:a', 'aac', '-b:a', '192k', '-shortest', outPath
     ])
     return r
   } finally {

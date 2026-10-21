@@ -1,4 +1,4 @@
-// Timeline keyframe (◆) colors, per kind of auto-generated shot. Hand-placed keyframes and markers are blue
+// Timeline keyframe (◆) colors, per kind of auto-generated shot. Hand-placed keyframes are blue
 import type { KeyTag } from '../engine/project'
 
 export const MANUAL_KEY_COLOR = '#4f9cf9'

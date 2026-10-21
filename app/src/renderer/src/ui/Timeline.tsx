@@ -4,6 +4,7 @@ import { STATE_COLORS, STATE_NAMES, STATES, type RidingTrack } from '../core/rid
 import { t } from '../i18n'
 import { useLang } from './useLang'
 import { KEY_COLORS, KEY_TAG_NAMES, keyColor } from './keyColors'
+import { SHOT_CHOICE_NAMES, SHOT_CHOICES, shotPair, type ShotChoice } from '../engine/director'
 
 interface Props {
   frameCount: number
@@ -16,7 +17,10 @@ interface Props {
   /** Vehicle speed [km/h] (overlaid on the lean angle graph) */
   speed: { t: Float64Array; v: Float64Array } | null
   riding: RidingTrack | null
-  markers: { t: number }[]
+  /** Captions and place labels (thin bars) */
+  notes?: { start: number; end: number }[]
+  /** Right click on a keyframe: change the shot it holds (and its pair) to another view */
+  onShotChange?: (t: number, c: ShotChoice) => void
   /** Ranges split into 2 screens because of a bike disturbance */
   incidents?: { start: number; end: number }[]
   onSeek: (frame: number) => void
@@ -68,7 +72,7 @@ const KEY_ORDER: (Keyframe['tag'] | undefined)[] = [undefined, 'front', 'corner'
  * Time axis: ticks, lean angle and vehicle speed graphs, export range, keyframes, playhead, riding-state band.
  * Zoom with the wheel (centered on the mouse position); scroll left and right with Shift+wheel, horizontal scroll or the scrollbar at the bottom
  */
-export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lean, speed, riding, markers, incidents, onSeek, frameOf }: Props): React.JSX.Element {
+export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lean, speed, riding, notes, incidents, onSeek, frameOf, onShotChange }: Props): React.JSX.Element {
   // redraw when the language changes (the drawing effect runs on every render)
   useLang()
   const ref = useRef<HTMLCanvasElement>(null)
@@ -119,6 +123,22 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
 
   // tooltip (kind) when the mouse is over a keyframe
   const [tip, setTip] = useState<{ x: number; y: number; k: Keyframe } | null>(null)
+  /** Right-click menu on a keyframe (change the shot to another view) */
+  const [menu, setMenu] = useState<{ x: number; y: number; k: Keyframe } | null>(null)
+  const onShotChangeRef = useRef(onShotChange)
+  onShotChangeRef.current = onShotChange
+  useEffect(() => {
+    if (!menu) return
+    const close = (e: KeyboardEvent | PointerEvent): void => {
+      if (e instanceof KeyboardEvent ? e.key === 'Escape' : !(e.target as HTMLElement).closest?.('.tl-menu')) setMenu(null)
+    }
+    window.addEventListener('keydown', close)
+    window.addEventListener('pointerdown', close)
+    return () => {
+      window.removeEventListener('keydown', close)
+      window.removeEventListener('pointerdown', close)
+    }
+  }, [menu])
 
   // redraw when the size changes
   const [, setTick] = useState(0)
@@ -268,23 +288,12 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       const a = x(c.start)
       g.fillRect(a, 37, Math.max(2, x(c.end) - a), 4)
     }
-    // markers (flags)
-    for (const m of markers) {
-      if (m.t < v0 || m.t > v1) continue
-      const mx = x(m.t)
-      g.strokeStyle = '#f5b84a'
-      g.lineWidth = 1.5
-      g.beginPath()
-      g.moveTo(mx, 14)
-      g.lineTo(mx, H - BAND)
-      g.stroke()
-      g.fillStyle = '#f5b84a'
-      g.beginPath()
-      g.moveTo(mx, 14)
-      g.lineTo(mx + 9, 18)
-      g.lineTo(mx, 22)
-      g.closePath()
-      g.fill()
+    // captions and place labels
+    for (const c of notes ?? []) {
+      if (c.end < v0 || c.start > v1) continue
+      g.fillStyle = '#6ec6ff'
+      const a = x(c.start)
+      g.fillRect(a, 31, Math.max(2, x(c.end) - a), 3)
     }
     // playhead
     if (tNow >= v0 && tNow <= v1) {
@@ -312,11 +321,38 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       const { v0, v1 } = viewRef.current
       const s = Math.max(0, Math.min(dur, timeAt(e.clientX)))
       // clicking near a keyframe snaps to it
-      const near = [...keyframes, ...markers].find((k) => Math.abs(((k.t - s) / (v1 - v0)) * (r.width - 2 * PAD)) < 6)
+      const near = keyframes.find((k) => Math.abs(((k.t - s) / (v1 - v0)) * (r.width - 2 * PAD)) < 6)
       const ts = near ? near.t : s
       onSeek(frameOfRef.current ? frameOfRef.current(ts) : Math.round(ts * fps))
     }
+    /** Keyframe under the pointer on the keyframe row (above and below the diamond), if any */
+    const keyAt = (e: MouseEvent): Keyframe | null => {
+      const r = c.getBoundingClientRect()
+      const y = e.clientY - r.top
+      if (y < 12 || y > 32) return null
+      const { v0, v1 } = viewRef.current
+      const IW = r.width - 2 * PAD
+      let best: Keyframe | null = null
+      let bd = 7
+      for (const k of keyframes) {
+        const d = Math.abs(PAD + ((k.t - v0) / (v1 - v0)) * IW - (e.clientX - r.left))
+        if (d < bd) {
+          bd = d
+          best = k
+        }
+      }
+      return best
+    }
+    const ctx = (e: MouseEvent): void => {
+      e.preventDefault()
+      const k = keyAt(e)
+      const r = c.getBoundingClientRect()
+      setTip(null)
+      setMenu(k && onShotChangeRef.current ? { x: e.clientX - r.left, y: e.clientY - r.top, k } : null)
+    }
     const pd = (e: PointerEvent): void => {
+      if (e.button === 2) return
+      setMenu(null)
       down = true
       c.setPointerCapture(e.pointerId)
       seekAt(e)
@@ -329,21 +365,9 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       }
       // if the pointer is on the keyframe row (above and below the diamond), show a description of the nearest keyframe
       const r = c.getBoundingClientRect()
-      const y = e.clientY - r.top
-      const { v0, v1 } = viewRef.current
-      const IW = r.width - 2 * PAD
-      let best: Keyframe | null = null
-      let bd = 7
-      if (y >= 12 && y <= 32)
-        for (const k of keyframes) {
-          const d = Math.abs(PAD + ((k.t - v0) / (v1 - v0)) * IW - (e.clientX - r.left))
-          if (d < bd) {
-            bd = d
-            best = k
-          }
-        }
+      const best = keyAt(e)
       // place it right above the mouse cursor
-      setTip(best ? { x: e.clientX - r.left, y, k: best } : null)
+      setTip(best ? { x: e.clientX - r.left, y: e.clientY - r.top, k: best } : null)
     }
     const pl = (): void => setTip(null)
     const pu = (): void => {
@@ -367,19 +391,21 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
       zoomBy(Math.exp(e.deltaY * 0.0015), timeAt(e.clientX))
     }
     c.addEventListener('pointerdown', pd)
+    c.addEventListener('contextmenu', ctx)
     c.addEventListener('pointermove', pm)
     c.addEventListener('pointerup', pu)
     c.addEventListener('pointerleave', pl)
     c.addEventListener('wheel', wheel, { passive: false })
     return () => {
       c.removeEventListener('pointerdown', pd)
+      c.removeEventListener('contextmenu', ctx)
       c.removeEventListener('pointermove', pm)
       c.removeEventListener('pointerup', pu)
       c.removeEventListener('pointerleave', pl)
       c.removeEventListener('wheel', wheel)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dur, fps, keyframes, markers, onSeek])
+  }, [dur, fps, keyframes, onSeek])
 
   // ---- Scrollbar (bottom): drag the thumb to scroll left and right. Pressing outside the thumb jumps there, and you can keep dragging ----
   const barRef = useRef<HTMLDivElement>(null)
@@ -415,10 +441,37 @@ export function Timeline({ frameCount, fps, frame, keyframes, inSec, outSec, lea
   return (
     <div className="track">
       <canvas ref={ref} />
-      {tip && (
+      {menu && (
+        <div className="tl-menu" data-menu="shot" style={{ left: Math.max(4, menu.x), top: Math.max(4, menu.y - 8) }} onPointerDown={(e) => e.stopPropagation()}>
+          <div className="tl-menu-head">
+            <span className="swatch" style={{ background: keyColor(menu.k.tag) }} />
+            {menu.k.tag ? t(KEY_TAG_NAMES[menu.k.tag]) : t('Placed by hand')}{' '}
+            {(() => {
+              // The shot that changes: from its first to its last keyframe
+              const ks = shotPair(keyframes, menu.k.t).map((j) => keyframes[j].t)
+              const m = (x: number): string => `${Math.floor(x / 60)}:${(x % 60).toFixed(2).padStart(5, '0')}`
+              return ks.length > 1 ? `${m(ks[0])}–${m(ks[ks.length - 1])}` : m(menu.k.t)
+            })()}
+          </div>
+          <div className="tl-menu-sub">{t('Change this shot to')}</div>
+          {SHOT_CHOICES.map((ch) => (
+            <button
+              key={ch}
+              data-choice={ch}
+              onClick={() => {
+                onShotChangeRef.current?.(menu.k.t, ch)
+                setMenu(null)
+              }}
+            >
+              {t(SHOT_CHOICE_NAMES[ch])}
+            </button>
+          ))}
+        </div>
+      )}
+      {tip && !menu && (
         <div className="tl-tip" data-tip="keyframe" style={{ left: Math.max(50, tip.x), top: tip.y - 10 }}>
           <span className="swatch" style={{ background: keyColor(tip.k.tag) }} />
-          {tip.k.tag ? t(KEY_TAG_NAMES[tip.k.tag]) : t('Manual / marker')}
+          {tip.k.tag ? t(KEY_TAG_NAMES[tip.k.tag]) : t('Placed by hand')}
         </div>
       )}
       <div ref={barRef} className={`tl-scroll${zoomed ? '' : ' full'}`} data-handle="tl-scroll" onPointerDown={onBarDown} title={zoomed ? t('Drag to scroll left and right') : ''}>

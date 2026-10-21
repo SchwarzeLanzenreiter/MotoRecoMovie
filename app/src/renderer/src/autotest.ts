@@ -327,6 +327,38 @@ export async function runAutotest(): Promise<void> {
           // Switch the UI language ('ja' | 'en')
           setLang(step.lang as Lang)
           await new Promise((r) => setTimeout(r, 300))
+        } else if (step.tap) {
+          // A click on the preview at a point given as a fraction of the picture [u, v] (e.g. to place a label)
+          const c = document.querySelector('.viewer canvas') as HTMLCanvasElement | null
+          const r = c?.getBoundingClientRect()
+          const [u, v] = step.tap as [number, number]
+          if (c && r) {
+            const opt = { bubbles: true, pointerId: 1, clientX: r.left + u * r.width, clientY: r.top + v * r.height }
+            c.dispatchEvent(new PointerEvent('pointerdown', opt))
+            c.dispatchEvent(new PointerEvent('pointerup', opt))
+          }
+          await new Promise((r) => setTimeout(r, 200))
+          console.log(`tap ${u},${v}:`, JSON.stringify(st().labels))
+        } else if (step.keyMenu !== undefined) {
+          // Right click on the timeline's keyframe row at time keyMenu [s] (whole video shown), then pick step.choice in the menu
+          const c = document.querySelector('.timeline canvas') as HTMLCanvasElement | null
+          const r = c?.getBoundingClientRect()
+          const dur = (st().duration as number) || 1
+          if (c && r) {
+            const x = r.left + 12 + ((step.keyMenu as number) / dur) * (r.width - 24)
+            c.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: r.top + 22 }))
+          }
+          await new Promise((r) => setTimeout(r, 300))
+          const b = document.querySelector(`.tl-menu button[data-choice="${step.choice as string}"]`) as HTMLButtonElement | null
+          console.log(`keyMenu ${step.keyMenu}: menu ${b ? 'shown' : 'not shown'}`)
+          b?.click()
+          await new Promise((r) => setTimeout(r, 300))
+        } else if (step.until === 'followed') {
+          // Wait until no place label is being followed
+          const t0 = performance.now()
+          await new Promise((r) => setTimeout(r, 300))
+          while ((st().following as number) > 0 && performance.now() - t0 < 120000) await new Promise((r) => setTimeout(r, 200))
+          console.log(`Followed ${(performance.now() - t0).toFixed(0)}ms`, JSON.stringify(st().labels))
         } else if (step.click) {
           ;(document.querySelector(step.click as string) as HTMLElement | null)?.click()
           await new Promise((r) => setTimeout(r, 200))
