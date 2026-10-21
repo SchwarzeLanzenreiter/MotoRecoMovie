@@ -89,7 +89,7 @@ If you follow the steps below, no programming knowledge is needed.
 
 The `app\dist` folder now contains two things. Use whichever you like.
 
-- **Install it**: open `MotoRecoMovie Setup 0.1.3.exe` to start the installer. When it finishes, "MotoRecoMovie" appears on the desktop and in the Start menu
+- **Install it**: open `MotoRecoMovie Setup 0.1.4.exe` to start the installer. When it finishes, "MotoRecoMovie" appears on the desktop and in the Start menu
 - **Use it without installing**: open `MotoRecoMovie.exe` in the `win-unpacked` folder. You can move the whole folder anywhere you like
 
 The first time you open it, Windows may show "Windows protected your PC" (the app is not signed with a publisher certificate).
