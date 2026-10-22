@@ -122,7 +122,7 @@ export const JA_PANEL: Record<string, string> = {
   'Remove': '外す',
   'Shown in the middle of the meter instead of the built-in emblem. Remembered on this PC for each theme.': 'メーターの中央に、内蔵のエンブレムの代わりに表示します。テーマごとにこのPCに記憶されます。',
   // Names of the design themes that are not makers (render/themes)
-  'Japanese': '純和風',
+  'Japanese style': '純和風',
   'Ainu patterns': 'アイヌ文様',
   'Everything over the video changes together': '映像に重ねる表示をまとめて切り替え',
   'Sign position': '標識の位置',

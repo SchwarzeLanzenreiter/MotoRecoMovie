@@ -1,4 +1,5 @@
-// Japanese dictionary (menu). Keys are the English labels of the main menu built in src/main/index.ts, values are Japanese
+// Japanese dictionary (menu). Keys are the English labels of the main menu built in src/main/index.ts, values are Japanese.
+// Keys that the screen's dictionaries also have with another Japanese ('View', 'Full screen') are written with "(menu)", see MENU_KEY
 export const JA_MENU: Record<string, string> = {
   'File': 'ファイル',
   'Open…': '開く…',
@@ -11,13 +12,13 @@ export const JA_MENU: Record<string, string> = {
   'Copy': 'コピー',
   'Paste': '貼り付け',
   'Select all': 'すべて選択',
-  'View': '表示',
+  'View (menu)': '表示',
   'Reload': '再読み込み',
   'Developer tools': '開発者ツール',
   'Actual size': '実際のサイズ',
   'Zoom in': '拡大',
   'Zoom out': '縮小',
-  'Full screen': '全画面表示',
+  'Full screen (menu)': '全画面表示',
   'Window': 'ウィンドウ',
   'Minimize': '最小化',
   'Close window': 'ウィンドウを閉じる',

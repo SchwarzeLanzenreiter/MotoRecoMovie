@@ -4,7 +4,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { JA_DICT, tr } from '../src/renderer/src/i18n'
+import { JA_DICT, LANG_NAMES, tr } from '../src/renderer/src/i18n'
+import { JA_ENGINE } from '../src/renderer/src/i18n/ja-engine'
+import { JA_MENU } from '../src/renderer/src/i18n/ja-menu'
+import { JA_PANEL } from '../src/renderer/src/i18n/ja-panel'
+import { JA_RENDER } from '../src/renderer/src/i18n/ja-render'
+import { JA_UI } from '../src/renderer/src/i18n/ja-ui'
 
 const APP = join(import.meta.dirname, '..')
 const ROOT = join(APP, 'src/renderer/src')
@@ -59,6 +64,17 @@ assert.deepEqual(missing, [], 'some keys have no Japanese translation')
 assert.deepEqual(badVars, [], 'some placeholder names differ')
 assert.deepEqual(jaInKey, [], 'some keys contain Japanese')
 assert.deepEqual(jaInSource, [], 'Japanese is left in the source')
+// 5. One English key in two dictionaries with different Japanese: the later one in the merge wins and silently changes the other's text
+const dicts: [string, Record<string, string>][] = [['ja-ui', JA_UI], ['ja-panel', JA_PANEL], ['ja-render', JA_RENDER], ['ja-engine', JA_ENGINE], ['ja-menu', JA_MENU]]
+const clashes: string[] = []
+for (let i = 0; i < dicts.length; i++)
+  for (let j = i + 1; j < dicts.length; j++)
+    for (const [en, ja] of Object.entries(dicts[i][1]))
+      if (en in dicts[j][1] && dicts[j][1][en] !== ja) clashes.push(`"${en}": ${dicts[i][0]} "${ja}" vs ${dicts[j][0]} "${dicts[j][1][en]}"`)
+for (const c of clashes) console.log(`Dictionary clash: ${c}`)
+assert.deepEqual(clashes, [], 'the same English key has different Japanese in two dictionaries')
+// The language selector names each language in its own language
+assert.deepEqual(LANG_NAMES, [['ja', '日本語'], ['en', 'English']]) // i18n-ignore
 // Default layer names are shown in the current language whichever language created them. Custom names stay as they are
 {
   const { layerName } = await import('../src/renderer/src/ui/layerName')

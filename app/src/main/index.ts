@@ -217,6 +217,8 @@ const MENU_EN: Record<string, string> = {
   help: 'Help', licenses: 'License information…', about: 'About MotoRecoMovie…',
   aboutTitle: 'About MotoRecoMovie', version: 'Version', mit: 'Free software under the MIT License', github: 'Open on GitHub'
 }
+/** Dictionary keys of the labels that the screen also uses with a different Japanese (all dictionaries are merged on the screen side) */
+const MENU_KEY: Record<string, string> = { view: 'View (menu)', fullscreen: 'Full screen (menu)' }
 const REPO_URL = 'https://github.com/SchwarzeLanzenreiter/MotoRecoMovie'
 
 /** Text of the About dialog: the app's version (package.json) and the versions of the runtime it is built on */
@@ -242,7 +244,7 @@ async function showAbout(lang: MenuLang): Promise<void> {
   if (r.response === 1) await shell.openExternal(REPO_URL)
 }
 const MENU_TEXT: Record<MenuLang, Record<string, string>> = {
-  ja: Object.fromEntries(Object.entries(MENU_EN).map(([k, en]) => [k, JA_MENU[en] ?? en])),
+  ja: Object.fromEntries(Object.entries(MENU_EN).map(([k, en]) => [k, JA_MENU[MENU_KEY[k] ?? en] ?? en])),
   en: MENU_EN
 }
 /** The menu items "Open", "Close" and "Settings" are handled by the screen (renderer) */

@@ -7,7 +7,7 @@ import { sakura, sakuraScatter } from './emblems'
 
 export const WAFU: Theme = {
   id: 'wafu',
-  name: 'Japanese', // i18n-ignore
+  name: 'Japanese style', // i18n-ignore
   pal: {
     line: '#d9b25f',
     line2: '#f0d48a',
