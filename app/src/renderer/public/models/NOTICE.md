@@ -39,3 +39,15 @@
 - License: Apache License 2.0 (advimman/lama)
   https://github.com/advimman/lama/blob/main/LICENSE
 - Modifications: none
+
+## yolo-v9-t-640-license-plates-end2end.onnx
+
+- Description: license plate detector (YOLOv9 tiny, 640×640 input, non-maximum suppression in the model). Finds license plates for the privacy mosaic
+  (engine/plates.ts; input: 1×3×640×640 RGB, 0 to 1; output: rows of [batch, x1, y1, x2, y2, class, score])
+- Source: the release "assets" of ankandrew/open-image-models
+  https://github.com/ankandrew/open-image-models/releases/download/assets/yolo-v9-t-640-license-plates-end2end.onnx
+  (SHA-256 c3c1026ca7d0585dd88084d68182dd897113712fa734ae1557ca70174440c076)
+- License: MIT License (Copyright (c) 2024 ankandrew)
+  https://github.com/ankandrew/open-image-models/blob/main/LICENSE
+  The network is YOLOv9 (WongKinYiu/yolov9, GPL-3.0). The training data of the weights is not published
+- Modifications: none

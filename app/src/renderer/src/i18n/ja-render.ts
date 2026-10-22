@@ -1,5 +1,7 @@
 // Japanese dictionary (render). Keys are the English source strings, values are Japanese. Use the same {name} placeholders on both sides
 export const JA_RENDER: Record<string, string> = {
+  'Gauges': 'メーター',
+  // Default names of the meters of earlier versions (renamed to the themed meter when a project is opened)
   'Chronograph gauges': 'クロノグラフ風メーター',
   'Cyber gauges': 'サイバー風メーター',
   'Gauge cluster (switches with riding state)': 'メーター一式（走行状態で切り替え）',
@@ -14,10 +16,6 @@ export const JA_RENDER: Record<string, string> = {
   'Readout': '数値一覧',
   'Tachometer max': '回転計の上限',
   'Redline': 'レッドゾーン',
-  'Color scheme': '配色',
-  'BMW (M colors)': 'BMW（M カラー）',
-  'Standard': '標準',
-  'Neon': 'ネオン',
   'Brake pressure max': 'ブレーキ圧の上限',
   'Lean scale': 'リーンの目盛り',
   'Display': '表示',

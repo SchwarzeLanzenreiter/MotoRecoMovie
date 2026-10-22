@@ -24,7 +24,7 @@ Result for this sample: `b = −6.440s`, clock rate difference +5 ppm (about 7 m
 **The X5 IMU does not run at 1000 Hz** (996.3 Hz and 995.9 Hz on the two clips on hand; the X6 is 999.9 Hz). The gyro used to be grouped 10 samples at a time and treated as 100 Hz, so
 on the X5 the time scale was off by 0.4%, the coarse sync missed by 2 s (13-min video), and the refinement, which only searched ±0.3 s, found none of the windows. The lean angle went to ±120°, and
 floating signs were tilted by up to 50° against the scenery (video from 2026-08-13). After re-binning at even intervals, the coarse sync peak ratio went from 2.2 → 3.4, the window correlation to 0.99, the lean angle error to 1.1°,
-and the sign tilt mismatch (difference from the gravity direction derived from acceleration) from 29° → 1.8° RMS (the X6 0919 clip stays at 2.6°; `test/signtilt.test.ts`).
+and the sign tilt mismatch (difference from the gravity direction derived from acceleration) from 29° → 1.8° RMS (the X6 0919 clip stays at 2.6°; `test/signtilt.test.ts`). Signs are now leveled by gravity rather than the GPS grade, which brings it to 0.3° (see `telemetry.md`, "Sign projection").
 When sync fails, the mount orientation refined with the log (`refineMountWithLog`) is also off. In this video, forward was off by 2.0° to the left and 3.0° down, and in the forward view the vanishing point appeared right of the screen center
 (after fixing the sync, the vanishing point of the road on straights is almost at the screen center)
 

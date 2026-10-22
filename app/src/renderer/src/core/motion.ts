@@ -4,7 +4,7 @@
 //   qs(t) : q Gaussian-smoothed per body axis (pitch/yaw/roll)
 //   virtual camera = qs · [roll completion] · [horizon correction] · R_mount · R_view
 import type { Imu } from './insv'
-import { matT, matVec, qConj, qFromRotvec, qMul, qNormalize, qSlerp, qToRotvec, type Mat3, type Quat } from './quat'
+import { matT, matVec, qConj, qFromRotvec, qMul, qNormalize, qSlerp, qToMat, qToRotvec, type Mat3, type Quat, type Vec3 } from './quat'
 
 /** IMU coordinates → rig coordinates (X6; estimated by matching against the video) */
 export const IMU_TO_RIG: Mat3 = new Float64Array([0, 0, -1, 1, 0, 0, 0, -1, 0])
@@ -54,6 +54,77 @@ export function sampleQ(o: Orientation, t: number): Quat {
   const a = o.q.subarray(lo * 4, lo * 4 + 4)
   const b = o.q.subarray(hi * 4, hi * 4 + 4)
   return qSlerp(a, b, (t - ts[lo]) / (ts[hi] - ts[lo]))
+}
+
+// ---- Gravity direction ----
+
+const G = 9.80665 // [m/s²]
+
+/**
+ * The acceleration in gyro (world) coordinates averaged over a sliding window, every second (gravityTrack). The opposite of what the
+ * accelerometer reads, in g: gravity minus the bike's own acceleration
+ */
+export interface GravityTrack {
+  t0: number // time of the first value [us]
+  dt: number // [us]
+  halfS: number // half the window [s]
+  /** [x,y,z]×N, all 0 where unknown */
+  mean: Float64Array
+}
+
+/**
+ * Averages the acceleration moved into gyro coordinates over ±halfS seconds, for the gravity direction (gravityAt).
+ * The gyro drifts too little within the window to matter
+ */
+export function gravityTrack(imu: Imu, ori: Orientation, halfS = 30, M: Mat3 = IMU_TO_RIG): GravityTrack {
+  const n = imu.ts.length
+  const t0 = imu.ts[0]
+  const bins = n ? Math.floor((imu.ts[n - 1] - t0) / 1e6) + 1 : 0
+  // Per-second sums and counts (prefix sums, so the window sum is one subtraction)
+  const pre = new Float64Array((bins + 1) * 4)
+  for (let i = 0; i < n; i += 4) {
+    const k = Math.floor((imu.ts[i] - t0) / 1e6)
+    const a = matVec(M, [imu.acc[i * 3], imu.acc[i * 3 + 1], imu.acc[i * 3 + 2]])
+    const w = matVec(qToMat(ori.q.subarray(i * 4, i * 4 + 4)), a)
+    for (let c = 0; c < 3; c++) pre[(k + 1) * 4 + c] -= w[c]
+    pre[(k + 1) * 4 + 3]++
+  }
+  for (let k = 1; k <= bins; k++) for (let c = 0; c < 4; c++) pre[k * 4 + c] += pre[(k - 1) * 4 + c]
+  const mean = new Float64Array(bins * 3)
+  for (let k = 0; k < bins; k++) {
+    const [a, b] = gravityWindow(bins, halfS, k)
+    const cnt = pre[b * 4 + 3] - pre[a * 4 + 3]
+    if (cnt > 0) for (let c = 0; c < 3; c++) mean[k * 3 + c] = (pre[b * 4 + c] - pre[a * 4 + c]) / cnt
+  }
+  return { t0, dt: 1e6, halfS, mean }
+}
+
+/** Bins [a, b) averaged for bin k */
+function gravityWindow(bins: number, halfS: number, k: number): [number, number] {
+  return [Math.max(0, k - halfS), Math.min(bins, k + halfS + 1)]
+}
+
+/**
+ * Gravity "down" at time t [us] in gyro coordinates (unit vector; null where unknown).
+ * The window average still holds the bike's own acceleration, which over the window adds up to the change in velocity: braking and
+ * accelerating, and in corners the push outward, which does not cancel when the road turns one way (a hairpin tilts "down" by about 3°).
+ * vel(t) gives the velocity in gyro coordinates [m/s] to take it out; without it the average is used as it is
+ */
+export function gravityAt(g: GravityTrack, t: number, vel?: (t: number) => Vec3 | null): Vec3 | null {
+  const n = g.mean.length / 3
+  if (!n) return null
+  const k = Math.max(0, Math.min(n - 1, Math.round((t - g.t0) / g.dt)))
+  const v: Vec3 = [g.mean[k * 3], g.mean[k * 3 + 1], g.mean[k * 3 + 2]]
+  if (vel) {
+    const [a, b] = gravityWindow(n, g.halfS, k)
+    const va = vel(g.t0 + a * g.dt)
+    const vb = vel(g.t0 + b * g.dt)
+    // mean(gravity) = mean(-reading) + mean(acceleration) = mean(-reading) + Δv / window
+    const T = ((b - a) * g.dt) / 1e6
+    if (va && vb) for (let c = 0; c < 3; c++) v[c] += (vb[c] - va[c]) / (T * G)
+  }
+  const len = Math.hypot(v[0], v[1], v[2])
+  return len > 0.5 ? [v[0] / len, v[1] / len, v[2] / len] : null
 }
 
 // ---- Mount estimation ----

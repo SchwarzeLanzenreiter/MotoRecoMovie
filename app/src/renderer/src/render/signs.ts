@@ -1,6 +1,6 @@
 // Corner signs (curve radius). Drawn as 3D objects fixed to points on the map, with perspective projection
-// from the virtual camera: a flat plate facing the oncoming rider, standing on a post that grows from the road surface
-// outside the curve. Signs already passed stay where they are and show their back (grey plate and brackets) when seen from behind.
+// from the virtual camera: an AR panel in the project's design theme floating above the road outside the curve, facing the oncoming
+// rider, with a ring of light on the road under it. Signs already passed stay where they are and show through from behind, fainter.
 //
 // The face (or back) is drawn into a small canvas in sign coordinates (meters) and mapped onto the screen with a mesh of
 // triangles, so it foreshortens, turns edge-on while passing and follows the curved wide-angle projection.
@@ -15,10 +15,8 @@ import { signPlace, type Corner } from '../core/corners'
 import { sightVisibility, type RoadTrack } from '../core/sightline'
 import type { Mat3 } from '../core/quat'
 import type { Ctx } from './meters'
-import { M_COLORS } from './chrono'
 import { focalFor, projectPoint, wideK } from './projection'
-
-export type SignStyle = 'real' | 'cyber'
+import { cornerColor, drawStripes, panelCorner, panelPath, themeFont, type Theme } from './theme'
 
 export interface SignCamera {
   x: number
@@ -37,17 +35,11 @@ export const SIGN = {
   camHeight: 1.2,
   maxDist: 320, // signs farther than this are not shown [m]
   fadeDist: 80, // width over which signs fade in from a distance [m]
-  pole: 0.2, // diameter of the post [m]
   keepBehind: 60 // signs passed less than this many seconds ago are still drawn (seen from behind)
 }
 
-/** Extent of the face in sign coordinates [m] (x right, y down from the sign center as seen from the front), with room for the shadow / glow */
-const EXTENT = {
-  real: { x0: -2.9, x1: 2.9, y0: -2.9, y1: 4.7 },
-  cyber: { x0: -3.0, x1: 3.0, y0: -1.9, y1: 1.9 }
-}
-
-const NUM = "Bahnschrift, 'Segoe UI', sans-serif"
+/** Extent of the face in sign coordinates [m] (x right, y down from the sign center as seen from the front), with room for the glow */
+const EXTENT = { x0: -3.0, x1: 3.0, y0: -1.9, y1: 1.9 }
 
 /** Reference point of a sign in camera coordinates (z = forward distance) */
 function toCamera(cam: SignCamera, e: number, n: number, up: number): [number, number, number] {
@@ -56,120 +48,57 @@ function toCamera(cam: SignCamera, e: number, n: number, up: number): [number, n
   return [M[0] * e + M[3] * d + M[6] * n, M[1] * e + M[4] * d + M[7] * n, M[2] * e + M[5] * d + M[8] * n]
 }
 
-/** Sign (Japanese warning sign style: a yellow diamond with a curve arrow, and a "R=nn" sub-plate below) */
-function drawSign(g: Ctx, s: number, dir: 1 | -1, radius: number): void {
-  const d = s / 2
-  // Shadow that gives a floating feel (blurred toward the bottom)
-  g.save()
-  g.shadowColor = 'rgba(0,0,0,0.55)'
-  // Blur gets heavier the larger it is, so cap it (the sign fills the screen just before passing)
-  g.shadowBlur = Math.min(30, s * 0.12)
-  g.shadowOffsetY = Math.min(15, s * 0.06)
-  g.beginPath()
-  g.moveTo(0, -d)
-  g.lineTo(d, 0)
-  g.lineTo(0, d)
-  g.lineTo(-d, 0)
-  g.closePath()
-  g.fillStyle = '#ffd200'
-  g.fill()
-  g.restore()
-  // Black outline
-  g.lineJoin = 'round'
-  g.strokeStyle = '#111'
-  g.lineWidth = s * 0.035
-  const di = d * 0.88
-  g.beginPath()
-  g.moveTo(0, -di)
-  g.lineTo(di, 0)
-  g.lineTo(0, di)
-  g.lineTo(-di, 0)
-  g.closePath()
-  g.stroke()
-  // Curve arrow (goes from bottom to top, turning right or left)
-  g.save()
-  g.scale(dir, 1)
-  g.strokeStyle = '#111'
-  g.lineWidth = s * 0.075
-  g.lineCap = 'butt'
-  g.beginPath()
-  g.moveTo(-s * 0.06, s * 0.3)
-  g.lineTo(-s * 0.06, s * 0.02)
-  g.quadraticCurveTo(-s * 0.06, -s * 0.16, s * 0.12, -s * 0.16)
-  g.stroke()
-  g.fillStyle = '#111'
-  g.beginPath()
-  g.moveTo(s * 0.26, -s * 0.16)
-  g.lineTo(s * 0.1, -s * 0.28)
-  g.lineTo(s * 0.1, -s * 0.04)
-  g.closePath()
-  g.fill()
-  g.restore()
-  // Sub-plate "R=nn"
-  const pw = s * 0.82
-  const ph = s * 0.3
-  const py = d + s * 0.06
-  g.save()
-  g.shadowColor = 'rgba(0,0,0,0.5)'
-  g.shadowBlur = Math.min(20, s * 0.08)
-  g.shadowOffsetY = Math.min(10, s * 0.04)
-  g.fillStyle = '#ffffff'
-  g.beginPath()
-  g.roundRect(-pw / 2, py, pw, ph, s * 0.03)
-  g.fill()
-  g.restore()
-  g.strokeStyle = '#111'
-  g.lineWidth = s * 0.02
-  g.beginPath()
-  g.roundRect(-pw / 2 + s * 0.02, py + s * 0.02, pw - s * 0.04, ph - s * 0.04, s * 0.02)
-  g.stroke()
-  g.fillStyle = '#111'
-  g.font = `700 ${(ph * 0.66).toFixed(1)}px ${NUM}`
-  g.textAlign = 'center'
-  g.textBaseline = 'middle'
-  g.fillText(`R=${radius}`, 0, py + ph * 0.54)
-}
-
-/** Color by curve radius (AR style): tight = red, medium = orange, gentle = blue */
-function cyberColor(radius: number): string {
-  return radius < 60 ? M_COLORS.red : radius < 120 ? '#ffb000' : M_COLORS.light
-}
-
-/** AR-style sign: a translucent hologram-like panel with a neon frame, curve arrow, "R165" and the remaining distance */
-function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: number, col: string): void {
+/** AR-style sign in the theme: a translucent panel in the theme's shape with a colored frame, curve arrow, "R165" and the remaining distance */
+function drawArSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: number, col: string, T: Theme): void {
+  const L = T.look
+  const P = T.pal
   const w = s
   const h = s * 0.56
-  const ch = h * 0.18 // corner cut size
   const lw = Math.max(1, s * 0.012)
-  const shape = (): void => {
-    g.beginPath()
-    g.moveTo(-w / 2 + ch, -h / 2)
-    g.lineTo(w / 2, -h / 2)
-    g.lineTo(w / 2, h / 2 - ch)
-    g.lineTo(w / 2 - ch, h / 2)
-    g.lineTo(-w / 2, h / 2)
-    g.lineTo(-w / 2, -h / 2 + ch)
-    g.closePath()
-  }
+  const gl = L.glow
+  const corner = panelCorner(L.panel, h * 0.3, h)
+  const shape = (): void => panelPath(g, L.panel, -w / 2, -h / 2, w, h, corner)
   // Panel (translucent) and scan lines
   shape()
-  g.fillStyle = 'rgba(4, 16, 34, 0.42)'
-  g.fill()
   g.save()
-  shape()
-  g.clip()
-  g.fillStyle = 'rgba(255,255,255,0.05)'
-  const step = Math.max(2, h / 22)
-  for (let y = -h / 2; y < h / 2; y += step) g.fillRect(-w / 2, y, w, step * 0.3)
+  g.globalAlpha *= L.panel === 'classic' ? 0.8 : 0.55
+  g.fillStyle = P.bg1
+  g.fill()
   g.restore()
-  // Frame (glowing)
+  if (L.scan) {
+    g.save()
+    shape()
+    g.clip()
+    g.fillStyle = 'rgba(255,255,255,0.05)'
+    const step = Math.max(2, h / 22)
+    for (let y = -h / 2; y < h / 2; y += step) g.fillRect(-w / 2, y, w, step * 0.3)
+    g.restore()
+  }
+  // Frame
   shape()
   g.strokeStyle = col
   g.lineWidth = lw * 1.4
-  g.shadowColor = col
-  g.shadowBlur = Math.min(24, s * 0.06)
+  if (gl > 0) {
+    g.shadowColor = col
+    g.shadowBlur = Math.min(24, s * 0.06 * gl)
+  }
   g.stroke()
   g.shadowBlur = 0
+  if (L.panel === 'classic' || L.panel === 'wafu') {
+    // A second thin rule just inside the frame
+    const i = h * 0.05
+    panelPath(g, L.panel, -w / 2 + i, -h / 2 + i, w - i * 2, h - i * 2, Math.max(0, corner - i))
+    g.lineWidth = lw * 0.7
+    g.stroke()
+  } else if (L.panel === 'tab') {
+    // Colored bar down the left side
+    g.save()
+    shape()
+    g.clip()
+    g.fillStyle = col
+    g.fillRect(-w / 2, -h / 2, w * 0.035, h)
+    g.restore()
+  }
   // Left: curve arrow (neon line)
   g.save()
   g.translate(-w * 0.28, h * 0.02)
@@ -178,8 +107,10 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   g.lineWidth = s * 0.05
   g.lineCap = 'round'
   g.lineJoin = 'round'
-  g.shadowColor = col
-  g.shadowBlur = Math.min(20, s * 0.05)
+  if (gl > 0) {
+    g.shadowColor = col
+    g.shadowBlur = Math.min(20, s * 0.05 * gl)
+  }
   g.beginPath()
   g.moveTo(-s * 0.05, h * 0.32)
   g.lineTo(-s * 0.05, h * 0.02)
@@ -208,19 +139,21 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   g.textAlign = 'center'
   g.textBaseline = 'middle'
   g.fillStyle = col
-  g.font = `600 ${(h * 0.13).toFixed(1)}px ${NUM}`
+  g.font = themeFont(L, h * 0.13, 600)
   cg.letterSpacing = `${(h * 0.03).toFixed(1)}px`
-  g.fillText(`CURVE ${dir > 0 ? 'RIGHT' : 'LEFT'}`, tx, -h * 0.32)
+  g.fillText(`CURVE ${dir > 0 ? 'RIGHT' : 'LEFT'}`, tx, -h * 0.32, w * 0.56)
   cg.letterSpacing = '0px'
-  g.fillStyle = '#ffffff'
-  g.shadowColor = col
-  g.shadowBlur = Math.min(18, s * 0.04)
-  g.font = `700 ${(h * 0.36).toFixed(1)}px ${NUM}`
-  g.fillText(`R${radius}`, tx, -h * 0.02)
+  g.fillStyle = P.text
+  if (gl > 0) {
+    g.shadowColor = col
+    g.shadowBlur = Math.min(18, s * 0.04 * gl)
+  }
+  g.font = themeFont(L, h * 0.36, 700)
+  g.fillText(`R${radius}`, tx, -h * 0.02, w * 0.56)
   g.shadowBlur = 0
-  g.font = `600 ${(h * 0.13).toFixed(1)}px ${NUM}`
+  g.font = themeFont(L, h * 0.13, 600)
   g.fillStyle = col
-  g.fillText(`\u25B8 ${Math.max(0, Math.round(distM / 5) * 5)} m`, tx, h * 0.28)
+  g.fillText(`\u25B8 ${Math.max(0, Math.round(distM / 5) * 5)} m`, tx, h * 0.28, w * 0.56)
   // Remaining distance bar (shorter the closer you get; full at 100m)
   const bw = w * 0.5
   const frac = Math.max(0, Math.min(1, distM / 100))
@@ -228,81 +161,28 @@ function drawCyberSign(g: Ctx, s: number, dir: 1 | -1, radius: number, distM: nu
   g.fillRect(tx - bw / 2, h * 0.38, bw, h * 0.04)
   g.fillStyle = col
   g.fillRect(tx - bw / 2, h * 0.38, bw * frac, h * 0.04)
+  // The maker's stripes at the bottom left
+  if (P.stripes) drawStripes(g, P.stripes, -w * 0.42, h * 0.36, w * 0.06, h * 0.035, L.italic)
 }
 
-/** Back of the real-style sign: plain galvanized plates and the brackets that hold them on the post (the post itself is drawn in 3D) */
-function drawSignBack(g: Ctx, s: number): void {
-  const d = s / 2
-  const metal = (x0: number, y0: number, x1: number, y1: number): CanvasGradient => {
-    const gr = g.createLinearGradient(x0, y0, x1, y1)
-    gr.addColorStop(0, '#b9bec3')
-    gr.addColorStop(0.5, '#9ea4aa')
-    gr.addColorStop(1, '#868c92')
-    return gr
-  }
-  g.lineJoin = 'round'
-  g.beginPath()
-  g.moveTo(0, -d)
-  g.lineTo(d, 0)
-  g.lineTo(0, d)
-  g.lineTo(-d, 0)
-  g.closePath()
-  g.fillStyle = metal(-d, -d, d, d)
-  g.fill()
-  g.strokeStyle = '#5f656b'
-  g.lineWidth = s * 0.02
-  g.stroke()
-  // Folded rim just inside the edge
-  const di = d * 0.93
-  g.beginPath()
-  g.moveTo(0, -di)
-  g.lineTo(di, 0)
-  g.lineTo(0, di)
-  g.lineTo(-di, 0)
-  g.closePath()
-  g.strokeStyle = 'rgba(255,255,255,0.25)'
-  g.lineWidth = s * 0.012
-  g.stroke()
-  // Sub-plate
-  const pw = s * 0.82
-  const ph = s * 0.3
-  const py = d + s * 0.06
-  g.beginPath()
-  g.roundRect(-pw / 2, py, pw, ph, s * 0.03)
-  g.fillStyle = metal(-pw / 2, py, pw / 2, py + ph)
-  g.fill()
-  g.strokeStyle = '#5f656b'
-  g.lineWidth = s * 0.015
-  g.stroke()
-  // Brackets: horizontal channels across the plates, with bolts at both ends
-  const bar = (y: number, w: number): void => {
-    const bh = s * 0.045
-    g.fillStyle = '#6d7379'
-    g.fillRect(-w / 2, y - bh / 2, w, bh)
-    g.fillStyle = 'rgba(255,255,255,0.18)'
-    g.fillRect(-w / 2, y - bh / 2, w, bh * 0.3)
-    g.fillStyle = '#3f4448'
-    for (const x of [-w / 2 + bh * 0.6, w / 2 - bh * 0.6]) {
-      g.beginPath()
-      g.arc(x, y, bh * 0.28, 0, Math.PI * 2)
-      g.fill()
-    }
-  }
-  bar(-d * 0.45, d * 0.9)
-  bar(d * 0.45, d * 0.9)
-  bar(py + ph / 2, pw * 0.5)
+/** A sign face drawn flat, w px wide and centered on (cx, cy) (for previews of the themes) */
+export function drawSignFlat(g: Ctx, cx: number, cy: number, w: number, T: Theme, radius: number, dir: 1 | -1, distM: number): void {
+  g.save()
+  g.translate(cx, cy)
+  drawArSign(g, w, dir, radius, distM, cornerColor(T.pal, radius), T)
+  g.restore()
 }
 
 /** Default sign position: how many m ahead along the route from the corner entry point (negative = before it) */
 export const DEFAULT_SIGN_AHEAD = -25
 
-/** Face textures (the real style does not change, so it is kept; least recently used ones are dropped) */
+/** Face textures (least recently used ones are dropped) */
 const faceCache = new Map<string, OffscreenCanvas>()
 const FACE_CACHE_MAX = 48
 
-function faceTexture(style: SignStyle, back: boolean, ppm: number, c: Corner, distM: number): OffscreenCanvas {
-  const ex = EXTENT[style]
-  const key = style === 'real' ? `real|${back}|${ppm}|${c.dir}|${c.radius}` : `cyber|${back}|${ppm}|${c.dir}|${c.radius}|${Math.max(0, Math.round(distM / 5) * 5)}`
+function faceTexture(T: Theme, back: boolean, ppm: number, c: Corner, distM: number): OffscreenCanvas {
+  const ex = EXTENT
+  const key = `${T.id}|${back}|${ppm}|${c.dir}|${c.radius}|${Math.max(0, Math.round(distM / 5) * 5)}`
   const hit = faceCache.get(key)
   if (hit) {
     faceCache.delete(key)
@@ -313,12 +193,9 @@ function faceTexture(style: SignStyle, back: boolean, ppm: number, c: Corner, di
   const g = cv.getContext('2d')!
   g.translate(-ex.x0 * ppm, -ex.y0 * ppm)
   const s = SIGN.size * ppm
-  if (style === 'cyber') {
-    // A hologram: from behind it is the same panel seen through, a little fainter
-    if (back) g.globalAlpha = 0.7
-    drawCyberSign(g, s, c.dir, c.radius, distM, cyberColor(c.radius))
-  } else if (back) drawSignBack(g, s)
-  else drawSign(g, s, c.dir, c.radius)
+  // From behind it is the same panel seen through, a little fainter
+  if (back) g.globalAlpha = 0.7
+  drawArSign(g, s, c.dir, c.radius, distM, cornerColor(T.pal, c.radius), T)
   faceCache.set(key, cv)
   if (faceCache.size > FACE_CACHE_MAX) faceCache.delete(faceCache.keys().next().value!)
   return cv
@@ -402,7 +279,7 @@ export function drawCornerSigns(
   cam: SignCamera,
   corners: Corner[],
   t: number,
-  style: SignStyle = 'real',
+  T: Theme,
   ahead = DEFAULT_SIGN_AHEAD,
   road: RoadTrack | null = null,
   box?: SignBox
@@ -473,10 +350,8 @@ export function drawCornerSigns(
   for (const it of items) {
     g.save()
     g.globalAlpha = it.a
-    if (style === 'cyber') drawCyberExtras(g, it, track)
-    else if (!it.back) drawPole(g, it, track)
-    drawFace(g, it, style, track, r)
-    if (style === 'real' && it.back) drawPole(g, it, track)
+    drawGroundMark(g, it, track, T)
+    drawFace(g, it, T, track, r)
     g.restore()
   }
   g.restore()
@@ -492,8 +367,8 @@ export function drawCornerSigns(
 type Proj = (e: number, n: number, up: number) => [number, number] | null
 
 /** The face (or back) as a mesh: sign coordinates (x right, y down, meters) -> world -> screen */
-function drawFace(g: Ctx, it: SignItem, style: SignStyle, proj: Proj, r: SignCamera['rect']): void {
-  const ex = EXTENT[style]
+function drawFace(g: Ctx, it: SignItem, T: Theme, proj: Proj, r: SignCamera['rect']): void {
+  const ex = EXTENT
   const onScreen = it.px * SIGN.size
   const MX = onScreen < 120 ? 1 : onScreen < 400 ? 3 : MESH_X
   const MY = onScreen < 120 ? 1 : onScreen < 400 ? 4 : MESH_Y
@@ -517,7 +392,7 @@ function drawFace(g: Ctx, it: SignItem, style: SignStyle, proj: Proj, r: SignCam
     }
   }
   if (x1 < r.x || x0 > r.x + r.w || y1 < r.y || y0 > r.y + r.h) return
-  const img = faceTexture(style, it.back, it.ppm, it.c, it.distM)
+  const img = faceTexture(T, it.back, it.ppm, it.c, it.distM)
   const du = img.width / MX
   const dv = img.height / MY
   const W = MX + 1
@@ -538,51 +413,10 @@ function drawFace(g: Ctx, it: SignItem, style: SignStyle, proj: Proj, r: SignCam
   }
 }
 
-/** Post from the road surface up behind the plate (a round steel pipe, drawn as a strip facing the camera) */
-function drawPole(g: Ctx, it: SignItem, proj: Proj): void {
-  // Just behind the plate (the face looks against the direction of travel)
-  const pe = it.e + it.fx * 0.15
-  const pn = it.n + it.fy * 0.15
-  const l = Math.hypot(pe, pn) || 1
-  // Half the diameter, across the line of sight
-  const we = (-pn / l) * SIGN.pole * 0.5
-  const wn = (pe / l) * SIGN.pole * 0.5
-  const top = it.up + SIGN.size * 0.3
-  const N = 12
-  const left: [number, number][] = []
-  const right: [number, number][] = []
-  for (let k = 0; k <= N; k++) {
-    const up = it.ground + ((top - it.ground) * k) / N
-    const a = proj(pe - we, pn - wn, up)
-    const b = proj(pe + we, pn + wn, up)
-    if (!a || !b) continue
-    left.push(a)
-    right.push(b)
-  }
-  if (left.length < 2) return
-  // At least a hairline when far away
-  const lb = left[0]
-  const rb = right[0]
-  const wPx = Math.hypot(rb[0] - lb[0], rb[1] - lb[1])
-  const grow = wPx < 1.2 ? (1.2 - wPx) / 2 : 0
-  const ux = wPx > 1e-6 ? (rb[0] - lb[0]) / wPx : 1
-  const uy = wPx > 1e-6 ? (rb[1] - lb[1]) / wPx : 0
-  g.beginPath()
-  left.forEach(([x, y], k) => (k ? g.lineTo(x - ux * grow, y - uy * grow) : g.moveTo(x - ux * grow, y - uy * grow)))
-  for (let k = right.length - 1; k >= 0; k--) g.lineTo(right[k][0] + ux * grow, right[k][1] + uy * grow)
-  g.closePath()
-  const mid = Math.floor(left.length / 2)
-  const gr = g.createLinearGradient(left[mid][0], left[mid][1], right[mid][0], right[mid][1])
-  gr.addColorStop(0, '#6a7076')
-  gr.addColorStop(0.35, '#c4c9ce')
-  gr.addColorStop(1, '#7c8288')
-  g.fillStyle = gr
-  g.fill()
-}
-
-/** AR style: a circle on the road surface under the panel and a line of light down to it */
-function drawCyberExtras(g: Ctx, it: SignItem, proj: Proj): void {
-  const col = cyberColor(it.c.radius)
+/** A circle on the road surface under the panel and a line of light down to it */
+function drawGroundMark(g: Ctx, it: SignItem, proj: Proj, T: Theme): void {
+  const col = cornerColor(T.pal, it.c.radius)
+  const gl = T.look.glow
   const s = it.px * SIGN.size
   const ring: [number, number][] = []
   for (let k = 0; k < 24; k++) {
@@ -597,8 +431,10 @@ function drawCyberExtras(g: Ctx, it: SignItem, proj: Proj): void {
     g.closePath()
     g.strokeStyle = col
     g.lineWidth = Math.max(1, s * 0.012)
-    g.shadowColor = col
-    g.shadowBlur = Math.min(16, s * 0.04)
+    if (gl > 0) {
+      g.shadowColor = col
+      g.shadowBlur = Math.min(16, s * 0.04 * gl)
+    }
     g.stroke()
     g.globalAlpha *= 0.15
     g.fillStyle = col

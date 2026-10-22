@@ -98,26 +98,53 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
 4. Under "Screen layout", pick a template (Full screen, Picture-in-picture, Split left/right, Split top/bottom, 1 large + 2 small, Split into 3 rows, Split into 4)
    - Missing views are added automatically (the second and later ones face back, left and right). Extra views are hidden, and their keyframes are kept
    - Split panes and picture-in-picture windows get a border (width and color can be changed per layer)
+   - **Design theme** (above "Screen layout"): one look for everything drawn over the video (gauges, corner signs, captions, place labels, the opening title,
+     map, elevation profile and compass tape), switched at once. One theme per motorcycle maker, in its colors and style, listed alphabetically, then two themes of Japanese
+     patterns. Most have an emblem in the middle of the meter after the maker's mark, drawn as vector shapes from memory of the marks (`render/themes/emblems.ts`;
+     the marks are trademarks of the makers)
+     (`render/theme.ts`, one file per theme in `render/themes/`; saved in the project and in settings files, BMW when not set):
+
+     | Theme | Gauge face | Tachometer | Type | Panels |
+     |---|---|---|---|---|
+     | BMW | the cyber HUD look in M colors: glass with scan lines, glowing outer ring in four parts with fine ticks and brackets; a roundel (blue and white quarters, no letters) in the middle | lit blocks | upright | cut corners with brackets |
+     | Ducati | red bezel around a gloss black face, the red shield with the name in the middle; Italian tricolor stripes | solid bar | upright | rounded |
+     | Honda | navy bezel with a red sweep and white pinstripe at the lower left, the red wing (a silhouette split into feathers by slits) in the middle; red, white and blue stripes | solid bar | italic | slanted |
+     | Kawasaki | twelve-sided bezel, carbon weave, scan lines, strong glow; the earlier river-like mark in dark green in the middle | lit blocks | italic | slanted |
+     | KTM | orange brackets at the diagonals, orange hatching low on both sides | lit blocks | bold upright | cut corners |
+     | Suzuki | champion yellow metallic bezel around a blue face, yellow tach and lean bar, a red angular S in the middle | solid bar | upright | rounded |
+     | Triumph | corporate blue: chrome bezel around a Union Jack under dark blue glass, white numerals, no glow | pointer on a fine scale | serif | double rule |
+     | Yamaha | deep blue with speed lines across the lower half, three tuning forks in a ring in the middle, white rim, cyan inner ring | pointer on a fine scale | italic | blue bar on the left |
+     | Japanese (純和風) | vermilion lacquer bezel with a gold rim, black face with cherry blossoms and petals near the rim and a large blossom in the middle; vermilion, gold, celadon | solid bar | Mincho | notched corners, gold double rule |
+     | Ainu patterns (アイヌ文様) | indigo with white and red appliqué: a band of swirls (moreu) and thorns (aiushi) round the bezel, a pattern symmetric four ways in the middle (double diamond eye (sik), lines ending in thorns and pairs of swirls, larger swirls on the diagonals, a ring of thorns) | solid bar | upright | rounded, edged with thorns and swirls |
+
+     The tachometer follows the RPM with a slight lag like the needle of an analog gauge (time constant 0.08 s, computed from the log before that time so the export
+     looks the same; `laggedRpm` in `render/overlay.ts`). The gauges and the title turn grey while the engine is stopped in every theme. `REFRAME_AUTOTEST=themes` with `{"capture": "<png>"}` (and `"grey": true`, and `"logos": {"<themeId>": {"path": "<image>", "circle": {"x", "y", "r"}, "keyBg", "keyAll", "tolerance", "size", "opacity"}}` to show meter logos, kept in memory only)
+     draws every theme side by side with sample values (`themegallery.ts`) for checking the looks
+     - **Meter logo**: under the theme menu, "Choose image…" picks a local picture (png, jpg, webp, gif, bmp or svg) to show in the middle of the meter in place of the theme's
+       built-in emblem (KTM and Triumph, which have no emblem, simply gain one). In the dialog the part of the picture to show is chosen with a circle, the shape it has in the meter: drag inside it to move it, its edge or the round handle (or the mouse wheel) to resize it, or press outside it to start a new one. The circle may extend past the picture (the margin around the picture is shown for that; outside the picture is transparent). "Make the background transparent" keys out the background of the whole picture, before the circle is cut from it (the reference color is the most common color along the picture's own border; flood fill from the border with a tolerance and a soft edge, so highlights inside the emblem stay; "Also inside enclosed areas" lifts that, so the holes of letters become transparent too), and size (30 to 150 % of the emblem's box) and opacity (default 60 %) can be set; the video preview and a small meter follow every change. Cancel brings back what the theme had.
+       One logo per theme, kept only on this PC: the picture is copied to the `logos/` folder of the user data together with `logos.json`, and nothing goes into the project or the settings file
+       (so exports on another PC use the built-in emblem). No picture is bundled; "Remove" brings the built-in emblem back. The picture is greyed while the engine is stopped, like the rest of the meter
+       (`core/logo.ts`, `engine/meter-logos.ts`, `render/logo.ts`, `ui/LogoDialog.tsx`; the export waits until the logos are decoded)
 5. Build the screen in detail under "Layers"
    - "+ View": adds a pane that cuts another direction out of the 360° video (picture-in-picture, split screen). Each one has its own keyframes
    - Overlays (choose a type and click "+ Add"). The gauge cluster and the individual gauges (speedometer, tachometer, gear, lean angle, longitudinal G, air temperature) were removed on 2026-10-20 (if a saved edit or settings file contains them, they are dropped on load)
-     - **Cyber gauges**: the same layout and content as the chronograph gauges (no speed), with only the look changed to a HUD style. A translucent glass dial with scan lines, segmented neon arcs (tach, throttle, brake), a glowing lean arc with a triangular pointer, and hexagons for gear and temperature. Color schemes: BMW (M colors) and Neon
+     - **Gauges** (`render/meter.ts`), drawn in the design theme (see "Design theme" below). The upper half of the outer ring is the tachometer (with a redline zone); the lower half of the outer ring runs from 6 o'clock to the right for throttle opening and to the left for brake pressure. The upper half of the inner area is the lean meter, with the current lean angle and a MAX hold in the center (reset when the bike flicks more than 3° over to the other side). The lower half of the inner area shows the gear and air temperature in two sub-dials. Speed is not shown. The tach and throttle glow more while accelerating, the brake while braking, and the lean while cornering.
+       The chronograph and cyber gauges of earlier versions become these gauges when a project or settings file is opened (their color scheme setting is dropped; the theme decides)
        - With the engine off, the whole gauge turns grey (lines, text and glow go to a grey of the same brightness). When the engine starts, the colors come back over 0.5 s.
          This is decided from the vehicle log's rpm (the share of the last 0.5 s above 300 rpm). With no vehicle log, or no rpm in the log, the effect is skipped and the normal colors are used from the start
        - When the gear or air temperature number changes, it rolls vertically into the new one (0.3 s). When the number goes up (upshift, temperature rising), the old number leaves upward and the new one comes in from below;
          when it goes down, the reverse. The new number grows while it comes in (up to 1.4×) and shrinks back to normal size over 0.35 s from the moment it takes over.
          So that the export looks the same, it is drawn from the telemetry at that time by finding "the most recent change of value and the time since it" (`gearShift` and `airShift` in `render/overlay.ts`)
        - Air temperature comes in 0.75 °C steps and flips between two values near a display boundary, so the display only changes once the value is 0.8 °C or more away from the integer shown (so the digits do not keep rolling)
-       - Air temperature is shown as a bare number without the unit (°C) (it would not fit in the hexagon; the chronograph gauges do the same). Its color depends on the temperature: 5 °C or below light blue, 30 °C or above yellow, 35 °C or above orange, 40 °C or above red, otherwise white (`airTempColor` in `render/chrono.ts`; grey with the engine off)
-       - All text is 1.5× its previous size (`TEXT_SCALE` in `render/cyber.ts`)
+       - Air temperature is shown as a bare number without the unit (°C) (it would not fit in the sub-dial). Its color depends on the temperature: 5 °C or below light blue, 30 °C or above yellow, 35 °C or above orange, 40 °C or above red, otherwise the theme's text color (`airTempColor` in `render/theme.ts`; grey with the engine off)
+       - All text is 1.5× its previous size (`TEXT_SCALE` in `render/meter.ts`)
      - The gear signal sends 0 (neutral) for just 0.1–0.2 s in the middle of a shift, so a 0 shorter than 0.5 s between two gears keeps the previous gear (no "1 → N → 2" flicker.
        A long 0 after stopping and selecting neutral shows N. `holdThroughShift` in `core/telemetry.ts`)
-     - **Chronograph gauges** (first in the Add menu). Color schemes: BMW (M colors: light blue, dark blue, red; no logos are drawn) and Standard. The upper half of the outer ring is the tachometer (with a redline zone); the lower half of the outer ring runs from 6 o'clock to the right for throttle opening and to the left for brake pressure. The upper half of the inner area is the lean meter, with the current lean angle and a MAX hold in the center (reset when the bike flicks more than 3° over to the other side). The lower half of the inner area shows the gear and air temperature. Speed is not shown. The tach and throttle light up while accelerating, the brake while braking, and the lean while cornering
      - **Map**: two displays, nearby (heading up, with a set range) and whole route (north up). The part already ridden is drawn bright and the current position is an arrow. Shape: circle or rounded rectangle. The background is just the track line (map tiles are not supported)
      - **Elevation profile**: a graph of elevation against distance, plus the current elevation and grade (▲ uphill / ▼ downhill). Either the whole route or a window of a set width around the current position
      - **Compass tape**: a horizontally scrolling heading scale and the current heading (e.g. 143° SE)
      - **Readout**
-   - Selecting an overlay shows its type-specific settings in the side panel (map display, range and shape, elevation window width, compass tape width, tachometer max and redline for the chronograph and cyber gauges, and so on)
+   - Selecting an overlay shows its type-specific settings in the side panel (map display, range and shape, elevation window width, compass tape width, tachometer max and redline for the gauges, and so on)
    - A riding state strip runs along the bottom of the timeline (14 px tall. Colors: cruise grey, accelerating green, braking red, cornering blue, stopped yellow)
    - The timeline graph overlays the lean angle (orange, 0° in the middle, ±45° at top and bottom) and vehicle speed (light blue, 0 km/h at the bottom, the video's maximum shown at top left)
    - The timeline zooms horizontally: the wheel zooms around the mouse position, and Shift+wheel (horizontal scroll on a touchpad) pans left and right.
@@ -135,13 +162,13 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
    - Resize the selected layer with the handles on its frame, and move it with the grip at the top (or Shift+drag). It snaps to the edges, center and thirds of the frame and to the edges of other layers. Overlay layers can also be moved by dragging inside them
    - Layout guides: "┼ Crosshair" and "╳ Diagonals" at the top right of the preview overlay the vertical and horizontal center lines and the lines joining the corners (the G key toggles both). They appear in the preview only, not in the export. The setting is remembered for the next launch
    - Position and size can also be entered as numbers (% of the output)
-   - Signs can look like a "Road sign" or "AR style". AR style shows "CURVE LEFT / R165 / ▸ 70 m (distance left to the entry)" on a translucent hologram-like panel, drops a line of light down to the point on the ground and draws a circular marker on the road. The color depends on the radius (under 60 m red, under 120 m orange, otherwise blue)
-   - Turning on "Corner signs" for a view layer draws the radius of the corner you are about to enter as a large road sign (a yellow diamond with a curve arrow and an "R=165" plate). The sign stands on a post that grows from the road surface on the outside of the curve (its center 6 m above the road), and faces the riders coming toward it. It is a flat plate in 3D, so it foreshortens when seen at an angle and turns edge-on as you pass it (without a vehicle log, corners estimated from the video motion are used; see "Without a vehicle log" below).
+   - Turning on "Corner signs" for a view layer draws the radius of the corner you are about to enter as a large AR panel in the design theme: "CURVE LEFT / R165 / ▸ 70 m (distance left to the entry)" with a curve arrow, a line of light down to the point on the ground and a circular marker on the road. The color depends on the radius (under 60 m the theme's red, under 120 m amber, otherwise the theme's main color). The panel floats above the road on the outside of the curve (its center 6 m above the road), and faces the riders coming toward it. It is flat in 3D, so it foreshortens when seen at an angle and turns edge-on as you pass it (without a vehicle log, corners estimated from the video motion are used; see "Without a vehicle log" below).
+     The road-sign look of earlier versions (a yellow diamond on a post) was removed
      Its placement is set by "Sign position", as the distance along the route from the corner entry (default −25 m = 25 m before the entry; positive values move it into the corner).
    - Only signs ahead that can be seen from where you are now are shown (`core/sightline.ts`). There is no terrain data, so this is judged from the position and elevation of the road you ride:
      if the line of sight to the sign strays 10 m or more from the road in between, the sign fades, and at 25 m or more it is hidden (so on a twisty mountain road you do not see signs for road on the far side of the hill).
      If the road under the line of sight is 2 m or more above it (beyond a crest), the sign also fades, and it is hidden at 6 m or more. Even on open flat ground, signs whose line of sight passes far from the road are not shown
-   - Signs you have passed stay where they are. Seen from beyond them (in a view looking back, or across a hairpin), they show their back: grey plates with the brackets on the post (the AR-style panel shows through, mirrored).
+   - Signs you have passed stay where they are. Seen from beyond them (in a view looking back, or across a hairpin), the panel shows through, mirrored and fainter.
      They are kept for 60 s after passing.
    - Signs are hidden behind your own bike and yourself, in any view (a sign ahead passing behind your helmet with the camera behind you,
      a sign you have passed standing behind the bike in a view that looks back at it).
@@ -197,8 +224,7 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
      - "Reset this view" and "Reset all to app defaults" go back to the app defaults (the defaults listed above)
      - The base view used to be taken from the layer's view before generation. Now the forward default is used
 7. Text added by hand (`core/annotations.ts`, drawn by `render/annotations.ts`; saved in the project, included in the export)
-   - Captions, place labels and the opening title share the look of the cyber gauges (`render/hud.ts`): translucent dark glass with scan lines, glowing lines,
-     HUD brackets on cut corners, the gauges' typeface (Bahnschrift; Japanese in Yu Gothic) and their colors (the scheme of the cyber gauges layer, BMW M colors when there is none)
+   - Captions, place labels and the opening title are drawn in the design theme (`render/hud.ts`): a glass panel in the theme's shape, its colors, typeface (Japanese in Yu Gothic) and glow
    - **Captions**: "+ Add at playhead" (T key) adds one at the current time. Set the text (Enter starts a new line) and the seconds shown.
      All captions appear in the same place: the "Captions" overlay layer, made with the first caption and moved and sized on the screen like any overlay
      (the text is as large as fits in it, on a glass panel centered in it; when two overlap, the one that started last is shown). Without the layer (deleted),
@@ -244,14 +270,41 @@ The history is saved in `recent.json` in Electron's user data folder (`%APPDATA%
    - On load, the layers are replaced by the ones in the file. Each view layer takes over the matching layer in the target (the own-bike pane by its role, others by name; default names count as the same whether they were created in Japanese or English;
      if nothing matches, in order from the top), and layers whose direction moves (such as Main) keep their keyframes. Ctrl+Z undoes it
 10. Choose the export range (I / O keys), size and codec, then click "Export…". Export uses the same compositing as the preview, so you get exactly what you see
-   - **Opening title**: a title and a subtitle (at 1/3 its size) in the middle of the frame from the start of the export range, for the seconds set (default 5), in the look of the
-     cyber gauges: a glass band with scan lines, glowing lines that draw out from the title to the sides as it comes in (0.9 s), and out over 0.8 s. Like the cyber gauges it is grey while the engine is stopped and comes back to color as it starts (vehicle log rpm). Shown in the preview at those times too.
+   - **Opening title**: a title and a subtitle (at 1/3 its size) in the middle of the frame from the start of the export range, for the seconds set (default 5), in the design
+     theme: a glass band, lines that draw out from the title to the sides as it comes in (0.9 s), and out over 0.8 s. Like the gauges it is grey while the engine is stopped and comes back to color as it starts (vehicle log rpm). Shown in the preview at those times too.
      Kept per video (not in settings files)
    - The sound is added with ffmpeg after the picture is encoded, without `+faststart` (moving the index to the front rewrote the whole file once more:
      a 13.9 GB 4K export on a hard disk spent about 24 minutes in "Mixing audio"). Players and video sites read the file either way
    - **Fade out at the end**: over the last seconds of the export range (default 2, 0 = off) the picture fades to black (drawn by the compositor, so the preview shows it too)
      and the sound fades out (ffmpeg `afade` when the audio is muxed). On the test clip the picture went from a mean gray of 84 to 7 in the last frame and the last second of sound
      averaged −24 dB against −14 dB before
+   - **Mosaic over license plates** (on by default; `core/plates.ts`, `engine/plates.ts`): the plates of the own bike and of oncoming and overtaken vehicles are pixelated,
+     in the preview and the export, in every view (about six blocks across a plate, each the mean color of its block; `drawMosaic` in `render/gl-reframe.ts`, applied to each
+     view right after it is drawn, so signs, gauges and views drawn later stay on top)
+     - Detector: YOLOv9 tiny for license plates (open-image-models, 640² input; see `public/models/NOTICE.md`), run in a worker on WebGPU (CPU if not available).
+       Japanese car plates (white and yellow) are found with scores 0.6 to 0.8 even at a distance; detections from 0.35 count
+     - Scan: 5 times a second of video, on seven 90° perspective crops with the lean undone (front, right, back, left at 8° down; front and back at 55° down and straight
+       down for close plates and the own bike's). A crop where nothing was found is looked at every other scan, the downward ones every fifth; a plate is covered from 0.45 s before it is first
+       found to 0.45 s after it is last found, so a plate that comes into view between looks is covered from the start. The frames come from decoders of its own and the
+       next frames are decoded while the current ones are searched. About 0.5 to 0.8 times the length of the video (one inference about 37 ms on an RTX 3070)
+     - Each plate is kept as the directions of its corners in gyro (world) coordinates; between neighbouring scans the corners are interpolated (matched by the nearest
+       center), and the quad is enlarged by 1.4
+     - The own bike's plate is small and found only weakly (scores 0.15 to 0.4), but stays at the same place relative to the bike: detections down to 0.15 that come back
+       at one place in bike coordinates (through the mount orientation of `core/mount.ts`, within 12° of the place's mean) in at least 40% of the stretches scanned while
+       moving (10 s each, shorter when little is scanned; at least 10 km/h from the log or the estimated speed) are taken for it and covered all the time. When stopped, the
+       cars around also stay put relative to the camera, so stops do not count. Bike coordinates and not camera ones, because the camera can turn on its mount: on
+       1011 (camera on a pole behind the rider) the plate went round the camera's down axis by about 150° over 23 minutes, while in bike coordinates the detections stayed
+       within ±2° in five survey stretches and ±9° in the others (the error of the mount estimate). That error changes slowly, so where the plate is covered at a time
+       comes from its detections nearest in time (interpolated in bike coordinates, `ownAt`; detections while stopped count here), enlarged by 1.4, growing to 2.2
+       a minute or more away from any detection
+     - Survey: so that the own plate is known before the scan reaches the riding (a video often starts at a stop), the first time a video is scanned 12 stretches of 1.8 s
+       spread over it, while moving, are scanned first with every crop (about 20 s); the own plate is worked out again after it and every 30 s of video scanned
+     - **Mark your plate** (export section): drag a box around the own plate in the video; it counts as a detection of it at that time (`Project.plateMarks`, rig
+       directions of the corners), joins the place found or is a place of its own. Where the mosaic is still off at another time, a second box there makes it follow
+       between the two. On 1011 the start (a stop in a car park) was off by about 4° before the box and covered after it, and the riding after it too
+     - The search runs in the background while the video is not playing and is kept per video (`userData/cache/plates-<hash>.json.gz`, with the ranges scanned).
+       Before an export, what is missing of the export range is scanned first (shown in the export progress). `REFRAME_AUTOTEST=plates` with
+       `{"path", "frames" | "times", "out"}` saves the crops round those frames with the plates found
    - The encoder is the first one that works, trying HEVC then H.264, in three tiers (`pickEncoder` in `engine/exporter.ts`; the one used is printed to the console):
      ① hardware at the video's frame rate, ② hardware told the frame rate is 30 fps, ③ software (slow)
    - ②: Windows hardware encoders (WebCodecs → Media Foundation) are only registered up to 30 fps above 1920×1080 (confirmed on an RTX 3070).
@@ -276,6 +329,7 @@ Edits are saved automatically to `<video name>.insv.motorecomovie.json` in the s
 | I / O | Set export start / end to the current position |
 | Home / End | Go to start / end |
 | G | Show / hide the layout guides (crosshair and diagonals) together |
+| Print Screen | Save the frame on screen as PNG next to the video (`<video>_12m34.567s.png`; `_2`, `_3`… if taken). Drawn as in the export at the export size, with the gauges, signs and mosaic; also while playing (the frame shown then). `engine/screenshot.ts`. Windows may keep the key for the Snipping Tool, so the app takes it as a shortcut while its window has the focus, and also listens for the key release |
 | Ctrl+Z / Ctrl+Y | Undo / redo (continuous changes within 0.5 s, such as a drag, count as one step) |
 
 ## Audio (cleaning up riding sound)
@@ -397,9 +451,10 @@ app/src/
                tracker.ts (follows the point of a place label through the video)
     render/    WebGL2 shaders (stitching, RS correction, blending), compositor.ts (compositing view layers + overlays;
                shared by preview and export), overlay.ts (overlay widgets),
-               meters.ts (shared types and colors for overlays; the individual gauges and the gauge cluster were removed on 2026-10-20), chrono.ts (chronograph gauges), cyber.ts (cyber gauges),
+               meters.ts (shared types and colors for overlays; the individual gauges and the gauge cluster were removed on 2026-10-20), meter.ts (the gauges),
+               theme.ts (design themes: palette, look, shared shapes), themes/ (one file per maker theme), logo.ts (the user's own image in the middle of the meter),
                gps.ts (map, elevation, compass tape), signs.ts (floating corner signs), projection.ts (output projection: perspective → stereographic),
-               annotations.ts (captions and place labels), hud.ts (the cyber-gauge look for captions, labels and the opening title)
+               annotations.ts (captions and place labels), hud.ts (captions, labels and the opening title in the theme)
     ui/        React UI
   test/        core.test.ts (checked against the Python version on real data), project.test.ts
 ```
@@ -424,12 +479,14 @@ npx tsx test/seamdepth.test.ts
 npx tsx test/sightline.test.ts
 npx tsx test/overtake.test.ts
 npx tsx test/annotations.test.ts                          # captions and place labels: timing, patch matching, clicks to directions
-npx tsx test/cyber.test.ts [<.insv> <MotoReco .csv>]
+npx tsx test/meter.test.ts [<.insv> <MotoReco .csv>]
+npx tsx test/plates.test.ts                               # license plates: model output, interpolation, own bike's plate, ranges
+npx tsx test/screenshot.test.ts                           # screenshot file names (Print Screen)
 npx tsx test/settings.test.ts
 npx tsx test/mount.test.ts
 npx tsx test/mount-log.test.ts <.insv> <.dat> <.ddf>   # REFINE=1 for the log-refined result
 npx tsx test/imu-telemetry.test.ts <.insv> <.dat|.csv> [<.ddf>]   # compares the no-log estimate with the log
-npx tsx test/signtilt.test.ts <.insv> <.dat|.csv> [<.ddf>]   # floating sign tilt vs. the gravity direction from the accelerometer
+npx tsx test/signtilt.test.ts <.insv> <.dat|.csv> [<.ddf>]   # floating sign tilt and pitch vs. the gravity direction from the accelerometer
 npx tsx test/i18n.test.ts
 npx tsx test/disturb.test.ts [<.insv> <MotoReco .csv>]
 npx tsx test/core.test.ts <.insv> <MotoReco .csv>
@@ -462,7 +519,7 @@ In `render` mode, `gyroShiftMs` shifts the correction from frame time to gyro ti
 
 - Switch between Japanese and English at the right end of the toolbar. The choice is remembered on this PC (the OS language is used the first time). The main menu (File, Edit, View, Window, Settings, Help) follows the same language
 - Text drawn into the video (the disturbance label and indicator names, "No vehicle log", readout labels, and the no-data messages for map, elevation and compass tape) is chosen with "Text in video" in the Export section (Same as app / Japanese / English). You can make an English video while keeping the UI in Japanese
-- Layer names: default names (Main, Back, Cyber gauges, View 2 and so on) are shown in the current language whichever language they were created in. Names you typed yourself stay as they are
+- Layer names: default names (Main, Back, Gauges, View 2 and so on) are shown in the current language whichever language they were created in. Names you typed yourself stay as they are
 - How it works: UI strings are written in English in the source and wrapped in `t('English')` (UI language) or `tr(lang, 'English')` (text in the video). Japanese comes from the dictionaries in `src/renderer/src/i18n/ja-*.ts` (English → Japanese). Interpolation looks like `t('{n} items', { n })`. Name tables (widgets, shots, disturbance indicators and so on) hold the English names and are translated where they are displayed (the table rows carry `// i18n-ignore`)
 - `test/i18n.test.ts` checks for missing dictionary entries, mismatched placeholder names, Japanese left in keys, and Japanese left anywhere in the source outside the Japanese dictionaries
 

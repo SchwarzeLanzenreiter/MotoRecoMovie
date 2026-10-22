@@ -1,11 +1,13 @@
-// Cyber-style meter: checks the gray-out decision while the engine is stopped (enginePower) with synthetic data.
-// Run: npx tsx test/cyber.test.ts [<.insv> <MotoReco .csv>]   given real data, it prints the sections where the engine is stopped
+// Meter: checks the grey-out decision while the engine is stopped (enginePower), the rolling digits and the air temperature colors with
+// synthetic data, and that every design theme is complete.
+// Run: npx tsx test/meter.test.ts [<.insv> <MotoReco .csv>]   given real data, it prints the sections where the engine is stopped
 import assert from 'node:assert/strict'
 import { open } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { airShift, airTempShown, enginePower, gearShift, POP_TIME, ROLL_TIME } from '../src/renderer/src/render/overlay'
 import type { Telemetry } from '../src/renderer/src/core/telemetry'
-import { airTempColor } from '../src/renderer/src/render/chrono'
+import { airTempColor } from '../src/renderer/src/render/theme'
+import { getTheme, THEMES } from '../src/renderer/src/render/themes'
 
 // Stopped for 0-10 s (0 rpm), starts at 10 s (1100 rpm), stops at 30 s
 const rate = 100
@@ -63,6 +65,25 @@ assert.equal(enginePower({ ...tel, channels: {} } as Telemetry, 5), 1)
   assert.equal(airTempColor(39), o)
   assert.equal(airTempColor(45), r)
   assert.equal(airTempColor(undefined), white)
+  assert.equal(airTempColor(20, '#f6eedb'), '#f6eedb', 'the normal color is the theme text color')
+}
+
+// ---- Design themes: one per maker, with distinct ids, and every palette color in a form the grey-out can read ----
+{
+  assert.deepEqual(
+    THEMES.map((x) => x.id),
+    ['bmw', 'ducati', 'honda', 'kawasaki', 'ktm', 'suzuki', 'triumph', 'yamaha', 'wafu', 'ainu']
+  )
+  const color = /^(#[0-9a-f]{6}|rgba?\([^)]+\))$/i
+  for (const x of THEMES) {
+    for (const [k, v] of Object.entries(x.pal)) {
+      const list = Array.isArray(v) ? v : v === null ? [] : [v]
+      for (const c of list) assert.ok(color.test(c), `${x.id}.${k}: ${c}`)
+    }
+    assert.ok(x.look.glow >= 0 && x.look.glow <= 1, `${x.id}: glow`)
+  }
+  assert.equal(getTheme(undefined).id, 'bmw', 'BMW when the project has no theme')
+  assert.equal(getTheme('nope').id, 'bmw')
 }
 
 // ---- A short 0 in the middle of a shift keeps the previous gear (no flicker as in 1 -> N -> 2). A long 0 from stopping and shifting into neutral is kept ----
@@ -118,4 +139,4 @@ if (insvPath && csvPath) {
   console.log('outside temperature display changes:', airs.join(' ') || 'none')
   await fh.close()
 }
-console.log('cyber.test: OK')
+console.log('meter.test: OK')

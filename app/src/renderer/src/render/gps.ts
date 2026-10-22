@@ -1,11 +1,9 @@
-// GPS display: map, elevation profile, heading band.
+// GPS display: map, elevation profile, heading band, in the colors and type of the project's design theme.
 // The route shape (a point list thinned to 5Hz, and a Path2D) is built once per telemetry and cached.
 import { sampleChannel, type Telemetry } from '../core/telemetry'
-import { COLORS, type Ctx } from './meters'
+import type { Ctx } from './meters'
 import { getLang, tr, type Lang } from '../i18n'
-
-const NUM = "Bahnschrift, 'Segoe UI', sans-serif"
-const JP = "'Yu Gothic UI', 'Meiryo UI', sans-serif"
+import { themeFont, type Theme } from './theme'
 
 interface Route {
   t: Float32Array // video time [s]
@@ -95,11 +93,11 @@ interface Box {
   h: number
 }
 
-function message(g: Ctx, r: Box, text: string): void {
-  g.fillStyle = COLORS.panel
+function message(g: Ctx, r: Box, text: string, T: Theme): void {
+  g.fillStyle = T.pal.bg1
   g.fillRect(r.x, r.y, r.w, r.h)
-  g.fillStyle = '#ddd'
-  g.font = `${Math.round(Math.min(r.h * 0.18, r.w * 0.07))}px ${JP}`
+  g.fillStyle = T.pal.sub
+  g.font = themeFont(T.look, Math.round(Math.min(r.h * 0.18, r.w * 0.07)), 400, false)
   g.textAlign = 'center'
   g.textBaseline = 'middle'
   g.fillText(text, r.x + r.w / 2, r.y + r.h / 2)
@@ -116,10 +114,11 @@ export interface MapProps {
 
 export const DEFAULT_MAP: MapProps = { mode: 'local', rangeM: 600, shape: 'circle' }
 
-export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: Partial<MapProps>, lang: Lang = getLang()): void {
+export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: Partial<MapProps>, T: Theme, lang: Lang = getLang()): void {
+  const P = T.pal
   const p = { ...DEFAULT_MAP, ...props }
   const route = tel ? getRoute(tel) : null
-  if (!tel || !route) return message(g, r, tr(lang, 'No GPS data'))
+  if (!tel || !route) return message(g, r, tr(lang, 'No GPS data'), T)
   const px = sampleChannel(tel, 'gpsX', t)
   const py = sampleChannel(tel, 'gpsY', t)
   const head = sampleChannel(tel, 'heading', t) ?? 0
@@ -131,7 +130,7 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   g.beginPath()
   if (p.shape === 'circle') g.arc(cx, cy, R, 0, Math.PI * 2)
   else g.roundRect(r.x, r.y, r.w, r.h, R * 0.08)
-  g.fillStyle = 'rgba(12, 14, 18, 0.6)'
+  g.fillStyle = P.bg1
   g.fill()
   g.clip()
   // World (east/north [m]) -> screen transform
@@ -183,7 +182,7 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   g.restore()
   // Traveled section (bright)
   const k1 = Math.min(route.n - 1, Math.floor(t * 5))
-  g.strokeStyle = COLORS.lean
+  g.strokeStyle = P.line2
   g.lineWidth = R * 0.045
   g.lineJoin = 'round'
   g.lineCap = 'round'
@@ -209,9 +208,9 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
     g.save()
     g.translate(sx, sy)
     g.rotate(ang)
-    g.shadowColor = '#ffffff'
-    g.shadowBlur = R * 0.12
-    g.fillStyle = '#ffffff'
+    g.shadowColor = P.text
+    g.shadowBlur = R * 0.12 * Math.max(0.3, T.look.glow)
+    g.fillStyle = P.text
     g.beginPath()
     const a = R * 0.09
     g.moveTo(0, -a * 1.3)
@@ -228,22 +227,24 @@ export function drawMap(g: Ctx, r: Box, tel: Telemetry | null, t: number, props:
   g.beginPath()
   if (p.shape === 'circle') g.arc(cx, cy, R - 1, 0, Math.PI * 2)
   else g.roundRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, R * 0.08)
-  g.strokeStyle = 'rgba(255,255,255,0.35)'
+  g.strokeStyle = P.line
+  g.globalAlpha = 0.6
   g.lineWidth = Math.max(1, R * 0.015)
   g.stroke()
   // Direction of north (on screen) = the world (0, 1) rotated
   const nx = -Math.sin(h)
   const ny = -Math.cos(h)
   const nr = p.shape === 'circle' ? R * 0.84 : Math.min(r.w, r.h) * 0.42
-  g.fillStyle = COLORS.brake
-  g.font = `italic 700 ${(R * 0.16).toFixed(1)}px ${NUM}`
+  g.globalAlpha = 1
+  g.fillStyle = P.hot
+  g.font = themeFont(T.look, R * 0.16, 700)
   g.textAlign = 'center'
   g.textBaseline = 'middle'
   g.fillText('N', cx + nx * nr, cy + ny * nr)
   // Scale (for local)
   if (p.mode === 'local') {
-    g.fillStyle = 'rgba(255,255,255,0.6)'
-    g.font = `600 ${(R * 0.1).toFixed(1)}px ${NUM}`
+    g.fillStyle = P.sub
+    g.font = themeFont(T.look, R * 0.1, 600)
     g.fillText(p.rangeM >= 1000 ? `${(p.rangeM / 1000).toFixed(1)} km` : `${p.rangeM} m`, cx, cy + R * 0.78)
   }
   g.restore()
@@ -257,10 +258,11 @@ export interface ElevationProps {
 
 export const DEFAULT_ELEVATION: ElevationProps = { windowKm: 0 }
 
-export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: Partial<ElevationProps>, lang: Lang = getLang()): void {
+export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: Partial<ElevationProps>, T: Theme, lang: Lang = getLang()): void {
+  const P = T.pal
   const p = { ...DEFAULT_ELEVATION, ...props }
   const route = tel ? getRoute(tel) : null
-  if (!tel || !route || !Number.isFinite(route.altMin)) return message(g, r, tr(lang, 'No elevation data'))
+  if (!tel || !route || !Number.isFinite(route.altMin)) return message(g, r, tr(lang, 'No elevation data'), T)
   const curD = sampleChannel(tel, 'distance', t)
   const curA = sampleChannel(tel, 'alt', t)
   const grade = sampleChannel(tel, 'grade', t)
@@ -284,7 +286,7 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
   g.save()
   g.beginPath()
   g.roundRect(r.x, r.y, r.w, r.h, Math.min(r.w, r.h) * 0.06)
-  g.fillStyle = 'rgba(12, 14, 18, 0.6)'
+  g.fillStyle = P.bg1
   g.fill()
   g.beginPath()
   g.rect(gx, gy, gw, gh)
@@ -319,10 +321,12 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
   g.fillStyle = 'rgba(255,255,255,0.14)'
   g.fill(area(0, route.n - 1))
   const grad = g.createLinearGradient(0, gy, 0, gy + gh)
-  grad.addColorStop(0, 'rgba(54,180,255,0.75)')
-  grad.addColorStop(1, 'rgba(54,180,255,0.12)')
+  grad.addColorStop(0, P.line2)
+  grad.addColorStop(1, 'rgba(0,0,0,0)')
+  g.globalAlpha = 0.75
   g.fillStyle = grad
   g.fill(area(0, k1))
+  g.globalAlpha = 1
   g.restore()
   // Current position
   if (curD !== null && curA !== null) {
@@ -334,9 +338,9 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
     g.moveTo(sx, gy)
     g.lineTo(sx, gy + gh)
     g.stroke()
-    g.fillStyle = '#ffffff'
-    g.shadowColor = '#ffffff'
-    g.shadowBlur = r.h * 0.06
+    g.fillStyle = P.text
+    g.shadowColor = P.text
+    g.shadowBlur = r.h * 0.06 * Math.max(0.3, T.look.glow)
     g.beginPath()
     g.arc(sx, sy, Math.max(2, r.h * 0.035), 0, Math.PI * 2)
     g.fill()
@@ -346,20 +350,20 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
   const fs = head * 0.62
   g.textBaseline = 'middle'
   g.textAlign = 'left'
-  g.fillStyle = '#ffffff'
-  g.font = `italic 700 ${fs.toFixed(1)}px ${NUM}`
+  g.fillStyle = P.text
+  g.font = themeFont(T.look, fs, 700)
   const ty = r.y + head * 0.55
   const altText = curA !== null ? `${Math.round(curA)}` : '--'
   g.fillText(altText, r.x + pad, ty)
   const w1 = g.measureText(altText).width
-  g.font = `600 ${(fs * 0.55).toFixed(1)}px ${NUM}`
-  g.fillStyle = COLORS.sub
+  g.font = themeFont(T.look, fs * 0.55, 600)
+  g.fillStyle = P.sub
   g.fillText('m', r.x + pad + w1 + fs * 0.12, ty + fs * 0.12)
   if (grade !== null) {
     const up = grade >= 0
     g.textAlign = 'right'
-    g.font = `italic 700 ${(fs * 0.8).toFixed(1)}px ${NUM}`
-    g.fillStyle = Math.abs(grade) < 1 ? '#ffffff' : up ? COLORS.temp : COLORS.lean
+    g.font = themeFont(T.look, fs * 0.8, 700)
+    g.fillStyle = Math.abs(grade) < 1 ? P.text : up ? P.hot : P.line2
     g.fillText(`${up ? '▲' : '▼'} ${Math.abs(grade).toFixed(1)}%`, r.x + r.w - pad, ty)
   }
   g.restore()
@@ -369,19 +373,20 @@ export function drawElevation(g: Ctx, r: Box, tel: Telemetry | null, t: number, 
 
 const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 
-export function drawCompass(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: { spanDeg?: number }, lang: Lang = getLang()): void {
+export function drawCompass(g: Ctx, r: Box, tel: Telemetry | null, t: number, props: { spanDeg?: number }, T: Theme, lang: Lang = getLang()): void {
+  const P = T.pal
   const head = tel ? sampleChannel(tel, 'heading', t) : null
-  if (head === null) return message(g, r, tr(lang, 'No heading data'))
+  if (head === null) return message(g, r, tr(lang, 'No heading data'), T)
   const span = props.spanDeg ?? 120 // angular width visible in the band
   const cx = r.x + r.w / 2
   const pxPerDeg = r.w / span
   g.save()
   // Panel with faded edges
   const grad = g.createLinearGradient(r.x, 0, r.x + r.w, 0)
-  grad.addColorStop(0, 'rgba(12,14,18,0)')
-  grad.addColorStop(0.15, 'rgba(12,14,18,0.6)')
-  grad.addColorStop(0.85, 'rgba(12,14,18,0.6)')
-  grad.addColorStop(1, 'rgba(12,14,18,0)')
+  grad.addColorStop(0, 'rgba(0,0,0,0)')
+  grad.addColorStop(0.15, P.bg1)
+  grad.addColorStop(0.85, P.bg1)
+  grad.addColorStop(1, 'rgba(0,0,0,0)')
   g.fillStyle = grad
   g.fillRect(r.x, r.y, r.w, r.h)
   g.beginPath()
@@ -398,33 +403,33 @@ export function drawCompass(g: Ctx, r: Box, tel: Telemetry | null, t: number, pr
     const mid = dn % 15 === 0
     const fade = 1 - Math.min(1, Math.abs(sx - cx) / (r.w / 2)) ** 2
     g.globalAlpha = 0.25 + 0.75 * fade
-    g.strokeStyle = '#ffffff'
+    g.strokeStyle = P.line
     g.lineWidth = Math.max(1, r.h * (major ? 0.05 : 0.025))
     g.beginPath()
     g.moveTo(sx, base)
     g.lineTo(sx, base - r.h * (major ? 0.22 : mid ? 0.14 : 0.08))
     g.stroke()
     if (major) {
-      g.fillStyle = dn === 0 ? COLORS.brake : '#ffffff'
-      g.font = `italic 700 ${(r.h * 0.34).toFixed(1)}px ${NUM}`
+      g.fillStyle = dn === 0 ? P.hot : P.text
+      g.font = themeFont(T.look, r.h * 0.34, 700)
       g.fillText(DIRS[dn / 45], sx, base - r.h * 0.28)
     } else if (mid) {
-      g.fillStyle = 'rgba(255,255,255,0.7)'
-      g.font = `600 ${(r.h * 0.2).toFixed(1)}px ${NUM}`
+      g.fillStyle = P.sub
+      g.font = themeFont(T.look, r.h * 0.2, 600)
       g.fillText(String(dn), sx, base - r.h * 0.2)
     }
   }
   g.globalAlpha = 1
   // Center marker and number
-  g.fillStyle = COLORS.rpm
+  g.fillStyle = P.line2
   g.beginPath()
   g.moveTo(cx, base + r.h * 0.02)
   g.lineTo(cx - r.h * 0.1, base + r.h * 0.16)
   g.lineTo(cx + r.h * 0.1, base + r.h * 0.16)
   g.closePath()
   g.fill()
-  g.fillStyle = '#ffffff'
-  g.font = `italic 700 ${(r.h * 0.24).toFixed(1)}px ${NUM}`
+  g.fillStyle = P.text
+  g.font = themeFont(T.look, r.h * 0.24, 700)
   g.textBaseline = 'top'
   const hn = Math.round(((head % 360) + 360) % 360)
   g.fillText(`${hn}° ${DIRS[Math.round(hn / 45) % 8]}`, cx, base + r.h * 0.17)

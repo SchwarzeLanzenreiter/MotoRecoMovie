@@ -6,6 +6,8 @@ import { bodyKey, buildBodyTrack, loadBodyTrack, saveBodyTrack } from '../engine
 import { buildFxAudio, fxAudioKey } from '../engine/audiofx'
 import { buildBikeMasks, loadBikeMasks, saveBikeMasks } from '../engine/bikemask'
 import { initSegmenter } from '../engine/segmenter'
+import { ensurePlates, ownPlatesOf, platesMissing, sessionPlates } from '../engine/plates'
+import { saveScreenshot } from '../engine/screenshot'
 import { OVERTAKE_SCAN_VERSION } from '../core/overtake'
 import { CAPTION_DUR, labelEnd, trackBefore, type Caption, type PlaceLabel } from '../core/annotations'
 import { followPoint, TRACK_STEP } from '../engine/tracker'
@@ -22,6 +24,9 @@ import { changeShot, choiceView, generateKeyframes, shotPair, shotPreviewView, t
 import { sampleChannel } from '../core/telemetry'
 import { loadShotViews, saveShotViews } from '../engine/shotprefs'
 import { ShotViewsDialog } from './ShotViewsDialog'
+import { LogoDialog } from './LogoDialog'
+import { chooseLogoFile, getMeterLogo, initMeterLogos, subscribeLogos } from '../engine/meter-logos'
+import type { MeterLogo } from '../core/logo'
 import { incidentEvents, RIDER_VIEW, type IncidentSettings } from '../engine/incident'
 import { DEFAULT_BORDER, isFull } from '../engine/layout'
 import { newId } from '../engine/project'
@@ -86,6 +91,8 @@ export function App(): React.JSX.Element {
     saveShotViews(v)
   }
   const [shotDlg, setShotDlg] = useState<{ kind: ShotViewKind; side: 'in' | 'out'; preview: boolean } | null>(null)
+  // dialog for the logo shown in the middle of a theme's meter (restore: what the theme had when the dialog opened, for Cancel)
+  const [logoDlg, setLogoDlg] = useState<{ theme: string; restore: MeterLogo | null } | null>(null)
   const setLogPrefs = (patch: Partial<LogPrefs>): LogPrefs => {
     const v = { ...loadLogPrefs(), ...patch }
     saveLogPrefs(v)
@@ -119,6 +126,28 @@ export function App(): React.JSX.Element {
     console.error(e)
     setError(e instanceof Error ? e.message : String(e))
   }, [])
+
+  // logos of the user for the meter: load them once, and redraw the preview when one changes
+  useEffect(() => {
+    void initMeterLogos()
+    return subscribeLogos(() => player.current?.redraw())
+  }, [])
+  const editLogo = useCallback((theme: string) => setLogoDlg((d) => d ?? { theme, restore: getMeterLogo(theme) }), [])
+  /** Choose an image for the theme's logo, then adjust it (Cancel there brings back what the theme had before) */
+  const chooseLogo = useCallback(
+    async (theme: string) => {
+      const r = await window.api.openDialog({ title: t('Meter logo'), filters: [{ name: t('Images'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'] }], properties: ['openFile'] })
+      if (!r?.[0]) return
+      const prev = getMeterLogo(theme)
+      try {
+        await chooseLogoFile(theme, r[0])
+        setLogoDlg((d) => (d && d.theme === theme ? d : { theme, restore: prev }))
+      } catch (e) {
+        showError(e)
+      }
+    },
+    [showError]
+  )
 
   // selected layer. View editing and the timeline keyframes target the "selected view layer"
   const selLayer: Layer | undefined = project ? (findLayer(project, selected) ?? viewLayers(project)[0]) : undefined
@@ -774,6 +803,79 @@ export function App(): React.JSX.Element {
   // ---- Where the own bike is, to hide corner signs behind it (engine/bikemask.ts). Finding it takes a few minutes, so it is done with
   // "Generate keyframes" (alongside the overtake search) when a view shows signs; masks found earlier for the video are loaded right away ----
   const [maskStatus, setMaskStatus] = useState<{ busy: boolean; frac: number; msg: string } | null>(null)
+  // ---- License plates (mosaic): found in the background while the video is not playing, and for the export range before export ----
+  const [plateStatus, setPlateStatus] = useState<{ busy: boolean; frac: number; msg: string } | null>(null)
+  const plateJob = useRef<{ ac: AbortController; done: Promise<void> } | null>(null)
+  const [plateRun, setPlateRun] = useState(0)
+  const wantsPlates = !!project && project.export.plates !== false
+  // The own plate marked by hand: a box drawn around it in the video counts as a detection of it
+  const [markingPlate, setMarkingPlate] = useState(false)
+  useEffect(() => {
+    const s = session
+    if (!s) return
+    s.plateMarks = project?.plateMarks ?? []
+    if (s.plates) {
+      s.plates.own = ownPlatesOf(s)
+      player.current?.redraw()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, project?.plateMarks])
+  const markPlate = (layerId: string, u0: number, v0: number, u1: number, v1: number): void => {
+    setMarkingPlate(false)
+    const s = sessionRef.current
+    const corners = [
+      [u0, v0],
+      [u1, v0],
+      [u1, v1],
+      [u0, v1]
+    ].map(([u, v]) => player.current?.directionAt(layerId, u, v))
+    if (!s || corners.some((c) => !c)) return
+    const mark = { t: s.motion.videoTime(corners[0]!.frame), quad: corners.flatMap((c) => c!.dir.map((x) => Math.round(x * 1e4) / 1e4)) }
+    apply((p) => ({ ...p, plateMarks: [...(p.plateMarks ?? []), mark] }))
+  }
+  const stopPlateJob = async (): Promise<void> => {
+    const j = plateJob.current
+    if (!j) return
+    j.ac.abort()
+    await j.done.catch(() => undefined)
+    if (plateJob.current === j) plateJob.current = null
+  }
+  useEffect(() => {
+    const s = session
+    if (!s || !wantsPlates) return
+    const ac = new AbortController()
+    const msg = t('Looking for license plates in the background')
+    const run = async (): Promise<void> => {
+      try {
+        await sessionPlates(s)
+        player.current?.redraw()
+        const dur = s.motion.videoTime(s.frameCount - 1)
+        if (!(await platesMissing(s, 0, dur))) {
+          setPlateStatus(null)
+          return
+        }
+        setPlateStatus({ busy: true, frac: 0, msg })
+        await ensurePlates(s, 0, dur, {
+          signal: ac.signal,
+          idle: () => !player.current?.isPlaying,
+          onProgress: (frac) => !ac.signal.aborted && setPlateStatus({ busy: true, frac, msg }),
+          onScan: () => !player.current?.isPlaying && player.current?.redraw()
+        })
+        if (!ac.signal.aborted) setPlateStatus(null)
+      } catch (e) {
+        if (ac.signal.aborted) return
+        console.warn('Could not look for license plates', e)
+        setPlateStatus({ busy: false, frac: 0, msg: t('Could not look for license plates: {msg}', { msg: e instanceof Error ? e.message : String(e) }) })
+      }
+    }
+    const job = { ac, done: run() }
+    plateJob.current = job
+    return () => {
+      ac.abort()
+      if (plateJob.current === job) plateJob.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, wantsPlates, plateRun])
   const [maskReady, setMaskReady] = useState(false)
   // For checking: show where signs are cut for the own bike (not saved; the preview only)
   const [showBikeMask, setShowBikeMask] = useState(false)
@@ -949,6 +1051,17 @@ export function App(): React.JSX.Element {
     setExporting({ done: 0, total: 1, fps: 0, etaSec: 0, phase: 'encode' })
     try {
       const t0 = performance.now()
+      // License plates in the export range first (the background search stops meanwhile and starts again afterwards)
+      if (project.export.plates !== false) {
+        await stopPlateJob()
+        const end = project.export.outSec < 0 ? session.motion.videoTime(session.frameCount - 1) : project.export.outSec
+        await ensurePlates(session, Math.max(0, project.export.inSec - 1), end + 1, {
+          signal: ac.signal,
+          onProgress: (frac) => setExporting({ done: frac, total: 1, fps: 0, etaSec: 0, phase: 'plates' })
+        })
+        if (ac.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        setExporting({ done: 0, total: 1, fps: 0, etaSec: 0, phase: 'encode' })
+      }
       const r = await exportVideo(session, project, out, setExporting, ac.signal)
       const sec = (performance.now() - t0) / 1000
       setMessage(
@@ -967,8 +1080,38 @@ export function App(): React.JSX.Element {
     } finally {
       setExporting(null)
       abort.current = null
+      setPlateRun((n) => n + 1)
     }
   }
+
+  // ---- Screenshot (Print Screen): the frame on screen as exported, saved next to the video ----
+  const lastShot = useRef(0)
+  const screenshot = async (dir?: string): Promise<void> => {
+    const s = sessionRef.current
+    const p = projectRef.current
+    const pl = player.current
+    // One press can arrive twice (the shortcut of the main process and the key event)
+    if (!s || !p || !pl || performance.now() - lastShot.current < 300) return
+    lastShot.current = performance.now()
+    try {
+      const out = await saveScreenshot(pl, p.insvPath, p.export.width, p.export.height, (i) => s.motion.videoTime(i), dir)
+      if (out) setToast(t('Screenshot saved: {file}', { file: window.api.path.basename(out) }))
+    } catch (e) {
+      showError(e)
+    }
+  }
+  const screenshotRef = useRef(screenshot)
+  screenshotRef.current = screenshot
+  // Windows passes Print Screen to the window only as a key release
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'PrintScreen') return
+      e.preventDefault()
+      void screenshotRef.current()
+    }
+    window.addEventListener('keyup', onKey)
+    return () => window.removeEventListener('keyup', onKey)
+  }, [])
 
   // ---- Keyboard operation ----
   useEffect(() => {
@@ -1052,6 +1195,9 @@ export function App(): React.JSX.Element {
       bodyBusy: !!bodyStatus?.busy,
       audioBusy: !!audioStatus?.busy,
       maskBusy: !!maskStatus?.busy,
+      plates: plateStatus
+        ? `${Math.round(plateStatus.frac * 100)}% ${plateStatus.busy} own ${session?.plates?.own.length ?? '-'} surveyed ${!!session?.plates?.cache.surveyed}`
+        : null,
       maskReady,
       following: Object.keys(following).length,
       duration: session ? session.frameCount / session.fps : 0,
@@ -1083,6 +1229,7 @@ export function App(): React.JSX.Element {
         if (a === 'open') void menuRef.current.openDialog()
         else if (a === 'close') void menuRef.current.closeVideo()
         else if (a === 'shotViews') setShotDlg((d) => d ?? { kind: 'front', side: 'in', preview: true })
+        else if (a === 'screenshot') void screenshotRef.current()
       }),
     []
   )
@@ -1101,6 +1248,7 @@ export function App(): React.JSX.Element {
       else if (d.action === 'seek') seek(d.frame)
       else if (d.action === 'play') player.current?.play()
       else if (d.action === 'pause') player.current?.pause()
+      else if (d.action === 'screenshot') void screenshotRef.current(d.dir)
       else if (d.action === 'edit') onEditView(d.patch)
       else if (d.action === 'project') apply((p) => ({ ...p, ...d.patch }))
       else if (d.action === 'title') apply((p) => ({ ...p, export: { ...p.export, inSec: 0, title: d.title } }))
@@ -1218,6 +1366,8 @@ export function App(): React.JSX.Element {
           onEditView={onEditView}
           placing={!!placing}
           onPlace={placeLabel}
+          marking={markingPlate}
+          onMark={markPlate}
         />
       ) : (
         <div className="viewer">
@@ -1244,6 +1394,8 @@ export function App(): React.JSX.Element {
           onClose={() => setShotDlg(null)}
         />
       )}
+
+      {logoDlg && <LogoDialog key={logoDlg.theme} themeId={logoDlg.theme} restore={logoDlg.restore} onChoose={() => void chooseLogo(logoDlg.theme)} onClose={() => setLogoDlg(null)} />}
 
       {project && selView ? (
         <SidePanel
@@ -1290,6 +1442,8 @@ export function App(): React.JSX.Element {
           onUpdateDirector={updateDirector}
           onGenerate={generate}
           onOpenShotViews={() => setShotDlg((d) => d ?? { kind: 'front', side: 'in', preview: true })}
+          onChooseLogo={(id) => void chooseLogo(id)}
+          onEditLogo={editLogo}
           incidentEvents={incidentList}
           incidentAvailable={!!disturb}
           mainFull={!!mainView && isFull(mainView.rect)}
@@ -1299,6 +1453,15 @@ export function App(): React.JSX.Element {
           bodyStatus={bodyStatus}
           audioStatus={audioStatus}
           maskStatus={maskStatus}
+          plateStatus={plateStatus}
+          plateMarks={project.plateMarks?.length ?? 0}
+          markingPlate={markingPlate}
+          onMarkPlate={() => {
+            player.current?.pause()
+            setPlacing(null)
+            setMarkingPlate((m) => !m)
+          }}
+          onClearPlateMarks={() => apply((p) => ({ ...p, plateMarks: [] }))}
           maskReady={maskReady}
           showBikeMask={showBikeMask}
           onShowBikeMask={setShowBikeMask}

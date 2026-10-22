@@ -4,7 +4,7 @@ import { withSeamFix, type SeamFitResult, type SeamFrame } from '../core/seamfit
 import { openLocal } from '../core/file'
 import { InsvTrailer, type Imu, type InsvMeta } from '../core/insv'
 import { makeRig, type LensModel } from '../core/lens'
-import { integrate, type Orientation } from '../core/motion'
+import { gravityTrack, integrate, type Orientation } from '../core/motion'
 import { estimateMountTrack, type MountTrack } from '../core/mount'
 import type { ImuTelemetry } from '../core/imu-telemetry'
 import { cameraRollRate, type LeanTrack, type SyncResult } from '../core/motoreco'
@@ -12,6 +12,8 @@ import { DAT_RECORD, datDurationFromTail, datStartFromName } from '../core/motor
 import type { Telemetry } from '../core/telemetry'
 import type { BodyTrack } from '../core/bodymap'
 import type { BikeMaskTrack } from '../core/bikemask'
+import type { OwnPlate, PlateCache, PlateMark } from '../core/plates'
+import { ownPlatesOf } from './plates'
 import type { FxAudio } from './audiofx'
 import { analyzeLog, localizeError, scoreDatInWorker, seamFitInWorker, imuTelemetryInWorker } from './analysis'
 import { demux, type FileReader, type Track } from '../core/mp4'
@@ -69,6 +71,10 @@ export class Session {
   body: BodyTrack | null = null
   /** Where the own bike and rider are, to hide corner signs behind them (engine/bikemask.ts. null until built) */
   bikeMask: BikeMaskTrack | null = null
+  /** License plates found so far (engine/plates.ts) and the own bike's (quads in bike coordinates), set by the app */
+  plates: { cache: PlateCache; own: OwnPlate[] } | null = null
+  /** The own bike's plate marked by hand (from the project, set by the app) */
+  plateMarks: PlateMark[] = []
   /** Cleaned-up audio (engine/audiofx.ts. null until built or when unused = the video's original audio) */
   fxAudio: FxAudio | null = null
 
@@ -133,6 +139,7 @@ export class Session {
     )
     s.ori = integrate(s.imu)
     s.motion = new MotionModel(s.meta, s.ori, s.mount, s.frameTimes, null, stab)
+    s.motion.setGravity(gravityTrack(s.imu, s.ori))
     return s
   }
 
@@ -217,6 +224,7 @@ export class Session {
     // Replace with the mount attitude refined using the log (forward = direction of travel, up = body up when not leaning)
     this.mount = r.mount
     this.motion.setMount(r.mount)
+    if (this.plates) this.plates.own = ownPlatesOf(this)
     console.log(`Mount attitude refined with the log: ${r.mount.fixed ? 'one for the whole video' : 'per time'} (max change ${r.mount.maxDeg.toFixed(0)}°)`)
     this.motion.setLean(r.lean)
     return this.log

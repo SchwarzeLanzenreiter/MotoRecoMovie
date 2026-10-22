@@ -13,27 +13,31 @@
 //   What is passed to the shader is the orientation in rig coordinates: q(tc)^-1 · virtual camera in the world.
 //
 // The floating signs project the same virtual camera orientation as the video (the "world" above = gyro coordinates) into map coordinates.
-// The rotation M from gyro coordinates to map coordinates is essentially constant (it only drifts slowly with gyro drift), so we use
-//   M(t) = body on the map (fused heading and grade) · (body in gyro coordinates (lean undone))^-1
-// heavily smoothed over time. Fine jitter in the heading and grade estimates is removed from M, while
+// The rotation M from gyro coordinates to map coordinates is essentially constant (it only drifts slowly with gyro drift). It is
+//   M(t) = level body on the map (heading) · (level body in gyro coordinates)^-1
+// heavily smoothed over time. Level in gyro coordinates comes from gravity (the acceleration averaged over a minute, gravityTrack): the
+// grade from the GPS altitude was used before, but it was off by 2.7° RMS (up to 9°) from the true tilt, which made far signs float or sink.
+// Without gravity: body on the map (fused heading and grade) · (body in gyro coordinates (lean undone))^-1. Fine jitter in the heading and grade estimates is removed from M, while
 // the fine jitter of the video (residual stabilization) rides on the signs as well, so the signs look stuck to the scenery.
 import { gaussianFilter, interp } from '../core/dsp'
 import type { InsvMeta } from '../core/insv'
-import { readoutRotations, sampleQ, smooth, type Orientation } from '../core/motion'
+import { gravityAt, readoutRotations, sampleQ, smooth, type GravityTrack, type Orientation } from '../core/motion'
 import { mountAt, mountQAt, type MountTrack } from '../core/mount'
 import type { LeanTrack } from '../core/motoreco'
-import { qAxisAngle, qConj, qFromRotvec, qMul, qSlerp, qToMat, qYawPitch, type Mat3, type Quat } from '../core/quat'
+import { matMul, matToQ, qAxisAngle, qConj, qFromRotvec, qMul, qSlerp, qToMat, qYawPitch, type Mat3, type Quat } from '../core/quat'
 import type { Keyframe, StabSettings } from './project'
 
 const BLOCK = 250
 const MAP_RATE = 10 // interval at which M is computed [Hz]
 const MAP_SIGMA_S = 2 // Gaussian sigma for smoothing M [s]
 
-/** Body orientation on the map (for projecting signs). Heading is north = 0, clockwise; grade in % */
+/** Body orientation on the map (for projecting signs). Heading is north = 0, clockwise; grade in %; speed in km/h */
 export interface NavAttitude {
   rate: number
   heading: ArrayLike<number>
   grade: ArrayLike<number> | null
+  /** Takes the bike's own acceleration out of the gravity direction (gravityAt) */
+  speed?: ArrayLike<number> | null
 }
 
 export class MotionModel {
@@ -42,6 +46,7 @@ export class MotionModel {
   private delta: Float64Array | null = null
   private mapQ: Float64Array | null = null // gyro coordinates -> map coordinates (per MAP_RATE, smoothed)
   private nav: NavAttitude | null = null
+  private gravity: GravityTrack | null = null
   readonly offsetUs: number
   readonly readoutUs: number
   stab: StabSettings
@@ -86,8 +91,15 @@ export class MotionModel {
 
   /** Set the map orientation used to project signs (null clears it) */
   setNav(nav: NavAttitude | null): void {
-    if (nav?.heading === this.nav?.heading && nav?.grade === this.nav?.grade) return
+    if (nav?.heading === this.nav?.heading && nav?.grade === this.nav?.grade && nav?.speed === this.nav?.speed) return
     this.nav = nav
+    this.updateMap()
+  }
+
+  /** Set the gravity direction that levels the sign camera (null: level from the grade instead) */
+  setGravity(g: GravityTrack | null): void {
+    if (g === this.gravity) return
+    this.gravity = g
     this.updateMap()
   }
 
@@ -102,18 +114,48 @@ export class MotionModel {
     const n = Math.max(1, Math.floor(dur * MAP_RATE) + 1)
     const comp = [0, 1, 2, 3].map(() => new Float64Array(n))
     let prev: Quat | null = null
+    const t0Us = this.meta.firstFrameUs + this.offsetUs
+    const navIndex = (tv: number): number => Math.max(0, Math.min(nav.heading.length - 1, Math.round(tv * nav.rate)))
+    // Velocity in gyro coordinates: the speed along the body forward
+    const speed = nav.speed
+    const vel = speed
+      ? (tUs: number): [number, number, number] | null => {
+          const sp = speed[navIndex((tUs - t0Us) / 1e6)]
+          if (!Number.isFinite(sp)) return null
+          const B = qToMat(qMul(sampleQ(this.ori, tUs), this.mountQAt(tUs)))
+          const v = sp / 3.6
+          return [B[2] * v, B[5] * v, B[8] * v]
+        }
+      : undefined
     for (let k = 0; k < n; k++) {
       const tv = k / MAP_RATE
-      const j = Math.max(0, Math.min(nav.heading.length - 1, Math.round(tv * nav.rate)))
+      const j = navIndex(tv)
       const L = this.lean ? interp(tv, this.lean.t, this.lean.lean) * d2r : 0
-      const qc = sampleQ(this.ori, tv * 1e6 + this.meta.firstFrameUs + this.offsetUs)
-      const gyroBike = qMul(qMul(qc, this.mountQAt(tv * 1e6 + this.meta.firstFrameUs + this.offsetUs)), qFromRotvec(0, 0, -L))
-      const gr = nav.grade ? nav.grade[j] : 0
-      const th = Math.atan((Number.isFinite(gr) ? gr : 0) / 100)
+      const tUs = tv * 1e6 + t0Us
+      const qc = sampleQ(this.ori, tUs)
+      const gyroBike = qMul(qMul(qc, this.mountQAt(tUs)), qFromRotvec(0, 0, -L))
       const hd = Number.isFinite(nav.heading[j]) ? nav.heading[j] * d2r : 0
-      // Map coordinates are x east, y down, z north. A level body with heading h = Ry(h); nose up on an uphill = Rx(grade)
-      const mapBike = qMul(qFromRotvec(0, hd, 0), qFromRotvec(th, 0, 0))
-      let m = qMul(mapBike, qConj(gyroBike))
+      // Map coordinates are x east, y down, z north. A level body with heading h = Ry(h)
+      const mapLevel = qFromRotvec(0, hd, 0)
+      const g = this.gravity && gravityAt(this.gravity, tUs, vel)
+      let m: Quat
+      if (g) {
+        // Level body in gyro coordinates: down = gravity, forward = the body forward made horizontal, right = down × forward
+        const B = qToMat(gyroBike)
+        const f = [B[2], B[5], B[8]]
+        const fg = f[0] * g[0] + f[1] * g[1] + f[2] * g[2]
+        const h = [f[0] - fg * g[0], f[1] - fg * g[1], f[2] - fg * g[2]]
+        const hl = Math.hypot(h[0], h[1], h[2]) || 1
+        for (let c = 0; c < 3; c++) h[c] /= hl
+        const r = [g[1] * h[2] - g[2] * h[1], g[2] * h[0] - g[0] * h[2], g[0] * h[1] - g[1] * h[0]]
+        // M = (level body on the map) · (level body in gyro coordinates)^T; the rows of the transpose are right, down, forward
+        m = matToQ(matMul(qToMat(mapLevel), [r[0], r[1], r[2], g[0], g[1], g[2], h[0], h[1], h[2]]))
+      } else {
+        // Nose up on an uphill = Rx(grade)
+        const gr = nav.grade ? nav.grade[j] : 0
+        const th = Math.atan((Number.isFinite(gr) ? gr : 0) / 100)
+        m = qMul(qMul(mapLevel, qFromRotvec(th, 0, 0)), qConj(gyroBike))
+      }
       // Align signs so they can be averaged (q and -q are the same rotation)
       if (prev && m[0] * prev[0] + m[1] * prev[1] + m[2] * prev[2] + m[3] * prev[3] < 0) m = m.map((x) => -x) as Quat
       prev = m

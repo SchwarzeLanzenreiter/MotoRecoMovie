@@ -14,8 +14,10 @@ If you also load a MotoReco vehicle log (.dat / CSV), the lean angle and speed b
 | Auto camera (corners, cruise, stops, overtakes) | ✓ (riding state estimated from the video) | ✓ |
 | Floating corner signs (curve radius) | ✓ (position estimated from the video) | ✓ |
 | Clean up the riding sound (repair clipping, suppress non-engine noise, cut highs, compress loud parts) | ✓ | ✓ |
-| Chronograph-style and cyber-style meters, data readout | – | ✓ |
+| Meter in a maker design theme (BMW, Honda, Yamaha, Suzuki, Kawasaki, Ducati, KTM, Triumph), data readout | – | ✓ |
 | Map, elevation and compass (GPS) | – | ✓ |
+| Mosaic over license plates (own bike, oncoming and overtaken vehicles) | ✓ | ✓ |
+| Screenshot of the frame as exported (Print Screen, saved next to the video) | ✓ | ✓ |
 | Automatic split screen on chassis disturbances | – | ✓ |
 
 How to use it and how it works is described in [docs/app.md](docs/app.md).

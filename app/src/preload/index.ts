@@ -23,6 +23,8 @@ const api = {
   runFfmpeg: (args: string[], opts?: { background?: boolean }): Promise<{ code: number; log: string }> => ipcRenderer.invoke('ffmpeg:run', args, opts),
   /** App cache folder (tidied audio, etc.) */
   cacheDir: (): Promise<string> => ipcRenderer.invoke('app:cacheDir'),
+  /** Folder of the logos the user chose for the meter (logos.json and the copied images) */
+  logoDir: (): Promise<string> => ipcRenderer.invoke('app:logoDir'),
 
   async open(path: string, flags: 'r' | 'w' = 'r'): Promise<{ id: number; size: number }> {
     const h = await fsp.open(path, flags)
@@ -54,6 +56,8 @@ const api = {
     handles.delete(id)
   },
   readText: (path: string): Promise<string> => fsp.readFile(path, 'utf-8'),
+  readBinary: async (path: string): Promise<Uint8Array> => new Uint8Array(await fsp.readFile(path)),
+  copyFile: (src: string, dst: string): Promise<void> => fsp.copyFile(src, dst),
   // In automated tests, do not overwrite the edits next to the video (.motorecomovie.json, or .reframe.json under the previous name) (to protect the real edits)
   writeText: async (path: string, text: string): Promise<void> => {
     if (process.env['REFRAME_AUTOTEST'] && (path.endsWith('.motorecomovie.json') || path.endsWith('.reframe.json'))) return

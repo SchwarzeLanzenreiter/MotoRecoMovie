@@ -48,9 +48,27 @@ interface Props {
   /** Waiting for a click that places a label: the click goes to onPlace (view layer, position on the frame 0..1) instead */
   placing: boolean
   onPlace: (layerId: string, u: number, v: number) => void
+  /** Waiting for a box drawn around the own license plate: a drag on a view goes to onMark (corners on the frame 0..1) instead */
+  marking: boolean
+  onMark: (layerId: string, u0: number, v0: number, u1: number, v1: number) => void
 }
 
-export function Viewer({ session, project, status, selected, onSelect, onUpdateRect, onPlayer, onStatus, onError, onEditView, placing, onPlace }: Props): React.JSX.Element {
+export function Viewer({
+  session,
+  project,
+  status,
+  selected,
+  onSelect,
+  onUpdateRect,
+  onPlayer,
+  onStatus,
+  onError,
+  onEditView,
+  placing,
+  onPlace,
+  marking,
+  onMark
+}: Props): React.JSX.Element {
   useLang()
   const wrap = useRef<HTMLDivElement>(null)
   const stage = useRef<HTMLDivElement>(null)
@@ -58,8 +76,10 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
   const player = useRef<Player | null>(null)
   const projRef = useRef(project)
   projRef.current = project
-  const placeRef = useRef({ placing, onPlace })
-  placeRef.current = { placing, onPlace }
+  const placeRef = useRef({ placing, onPlace, marking, onMark })
+  placeRef.current = { placing, onPlace, marking, onMark }
+  // Box being drawn around the own license plate (on the frame 0..1)
+  const [markBox, setMarkBox] = useState<{ u0: number; v0: number; u1: number; v1: number } | null>(null)
 
   // create the player (per session)
   useEffect(() => {
@@ -136,6 +156,11 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
   useEffect(() => {
     const c = canvas.current!
     let drag: { x: number; y: number; layer: string | null } | null = null
+    let box: { layer: string; u0: number; v0: number; u1: number; v1: number } | null = null
+    const uv = (e: { clientX: number; clientY: number }): [number, number] => {
+      const r = c.getBoundingClientRect()
+      return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]
+    }
     /** The frontmost visible layer at a point on the screen */
     const hit = (e: { clientX: number; clientY: number }): { id: string; type: string } | null => {
       const r = c.getBoundingClientRect()
@@ -157,6 +182,19 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
         }
         return
       }
+      if (placeRef.current.marking) {
+        if (h?.type === 'view') {
+          const [u, v] = uv(e)
+          box = { layer: h.id, u0: u, v0: v, u1: u, v1: v }
+          setMarkBox(box)
+          try {
+            c.setPointerCapture(e.pointerId)
+          } catch {
+            /* synthetic events, etc. */
+          }
+        }
+        return
+      }
       if (h) onSelect(h.id)
       // overlay mode, or dragging with Shift held, moves the layer
       if (h && (h.type === 'overlay' || e.shiftKey)) {
@@ -172,6 +210,12 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
       }
     }
     const move = (e: PointerEvent): void => {
+      if (box) {
+        const [u, v] = uv(e)
+        box = { ...box, u1: u, v1: v }
+        setMarkBox(box)
+        return
+      }
       if (!drag || !drag.layer) return
       const dx = e.clientX - drag.x
       const dy = e.clientY - drag.y
@@ -189,6 +233,14 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
     }
     const up = (): void => {
       drag = null
+      if (box) {
+        const b = box
+        box = null
+        setMarkBox(null)
+        // Too small to be a box: a click
+        if (Math.abs(b.u1 - b.u0) * c.clientWidth > 4 && Math.abs(b.v1 - b.v0) * c.clientHeight > 4)
+          placeRef.current.onMark(b.layer, Math.min(b.u0, b.u1), Math.min(b.v0, b.v1), Math.max(b.u0, b.u1), Math.max(b.v0, b.v1))
+      }
     }
     const wheel = (e: WheelEvent): void => {
       e.preventDefault()
@@ -240,7 +292,18 @@ export function Viewer({ session, project, status, selected, onSelect, onUpdateR
   return (
     <div className="viewer" ref={wrap}>
       <div className="stage" ref={stage}>
-        <canvas ref={canvas} className={placing ? 'placing' : undefined} />
+        <canvas ref={canvas} className={placing || marking ? 'placing' : undefined} />
+        {markBox && (
+          <div
+            className="mark-box"
+            style={{
+              left: `${Math.min(markBox.u0, markBox.u1) * 100}%`,
+              top: `${Math.min(markBox.v0, markBox.v1) * 100}%`,
+              width: `${Math.abs(markBox.u1 - markBox.u0) * 100}%`,
+              height: `${Math.abs(markBox.v1 - markBox.v0) * 100}%`
+            }}
+          />
+        )}
         {(guides.cross || guides.diagonal) && (
           <svg className="guides" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {[0, 1].map((pass) => (

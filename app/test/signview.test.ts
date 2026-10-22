@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { open } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { InsvTrailer } from '../src/renderer/src/core/insv'
-import { estimateMount, integrate } from '../src/renderer/src/core/motion'
+import { estimateMount, gravityTrack, integrate } from '../src/renderer/src/core/motion'
 import { fixedMount } from '../src/renderer/src/core/mount'
 import { cameraRollRate, cameraYawRate, fuseLean, parseMotoReco, syncLog } from '../src/renderer/src/core/motoreco'
 import { buildTelemetry, estimateGpsDelay } from '../src/renderer/src/core/telemetry'
@@ -31,9 +31,11 @@ const est = estimateGpsDelay(buildTelemetry(log, sync, lean, dur, 0), yaw)
 const tel = buildTelemetry(log, sync, lean, dur, est.delay)
 const nav = buildNav(tel, yaw)!
 const ft = await tr.gyroFrameTimes(0)
-const mm = new MotionModel(tr.meta, integrate(imu), fixedMount(mount), ft, lean, newProject('x').stab)
+const ori = integrate(imu)
+const mm = new MotionModel(tr.meta, ori, fixedMount(mount), ft, lean, newProject('x').stab)
+mm.setGravity(gravityTrack(imu, ori))
 let t0 = performance.now()
-mm.setNav({ rate: tel.rate, heading: nav.heading, grade: tel.channels.grade ?? null })
+mm.setNav({ rate: tel.rate, heading: nav.heading, grade: tel.channels.grade ?? null, speed: tel.channels.speed ?? null })
 console.log(`computing the rotation to the map ${(performance.now() - t0).toFixed(0)}ms`)
 
 const d2r = Math.PI / 180

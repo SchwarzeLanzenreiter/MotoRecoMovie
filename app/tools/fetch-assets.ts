@@ -31,6 +31,11 @@ const models = [
     sha256: '6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b'
   },
   {
+    file: 'yolo-v9-t-640-license-plates-end2end.onnx',
+    url: 'https://github.com/ankandrew/open-image-models/releases/download/assets/yolo-v9-t-640-license-plates-end2end.onnx',
+    sha256: 'c3c1026ca7d0585dd88084d68182dd897113712fa734ae1557ca70174440c076'
+  },
+  {
     file: 'lama_fp32.onnx',
     url: 'https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx',
     sha256: '1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6'

@@ -18,14 +18,19 @@ import type { Mat3 } from '../core/quat'
 import { drawOverlayLayer, overlayFrame } from './overlay'
 import { DEFAULT_SIGN_AHEAD, drawCornerSigns, type SignBox } from './signs'
 import { captionsAt, drawCaptions, drawPlaceLabels, labelsAt } from './annotations'
-import { hudTheme, hudTitle } from './hud'
+import { hudTitle, themeOf } from './hud'
 import { defaultWidgetRect, enginePower } from './overlay'
-import { greyPal } from './cyber'
+import { greyPal } from './theme'
 import { FADE_OUT, TITLE_DUR } from '../engine/project'
 import { unprojectPoint } from './projection'
 import { roadTrack, type RoadTrack } from '../core/sightline'
 import { sampleChannel } from '../core/telemetry'
 import { getLang, tr, type Lang } from '../i18n'
+import { ownAt, platesAt, type OwnPlate, type PlateCache } from '../core/plates'
+import { sampleQ } from '../core/motion'
+import { qToMat } from '../core/quat'
+import { mountAt } from '../core/mount'
+import { projectPoint } from './projection'
 
 /** Road polyline used for the sign visibility test (built once per telemetry) */
 const roads = new WeakMap<Telemetry, RoadTrack | null>()
@@ -77,6 +82,10 @@ export class Compositor {
   body: BodyTrack | null = null
   /** Where the own bike is (signs behind it are hidden). null = signs are drawn over everything */
   bikeMask: BikeMaskTrack | null = null
+  /** License plates found in the video (engine/plates.ts) and the own bike's (bike coordinates); pixelated when the project asks */
+  plates: { cache: PlateCache; own: OwnPlate[] } | null = null
+  /** Plates of the frame last computed: rig directions of the corners (12 numbers each) */
+  private platesFrame: { i: number; own: OwnPlate[]; scans: number; rig: number[][] } | null = null
   /** For checking (preview only): show where signs are cut, in blue (outline from the segmentation model) or red (the stretch's masks) */
   showBikeMask = false
   private ov: OffscreenCanvas
@@ -116,6 +125,58 @@ export class Compositor {
   nearBikeView: string | null = null
   /** Frame that needs its own outline before it can be exported (set by render, taken by segWait) */
   private segNeed: { frame: number; bike: BikeMask; crop: { dir: [number, number, number]; fov: number }; motion: MotionModel } | null = null
+
+  /** The plates at frame i as quads in the pixels of a view (view: output camera -> rig, drawn into rect r) with their block size */
+  private plateQuads(i: number, t: number, motion: MotionModel, view: Mat3, fov: number, r: PixelRect): { pts: number[]; block: number }[] {
+    const p = this.plates!
+    // Worked out again when the frame changes, or when the scan running in the background found more (also while paused)
+    const pf = this.platesFrame
+    if (pf?.i !== i || pf.own !== p.own || pf.scans !== p.cache.scans.length) {
+      // World -> rig at this frame (transpose of rig -> world)
+      const W = qToMat(sampleQ(motion.ori, motion.tc(i)))
+      const toRig = (q: number[]): number[] => {
+        const out: number[] = []
+        for (let k = 0; k < 4; k++) {
+          const [x, y, z] = [q[k * 3], q[k * 3 + 1], q[k * 3 + 2]]
+          out.push(W[0] * x + W[3] * y + W[6] * z, W[1] * x + W[4] * y + W[7] * z, W[2] * x + W[5] * y + W[8] * z)
+        }
+        return out
+      }
+      // Bike -> rig (the mount orientation at this frame)
+      const M = mountAt(motion.mount, motion.tc(i))
+      const fromBike = (q: number[]): number[] => {
+        const out: number[] = []
+        for (let k = 0; k < 4; k++) {
+          const [x, y, z] = [q[k * 3], q[k * 3 + 1], q[k * 3 + 2]]
+          out.push(M[0] * x + M[1] * y + M[2] * z, M[3] * x + M[4] * y + M[5] * z, M[6] * x + M[7] * y + M[8] * z)
+        }
+        return out
+      }
+      this.platesFrame = { i, own: p.own, scans: p.cache.scans.length, rig: [...platesAt(p.cache.scans, t).map(toRig), ...p.own.map((o) => fromBike(ownAt(o, t)))] }
+    }
+    const focal = focalFor(r.w, fov)
+    const k = wideK(fov)
+    const out: { pts: number[]; block: number }[] = []
+    for (const q of this.platesFrame!.rig) {
+      const pts: number[] = []
+      for (let j = 0; j < 4; j++) {
+        const d = [q[j * 3], q[j * 3 + 1], q[j * 3 + 2]]
+        // Camera coordinates = viewᵀ · d (the columns of view are the camera axes in rig coordinates)
+        const c = [view[0] * d[0] + view[3] * d[1] + view[6] * d[2], view[1] * d[0] + view[4] * d[1] + view[7] * d[2], view[2] * d[0] + view[5] * d[1] + view[8] * d[2]]
+        const s = projectPoint(c, focal, k)
+        if (!s) break
+        pts.push(r.x + r.w / 2 + s[0], r.y + r.h / 2 + s[1])
+      }
+      if (pts.length < 8) continue
+      const xs = [pts[0], pts[2], pts[4], pts[6]]
+      const ys = [pts[1], pts[3], pts[5], pts[7]]
+      if (Math.max(...xs) < r.x || Math.min(...xs) > r.x + r.w || Math.max(...ys) < r.y || Math.min(...ys) > r.y + r.h) continue
+      // About six blocks across the plate, so nothing on it can be read
+      const size = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys))
+      out.push({ pts, block: Math.max(4, size / 6) })
+    }
+    return out
+  }
 
   private segmentation(i: number, bike: BikeMask, motion: MotionModel, nearBike: boolean): SignSegmentation | null {
     this.segNeed = null
@@ -301,7 +362,11 @@ export class Compositor {
     const viewRects: PixelRect[] = []
     // Signs are projected with the same camera direction as the video (the map heading is passed to MotionModel beforehand)
     const nav = telemetry?.nav
-    motion.setNav(nav && telemetry ? { rate: telemetry.rate, heading: nav.heading, grade: telemetry.channels.grade ?? null } : null)
+    motion.setNav(
+      nav && telemetry
+        ? { rate: telemetry.rate, heading: nav.heading, grade: telemetry.channels.grade ?? null, speed: telemetry.channels.speed ?? null }
+        : null
+    )
     // 2-screen layout on a vehicle body disturbance (shrinks the full-screen main and slides in the own-bike screen)
     // Telemetry estimated from the video IMU (no vehicle log) is used only for signs and the FOV, not for the meters or the disturbance display
     const real = telemetry?.source === 'imu' ? null : telemetry
@@ -321,6 +386,8 @@ export class Compositor {
       const fp = motion.frame(i, v)
       const pr = toPixels(rect, w, h)
       gl.draw({ view: fp.view, rs: fp.rs, hfovDeg: v.fov }, w, h, pr)
+      // License plates pixelated in this view, before anything is drawn over it
+      if (this.plates && project.export.plates !== false) gl.drawMosaic(w, h, pr, this.plateQuads(i, t, motion, fp.view, v.fov, pr))
       viewRects.push(pr)
       if (l.border && l.border.width > 0) gl.strokeRect(pr, w, h, l.border.width * Math.min(w, h), hexToRgb(l.border.color))
       if (l.signs && telemetry?.nav && telemetry.corners?.length) {
@@ -377,7 +444,7 @@ export class Compositor {
             { x: lerp(nav.x), y: lerp(nav.y), alt: sampleChannel(telemetry, 'alt', t) ?? 0, rot: sv.rot, fov: sv.v.fov, rect: sv.pr },
             telemetry.corners,
             t,
-            sv.l.signStyle ?? 'real',
+            themeOf(project),
             sv.l.signAhead ?? DEFAULT_SIGN_AHEAD,
             roadOf(telemetry),
             box
@@ -406,23 +473,22 @@ export class Compositor {
           gl.drawSigns(this.sc, w, h, show ? signViews.map((sv) => ({ rect: sv.pr, view: sv.view, fov: sv.v.fov, above: viewRects.slice(sv.order + 1) })) : drawnViews, o, show, seg)
         }
       }
-      // Captions, labels and the title look like the cyber gauges (in their colors)
-      const pal = hudTheme(project)
+      // Everything over the video is drawn in the project's design theme
+      const theme = themeOf(project)
       // Place labels of each view (hidden where a view drawn later covers it)
-      if (labels) drawn.forEach((d, k) => drawPlaceLabels(g, project.labels, d.layerId, t, d.rect, d.view, d.fov, drawn.slice(k + 1).map((x) => x.rect), pal))
+      if (labels) drawn.forEach((d, k) => drawPlaceLabels(g, project.labels, d.layerId, t, d.rect, d.view, d.fov, drawn.slice(k + 1).map((x) => x.rect), theme))
       // Language of the text that goes into the video (the UI language if omitted)
       const lang = project.export.textLang ?? getLang()
       if (incLabel) drawIncidentLabel(g, toPixels(incLabel.rider, w, h), incLabel.event!, incLabel.w, lang)
-      const f = overlayFrame(t, real, w, h, lang)
+      const f = overlayFrame(t, real, w, h, lang, theme)
       f.captions = project.captions
-      f.pal = pal
       // Overlays are drawn in layer order (overlays placed behind a view layer also appear on top of the video)
       for (const l of project.layers) if (l.visible && l.type === 'overlay') drawOverlayLayer(g, l, toPixels(l.rect, w, h), f)
-      if (captions) drawCaptions(g, project.captions, t, toPixels(defaultWidgetRect('captions', w / h), w, h), pal)
+      if (captions) drawCaptions(g, project.captions, t, toPixels(defaultWidgetRect('captions', w / h), w, h), theme)
       if (title) {
-        // Grey while the engine is stopped and back to color as it starts, like the cyber gauges (with a vehicle log that has rpm)
+        // Grey while the engine is stopped and back to color as it starts, like the meter (with a vehicle log that has rpm)
         const power = enginePower(real, t)
-        hudTitle(g, title.text, title.sub, w, h, t - tIn, title.dur || TITLE_DUR, power < 1 ? greyPal(pal, 1 - Math.max(0, power)) : pal)
+        hudTitle(g, title.text, title.sub, w, h, t - tIn, title.dur || TITLE_DUR, theme, power < 1 ? greyPal(theme.pal, 1 - Math.max(0, power)) : theme.pal)
       }
       // Fade to black over the end of the export range (the sound fades with it in the export)
       if (fade > 0) {

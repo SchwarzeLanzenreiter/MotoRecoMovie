@@ -3,14 +3,15 @@
 // Included (usable for any video):
 //   - Stabilization settings (the seam-fitting estimate is per video, so it is not included)
 //   - Layers (draw order): position, size, visibility, name; for view layers, border, signs, role and direction (the view of a layer with a single keyframe),
-//     and the type and settings of overlay meters
+//     and the type and settings of overlay meters; the design theme
 //   - Auto camera, body disturbance (per-event "no 2 screens" is per video, so it is not included), export (the range is not included)
 // Not included: view motion of views with 2 or more keyframes, captions and place labels, overtake results, vehicle log
 import { mergeDirector, type DirectorSettings } from './director'
 import { mergeIncident, type IncidentSettings } from './incident'
 import { DEFAULT_AUDIO_FX, type AudioFx } from '../core/audiofx'
 import { t } from '../i18n'
-import { newId, newViewLayer, REMOVED_WIDGETS, viewAt, type Border, type ExportSettings, type Keyframe, type Layer, type OverlayLayer, type Project, type Rect, type StabSettings, type ViewLayer, type WidgetKind } from './project'
+import { migrateOverlay, newId, newViewLayer, REMOVED_WIDGETS, viewAt, type Border, type ExportSettings, type Keyframe, type Layer, type OverlayLayer, type Project, type Rect, type StabSettings, type ViewLayer, type WidgetKind } from './project'
+import type { ThemeId } from '../render/theme'
 
 export const SETTINGS_EXT = '.motorecomovie-settings.json'
 /** The app that created the file. Files from the previous name (Insta360 Reframe) are also read */
@@ -30,7 +31,6 @@ interface ViewLayerSettings {
   animated: boolean
   border?: Border
   signs?: boolean
-  signStyle?: 'real' | 'cyber'
   signAhead?: number
   role?: 'incident'
 }
@@ -51,6 +51,8 @@ export interface SettingsFile {
   savedAt: string
   stab: Omit<StabSettings, 'seam'>
   layers: (ViewLayerSettings | OverlayLayerSettings)[]
+  /** Design theme (absent in settings files from earlier versions) */
+  theme?: ThemeId
   director: DirectorSettings
   incident: Omit<IncidentSettings, 'skip'>
   /** Tidy the riding audio (absent in settings files from earlier versions) */
@@ -78,7 +80,6 @@ export function settingsFromProject(p: Project): SettingsFile {
           animated: l.keyframes.length > 1,
           ...(l.border && { border: { ...l.border } }),
           ...(l.signs !== undefined && { signs: l.signs }),
-          ...(l.signStyle && { signStyle: l.signStyle }),
           ...(l.signAhead !== undefined && { signAhead: l.signAhead }),
           ...(l.role && { role: l.role })
         }
@@ -91,6 +92,7 @@ export function settingsFromProject(p: Project): SettingsFile {
     savedAt: new Date().toISOString(),
     stab,
     layers,
+    theme: p.theme ?? 'bmw',
     director: structuredClone(p.director),
     incident,
     audioFx: { ...p.audioFx },
@@ -140,7 +142,7 @@ export function applySettings(p: Project, s: SettingsFile, sameName: (a: string,
     if (x.type === 'overlay' && REMOVED_WIDGETS.includes(x.widget as string)) return []
     if (x.type === 'overlay') {
       const o: OverlayLayer = { id: newId(), type: 'overlay', name: x.name, rect: { ...x.rect }, visible: x.visible, widget: x.widget, props: structuredClone(x.props ?? {}) }
-      return [o]
+      return [migrateOverlay(o)]
     }
     const old = match.get(i)
     // A target layer whose direction is moving keeps its keyframes. Otherwise use the direction in the file
@@ -155,7 +157,6 @@ export function applySettings(p: Project, s: SettingsFile, sameName: (a: string,
       keyframes,
       ...(x.border && { border: { ...x.border } }),
       ...(x.signs !== undefined && { signs: x.signs }),
-      ...(x.signStyle && { signStyle: x.signStyle }),
       ...(x.signAhead !== undefined && { signAhead: x.signAhead }),
       ...(x.role && { role: x.role })
     }
@@ -167,6 +168,7 @@ export function applySettings(p: Project, s: SettingsFile, sameName: (a: string,
     ...p,
     stab: { ...p.stab, ...s.stab, seam: p.stab.seam },
     layers: hasView ? layers : [...oldViews, ...layers],
+    ...(s.theme && { theme: s.theme }),
     director: mergeDirector(s.director),
     incident: { ...mergeIncident(s.incident), skip: p.incident.skip },
     audioFx: s.audioFx ? { ...DEFAULT_AUDIO_FX, ...s.audioFx } : p.audioFx,

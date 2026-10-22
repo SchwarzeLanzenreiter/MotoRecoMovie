@@ -1,4 +1,4 @@
-// Display of layer names. Default names (Main, Back, Cyber meter, View 2, ...) are stored in whatever language
+// Display of layer names. Default names (Main, Back, Gauges, View 2, ...) are stored in whatever language
 // was active when the layer was created; show them in the current UI language either way. Custom names stay as they are.
 import { tr, t } from '../i18n'
 import { WIDGET_NAMES } from '../render/overlay'

@@ -4,18 +4,19 @@ import { STATES, weightsAt } from '../core/riding'
 import type { OverlayLayer, Rect, WidgetKind } from '../engine/project'
 import type { PixelRect } from './gl-reframe'
 import { drawCompass, drawElevation, drawMap } from './gps'
-import { DEFAULT_CHRONO, drawChrono, type ChronoOpts } from './chrono'
-import { DEFAULT_CYBER, drawCyber, type CyberOpts } from './cyber'
+import { DEFAULT_METER, drawMeter, type MeterOpts } from './meter'
 import { getLang, tr, type Lang } from '../i18n'
 import type { Caption } from '../core/annotations'
-import type { CyberPal } from './cyber'
 import { drawCaptions } from './annotations'
+import type { Theme } from './theme'
+import { getTheme } from './themes'
 
 export interface OverlayFrame {
   t: number // video time [s]
-  /** Captions of the project and the colors of the cyber gauges (set by the compositor; for the captions layer) */
+  /** Captions of the project (set by the compositor; for the captions layer) */
   captions?: Caption[]
-  pal?: CyberPal
+  /** The project's design theme */
+  theme: Theme
   telemetry: Telemetry | null
   values: Partial<Record<ChannelKey, number>> // telemetry at that time (already computed)
   /** Weights of the riding states (in STATES order). Cruise only if there is no log */
@@ -86,17 +87,6 @@ function noLog(g: Ctx, r: PixelRect, lang: Lang): void {
   g.textBaseline = 'middle'
   g.fillText(tr(lang, 'No vehicle log'), r.x + r.w / 2, r.y + r.h / 2)
   g.textAlign = 'left'
-}
-
-const chrono: Widget = (g, r, f, props) => {
-  if (!f.telemetry) return noLog(g, r, f.lang)
-  const w = f.weights
-  drawChrono(g, r, f.values, { ...DEFAULT_CHRONO, ...(props as Partial<ChronoOpts>) }, f.leanHold, {
-    rpm: w[W.accel],
-    throttle: w[W.accel],
-    brake: w[W.brake],
-    lean: w[W.corner]
-  })
 }
 
 /** RPM treated as engine stopped [rpm], and the time over which the color switches at start and stop [s] */
@@ -197,14 +187,34 @@ function sampleShown(tel: Telemetry, t: number): number | null {
   return Number.isFinite(v) ? v : null
 }
 
-const cyber: Widget = (g, r, f, props) => {
+/** Time constant of the tachometer's lag behind the RPM, like the needle of an analog gauge [s] */
+const TACH_LAG = 0.08
+
+/** RPM shown by the tachometer: the RPM before t averaged with weights falling off by TACH_LAG (null without RPM) */
+export function laggedRpm(tel: Telemetry, t: number): number | null {
+  if (!tel.channels.rpm) return null
+  let sum = 0
+  let wsum = 0
+  for (let k = 0; k < 8; k++) {
+    const dt = (k / 8) * TACH_LAG * 3
+    const v = sampleChannel(tel, 'rpm', t - dt)
+    if (v === null) continue
+    const w = Math.exp(-dt / TACH_LAG)
+    sum += v * w
+    wsum += w
+  }
+  return wsum > 0 ? sum / wsum : null
+}
+
+const meter: Widget = (g, r, f, props) => {
   if (!f.telemetry) return noLog(g, r, f.lang)
   const w = f.weights
-  drawCyber(
+  const rpm = laggedRpm(f.telemetry, f.t)
+  drawMeter(
     g,
     r,
-    f.values,
-    { ...DEFAULT_CYBER, ...(props as Partial<CyberOpts>) },
+    rpm === null ? f.values : { ...f.values, rpm },
+    { ...DEFAULT_METER, ...(props as Partial<MeterOpts>) },
     f.leanHold,
     {
       rpm: w[W.accel],
@@ -212,6 +222,7 @@ const cyber: Widget = (g, r, f, props) => {
       brake: w[W.brake],
       lean: w[W.corner]
     },
+    f.theme,
     // Gray while the engine is stopped (from the vehicle log RPM; normal color if there is no RPM)
     enginePower(f.telemetry, f.t),
     // Gear and outside air temperature digit changes (scroll vertically and swap, then grow slightly at the moment of replacement)
@@ -224,20 +235,18 @@ const cyber: Widget = (g, r, f, props) => {
 }
 
 const WIDGETS: Record<WidgetKind, Widget> = {
-  chrono,
-  cyber,
-  map: (g, r, f, props) => drawMap(g, r, f.telemetry, f.t, props, f.lang),
-  elevation: (g, r, f, props) => drawElevation(g, r, f.telemetry, f.t, props, f.lang),
-  compass: (g, r, f, props) => drawCompass(g, r, f.telemetry, f.t, props, f.lang),
+  meter,
+  map: (g, r, f, props) => drawMap(g, r, f.telemetry, f.t, props, f.theme, f.lang),
+  elevation: (g, r, f, props) => drawElevation(g, r, f.telemetry, f.t, props, f.theme, f.lang),
+  compass: (g, r, f, props) => drawCompass(g, r, f.telemetry, f.t, props, f.theme, f.lang),
   readout,
   captions: (g, r, f) => {
-    if (f.captions && f.pal) drawCaptions(g, f.captions, f.t, r, f.pal)
+    if (f.captions) drawCaptions(g, f.captions, f.t, r, f.theme)
   }
 }
 
 export const WIDGET_NAMES: Record<WidgetKind, string> = {
-  chrono: 'Chronograph gauges', // i18n-ignore
-  cyber: 'Cyber gauges', // i18n-ignore
+  meter: 'Gauges', // i18n-ignore
   map: 'Map', // i18n-ignore
   elevation: 'Elevation profile', // i18n-ignore
   compass: 'Compass tape', // i18n-ignore
@@ -256,35 +265,10 @@ const RPM_PROPS: PropDef[] = [
 ]
 
 export const WIDGET_PROPS: Partial<Record<WidgetKind, PropDef[]>> = {
-  chrono: [
-    {
-      key: 'theme',
-      label: 'Color scheme', // i18n-ignore
-      type: 'select',
-      options: [
-        { value: 'bmw', label: 'BMW (M colors)' }, // i18n-ignore
-        { value: 'standard', label: 'Standard' } // i18n-ignore
-      ],
-      default: 'bmw'
-    },
+  meter: [
     ...RPM_PROPS,
-    { key: 'brakeMax', label: 'Brake pressure max', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_CHRONO.brakeMax }, // i18n-ignore
-    { key: 'leanMax', label: 'Lean scale', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_CHRONO.leanMax } // i18n-ignore
-  ],
-  cyber: [
-    {
-      key: 'theme',
-      label: 'Color scheme', // i18n-ignore
-      type: 'select',
-      options: [
-        { value: 'bmw', label: 'BMW (M colors)' }, // i18n-ignore
-        { value: 'neon', label: 'Neon' } // i18n-ignore
-      ],
-      default: 'bmw'
-    },
-    ...RPM_PROPS,
-    { key: 'brakeMax', label: 'Brake pressure max', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_CYBER.brakeMax }, // i18n-ignore
-    { key: 'leanMax', label: 'Lean scale', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_CYBER.leanMax } // i18n-ignore
+    { key: 'brakeMax', label: 'Brake pressure max', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_METER.brakeMax }, // i18n-ignore
+    { key: 'leanMax', label: 'Lean scale', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_METER.leanMax } // i18n-ignore
   ],
   map: [
     {
@@ -324,8 +308,7 @@ export function defaultWidgetRect(w: WidgetKind, aspect: number): Rect {
     return { x: cx - sw / 2, y: cy - sh / 2, w: sw, h: sh }
   }
   switch (w) {
-    case 'chrono':
-    case 'cyber': // cyber style uses the same round layout as chronograph style
+    case 'meter':
       return box(tall ? 0.5 : 0.84, tall ? 0.78 : 0.72, 0.42, 0.42)
     case 'map':
       return box(0.88, 0.2, 0.3, 0.3)
@@ -340,7 +323,7 @@ export function defaultWidgetRect(w: WidgetKind, aspect: number): Rect {
   }
 }
 
-export function overlayFrame(t: number, telemetry: Telemetry | null, outW: number, outH: number, lang: Lang = getLang()): OverlayFrame {
+export function overlayFrame(t: number, telemetry: Telemetry | null, outW: number, outH: number, lang: Lang = getLang(), theme: Theme = getTheme(undefined)): OverlayFrame {
   const r = telemetry?.riding
   let peakLean: number | null = null
   let leanHold: number | null = null
@@ -358,7 +341,8 @@ export function overlayFrame(t: number, telemetry: Telemetry | null, outW: numbe
     leanHold,
     outW,
     outH,
-    lang
+    lang,
+    theme
   }
 }
 

@@ -1,10 +1,12 @@
 // Data structure of a project (the edits). Saved as JSON.
 import type { Caption, PlaceLabel } from '../core/annotations'
 import type { SeamFix } from '../core/seamfit'
+import type { PlateMark } from '../core/plates'
 import { DEFAULT_AUDIO_FX, OLD_DEFAULT_LOWPASS_HZ, type AudioFx } from '../core/audiofx'
 import { DEFAULT_INCIDENT, mergeIncident, OLD_RIDER_FOV, RIDER_VIEW, type IncidentSettings } from './incident'
-import { t } from '../i18n'
+import { t, tr } from '../i18n'
 import { DEFAULT_DIRECTOR, mergeDirector, type DirectorSettings, type OvertakeSpan } from './director'
+import type { ThemeId } from '../render/theme'
 
 /** Shot-kind marker (for auto-generated shots) */
 export type KeyTag = 'front' | 'corner' | 'side' | 'rear' | 'overtake'
@@ -75,6 +77,8 @@ export interface ExportSettings {
   title?: OpeningTitle
   /** Picture and sound fade out over the last this many seconds of the export range (0 = no fade; FADE_OUT when omitted) */
   fadeOutSec?: number
+  /** Pixelate license plates (own bike's, oncoming and overtaken vehicles'), in the preview too; on when omitted (engine/plates.ts) */
+  plates?: boolean
 }
 
 export interface OpeningTitle {
@@ -116,18 +120,33 @@ export interface ViewLayer extends LayerBase {
   type: 'view'
   keyframes: Keyframe[]
   border?: Border
-  /** Draw the radius of the upcoming corner as a sign floating in the air (needs a vehicle log) */
+  /** Draw the radius of the upcoming corner as a sign floating in the air (needs a vehicle log; drawn in the project's design theme) */
   signs?: boolean
-  /** Sign look: real = like a real road sign, cyber = AR style */
-  signStyle?: 'real' | 'cyber'
   /** Sign position: how many meters ahead along the route from the corner entry point (negative = before it; default DEFAULT_SIGN_AHEAD in signs.ts) */
   signAhead?: number
   /** incident = a screen of the "own bike" shown on one side of a 2-screen layout only while a body disturbance occurs (engine/incident.ts) */
   role?: 'incident'
 }
 
-/** captions: where the captions are shown (one layer, made when the first caption is added; core/annotations.ts) */
-export type WidgetKind = 'chrono' | 'cyber' | 'map' | 'elevation' | 'compass' | 'readout' | 'captions'
+/**
+ * meter: the gauges in the project's design theme (render/meter.ts). captions: where the captions are shown (one layer, made when the
+ * first caption is added; core/annotations.ts)
+ */
+export type WidgetKind = 'meter' | 'map' | 'elevation' | 'compass' | 'readout' | 'captions'
+
+/** Meters of earlier versions (chronograph style, cyber style), now the one themed meter */
+export const OLD_METERS = ['chrono', 'cyber']
+
+/**
+ * An overlay of a saved project or settings file in the current kinds: the chronograph and cyber meters become the themed meter (their
+ * color scheme setting is dropped; the project's theme decides), keeping a default name in the new default name
+ */
+export function migrateOverlay<T extends { widget: WidgetKind; name: string; props: Record<string, unknown> }>(o: T): T {
+  if (!OLD_METERS.includes(o.widget as string)) return o
+  const { theme: _theme, ...props } = o.props
+  const oldNames = ['Chronograph gauges', 'Cyber gauges', tr('ja', 'Chronograph gauges'), tr('ja', 'Cyber gauges')] // i18n-ignore
+  return { ...o, widget: 'meter', props, name: oldNames.includes(o.name) ? t('Gauges') : o.name }
+}
 
 /** Removed overlays (meter set, speedometer, tachometer, gear, lean angle, front/rear G, outside temperature). Removed on load if found in a saved project */
 export const REMOVED_WIDGETS = ['dashboard', 'speed', 'gear', 'rpm', 'lean', 'gforce', 'temp']
@@ -144,6 +163,8 @@ export type Layer = ViewLayer | OverlayLayer
 export interface Project {
   version: 2
   insvPath: string
+  /** Design theme of everything drawn over the video (render/themes; BMW when omitted) */
+  theme?: ThemeId
   logPath: string | null
   /** When logPath is a MotoReco .dat, the conversion rules (.ddf) used for decoding */
   ddfPath?: string | null
@@ -156,6 +177,8 @@ export interface Project {
   captions: Caption[]
   /** Place labels added by hand (a leader line and a name following a point in a view) */
   labels: PlaceLabel[]
+  /** The own bike's license plate marked by hand (boxes drawn around it; core/plates.ts) */
+  plateMarks?: PlateMark[]
   /** Auto camera settings */
   director: DirectorSettings
   /** Overtake sections (result of scanning the video; absent if not scanned yet) */
@@ -200,7 +223,7 @@ export function newProject(insvPath: string): Project {
   }
 }
 
-/** Shift all video times in the project (keyframes, captions, labels, export range, overtake sections, events excluded from 2-screen) by dt [s] */
+/** Shift all video times in the project (keyframes, captions, labels, plate marks, export range, overtake sections, events excluded from 2-screen) by dt [s] */
 export function shiftProjectTimes(p: Project, dt: number): Project {
   if (!dt) return p
   const sh = (x: number): number => Math.round((x + dt) * 1e6) / 1e6
@@ -209,6 +232,7 @@ export function shiftProjectTimes(p: Project, dt: number): Project {
     layers: p.layers.map((l) => (l.type === 'view' ? { ...l, keyframes: l.keyframes.map((k, i) => (i === 0 && k.t === 0 ? k : { ...k, t: Math.max(0, sh(k.t)) })) } : l)),
     captions: p.captions.map((c) => ({ ...c, t: Math.max(0, sh(c.t)) })),
     labels: p.labels.map((l) => ({ ...l, t: Math.max(0, sh(l.t)) })),
+    plateMarks: p.plateMarks?.map((m) => ({ ...m, t: Math.max(0, sh(m.t)) })),
     export: { ...p.export, inSec: p.export.inSec > 0 ? sh(p.export.inSec) : p.export.inSec, outSec: p.export.outSec >= 0 ? sh(p.export.outSec) : p.export.outSec },
     overtakes: p.overtakes?.map((o) => ({ ...o, start: sh(o.start), end: sh(o.end) })),
     incident: { ...p.incident, skip: p.incident.skip.map(sh) }
@@ -239,6 +263,12 @@ export function migrateProject(raw: Record<string, unknown>, insvPath: string): 
   p.layers = p.layers.filter((l) => !(l.type === 'overlay' && (l.widget as string) === 'caption'))
   // Drop layers of the removed overlays (meter set, speedometer to outside temperature)
   p.layers = p.layers.filter((l) => !(l.type === 'overlay' && REMOVED_WIDGETS.includes(l.widget as string)))
+  // The chronograph and cyber meters became the meter in the design theme; the sign look follows the theme too
+  p.layers = p.layers.map((l) => {
+    if (l.type === 'overlay') return migrateOverlay(l)
+    const { signStyle: _s, ...v } = l as ViewLayer & { signStyle?: unknown }
+    return v
+  })
   p.incident = mergeIncident(p.incident)
   p.audioFx = { ...DEFAULT_AUDIO_FX, ...p.audioFx }
   if (p.audioFx.lowpassHz === OLD_DEFAULT_LOWPASS_HZ) p.audioFx.lowpassHz = DEFAULT_AUDIO_FX.lowpassHz

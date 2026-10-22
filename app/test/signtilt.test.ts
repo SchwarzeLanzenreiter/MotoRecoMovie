@@ -1,17 +1,19 @@
-// Floating sign tilt (real data): how much, on screen, the "map down" used to project the signs differs in tilt from the true gravity direction derived from acceleration.
-// Signs are projected with MotionModel.cameraInMap (the gyro orientation moved into the map using the lean angle, heading and slope from the vehicle log).
-// The true gravity is obtained by moving the acceleration into ground-fixed coordinates using the gyro orientation and averaging over 60 s (the centrifugal force in corners cancels between left and right).
+// Floating sign tilt (real data): how much the "map down" used to project the signs differs in tilt (roll) and pitch from the true gravity
+// direction derived from acceleration. Signs are projected with MotionModel.cameraInMap (leveled by gravityTrack, heading from the vehicle log).
+// The true gravity is computed here on its own: the acceleration moved into ground-fixed coordinates using the gyro orientation, averaged over
+// 60 s, with the bike's own acceleration over the window (the change in velocity, from the logged speed) taken out.
+// Leveling by the GPS grade instead (before) was off by 2.7° RMS in pitch on 0919, which made far signs float.
 // Run: npx tsx test/signtilt.test.ts <insv> <.dat|.csv> [<.ddf>]
 import assert from 'node:assert/strict'
 import { open, readFile } from 'node:fs/promises'
 import { InsvTrailer } from '../src/renderer/src/core/insv'
-import { estimateMountTrack, refineMountWithLog } from '../src/renderer/src/core/mount'
+import { estimateMountTrack, mountQAt, refineMountWithLog } from '../src/renderer/src/core/mount'
 import { bikeLogFromColumns, cameraRollRate, cameraYawRate, fuseLean, parseMotoReco, syncLog } from '../src/renderer/src/core/motoreco'
 import { decodeDat, parseDdf } from '../src/renderer/src/core/motoreco-dat'
 import { buildTelemetry, estimateGpsDelay } from '../src/renderer/src/core/telemetry'
 import { buildNav } from '../src/renderer/src/core/nav'
-import { IMU_TO_RIG, integrate, sampleQ } from '../src/renderer/src/core/motion'
-import { matVec, qToMat } from '../src/renderer/src/core/quat'
+import { gravityTrack, IMU_TO_RIG, integrate, sampleQ } from '../src/renderer/src/core/motion'
+import { matVec, qMul, qToMat } from '../src/renderer/src/core/quat'
 import { MotionModel } from '../src/renderer/src/engine/motion-model'
 import { newProject } from '../src/renderer/src/engine/project'
 
@@ -41,7 +43,8 @@ const nav = buildNav(tel, yaw)!
 const ori = integrate(imu)
 const stab = newProject('x').stab
 const mm = new MotionModel(tr.meta, ori, mount, ft, lean, stab)
-mm.setNav({ rate: tel.rate, heading: nav.heading, grade: tel.channels.grade ?? null })
+mm.setNav({ rate: tel.rate, heading: nav.heading, grade: tel.channels.grade ?? null, speed: tel.channels.speed ?? null })
+mm.setGravity(gravityTrack(imu, ori))
 console.log(`${tr.meta.model}: sync a=${sync.a.toFixed(5)} b=${sync.b.toFixed(2)} confidence ${sync.peakRatio.toFixed(2)} residual ${sync.residualMs.toFixed(0)}ms sign ${sync.sign}  lean scale k=${lean.k.toFixed(3)} correlation ${lean.rateCorr.toFixed(3)}  GPS delay ${gd.delay.toFixed(2)}s`)
 {
   const lg = (L as unknown as { leanAngle?: Float64Array; lean?: Float64Array })
@@ -64,23 +67,42 @@ for (let i = 0; i < imu.ts.length; i += 5) {
   for (let c = 0; c < 3; c++) acc1[k * 3 + c] += w[c]
   cnt[k]++
 }
+// Velocity in ground-fixed coordinates [m/s]: the logged speed along the body forward
+const t0Us = first + tr.meta.gyroOffsetMs * 1000
+const velAt = (tUs: number): number[] => {
+  const sp = tel.channels.speed![Math.max(0, Math.min(tel.n - 1, Math.round(((tUs - t0Us) / 1e6) * tel.rate)))]
+  const B = qToMat(qMul(sampleQ(ori, tUs), mountQAt(mount, tUs)))
+  const v = Number.isFinite(sp) ? sp / 3.6 : 0
+  return [B[2] * v, B[5] * v, B[8] * v]
+}
+// Up (the accelerometer reads the push holding it up) = mean reading − mean acceleration; the mean acceleration is Δv over the window
 const gAt = (tUs: number): number[] => {
   const k = Math.floor((tUs - imu.ts[0]) / 1e6)
+  const a = Math.max(0, k - 30)
+  const b = Math.min(n1, k + 30)
   const g = [0, 0, 0]
-  for (let j = Math.max(0, k - 30); j < Math.min(n1, k + 30); j++) for (let c = 0; c < 3; c++) g[c] += acc1[j * 3 + c]
+  let m = 0
+  for (let j = a; j < b; j++) {
+    for (let c = 0; c < 3; c++) g[c] += acc1[j * 3 + c]
+    m += cnt[j]
+  }
+  const va = velAt(imu.ts[0] + a * 1e6)
+  const vb = velAt(imu.ts[0] + b * 1e6)
+  for (let c = 0; c < 3; c++) g[c] = g[c] / m - (vb[c] - va[c]) / ((b - a) * 9.80665)
   const nn = Math.hypot(g[0], g[1], g[2])
   return g.map((v) => v / nn)
 }
 const dot = (a: number[], b: number[]): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const deg = (r: number): number => (r * 180) / Math.PI
 const fps = tr.meta.fps
-const rows: { t: number; lean: number; err: number; errMap: number }[] = []
+const rows: { t: number; lean: number; err: number; errMap: number; pitchErr: number }[] = []
 for (let t = 30; t < dur - 30; t += 1) {
   const i = Math.round(t * fps)
   const fr = mm.frame(i, { yaw: 0, pitch: 0, fov: 100, leanRatio: 1 })
   const Rw = qToMat(fr.world) // columns = camera right, down, forward (gyro orientation frame)
   const right = [Rw[0], Rw[3], Rw[6]]
   const down = [Rw[1], Rw[4], Rw[7]]
+  const fwd = [Rw[2], Rw[5], Rw[8]]
   // The accelerometer measures the opposite of gravity (upward), so down = −mean
   const g = gAt(mm.tc(i)).map((v) => -v)
   const trueTilt = deg(Math.atan2(dot(g, right), dot(g, down)))
@@ -88,8 +110,10 @@ for (let t = 30; t < dur - 30; t += 1) {
   const mRight = [Rm[0], Rm[3], Rm[6]]
   const mDown = [Rm[1], Rm[4], Rm[7]]
   const mapTilt = deg(Math.atan2(dot([0, 1, 0], mRight), dot([0, 1, 0], mDown)))
+  // Pitch: how far the line of sight points below the horizon (+ = down)
+  const pitchErr = deg(Math.asin(Rm[5])) - deg(Math.asin(dot(g, fwd)))
   const L0 = mm.leanAt(i) ?? 0
-  rows.push({ t, lean: L0, err: mapTilt - trueTilt, errMap: mapTilt })
+  rows.push({ t, lean: L0, err: mapTilt - trueTilt, errMap: mapTilt, pitchErr })
 }
 const rms = (a: number[]): number => Math.sqrt(a.reduce((s, v) => s + v * v, 0) / Math.max(1, a.length))
 const st = rows.filter((r) => Math.abs(r.lean) < 5)
@@ -98,6 +122,7 @@ const mean = (a: number[]): number => a.reduce((s, v) => s + v, 0) / Math.max(1,
 console.log(`sign tilt mismatch (sign − true gravity): overall RMS ${rms(rows.map((r) => r.err)).toFixed(1)}° mean ${mean(rows.map((r) => r.err)).toFixed(1)}°`)
 console.log(`  straight (|lean| < 5°) ${st.length} points: mean ${mean(st.map((r) => r.err)).toFixed(1)}° RMS ${rms(st.map((r) => r.err)).toFixed(1)}°`)
 console.log(`  corner (|lean| > 15°) ${co.length} points: mean ${mean(co.map((r) => r.err)).toFixed(1)}° RMS ${rms(co.map((r) => r.err)).toFixed(1)}°`)
+console.log(`sign pitch mismatch: mean ${mean(rows.map((r) => r.pitchErr)).toFixed(2)}° RMS ${rms(rows.map((r) => r.pitchErr)).toFixed(2)}°`)
 // Relation to lean (tilt = k × lean + c)
 {
   let sx = 0, sy = 0, sxx = 0, sxy = 0
@@ -107,6 +132,7 @@ console.log(`  corner (|lean| > 15°) ${co.length} points: mean ${mean(co.map((r
   console.log(`  mismatch ≈ ${k.toFixed(3)} × lean + ${((sy - k * sx) / n).toFixed(1)}°`)
 }
 for (const r of rows.filter((_, j) => j % 60 === 0)) console.log(`  ${r.t}s lean ${r.lean.toFixed(1)}° mismatch ${r.err.toFixed(1)}°`)
-assert.ok(rms(rows.map((r) => r.err)) < 4, 'sign tilt differs from the true gravity by 4° or more')
+assert.ok(rms(rows.map((r) => r.err)) < 1, 'sign tilt differs from the true gravity by 1° RMS or more')
+assert.ok(rms(rows.map((r) => r.pitchErr)) < 1, 'sign pitch differs from the true gravity by 1° RMS or more')
 console.log('signtilt.test: OK')
 await fh.close()

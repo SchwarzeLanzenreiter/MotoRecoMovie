@@ -158,11 +158,26 @@ export class Player {
     if (this.uploaded >= 0 && !this.busy) this.draw(this.uploaded)
   }
 
-  private draw(i: number): void {
-    const [w, h] = this.size()
+  /**
+   * The frame on screen as PNG, drawn as in the export at w×h (the preview is drawn again at its own size right after; also while
+   * playing: the frame shown at that moment). null before the first frame
+   */
+  async snapshot(w: number, h: number): Promise<{ frame: number; png: Uint8Array } | null> {
+    const i = this.uploaded
+    if (i < 0) return null
+    this.draw(i, [w, h])
+    // toBlob copies the canvas at once, so the preview can be drawn again before it is encoded
+    const blob = new Promise<Blob | null>((r) => this.canvas.toBlob(r, 'image/png'))
+    this.draw(i)
+    const b = await blob
+    return b ? { frame: i, png: new Uint8Array(await b.arrayBuffer()) } : null
+  }
+
+  private draw(i: number, [w, h] = this.size()): void {
     // Draw with the same compositing as export (the canvas matches the export aspect ratio)
     this.comp.body = this.session.body
     this.comp.bikeMask = this.session.bikeMask
+    this.comp.plates = this.session.plates
     const views = this.comp.render(i, this.project, this.session.motion, this.telemetry, w, h)
     this.status = { ...this.status, frame: i, views, correctionDeg: views[0]?.correctionDeg ?? 0, leanDeg: this.session.motion.leanAt(i) }
   }

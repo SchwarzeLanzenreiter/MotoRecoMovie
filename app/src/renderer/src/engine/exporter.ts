@@ -7,6 +7,7 @@ import { TrackDecoder } from './decoder'
 import { FADE_OUT, type Project } from './project'
 import type { Session } from './session'
 import { t } from '../i18n'
+import { logosReady } from './meter-logos'
 import { Dynamics, FX_BUILD_GAIN } from '../core/audiofx'
 
 export interface ExportProgress {
@@ -14,7 +15,8 @@ export interface ExportProgress {
   total: number
   fps: number
   etaSec: number
-  phase: 'encode' | 'audio' | 'done'
+  /** plates: looking for license plates in the export range first (done / total = fraction) */
+  phase: 'plates' | 'encode' | 'audio' | 'done'
 }
 
 /**
@@ -68,6 +70,8 @@ export async function exportVideo(
   onProgress: (p: ExportProgress) => void,
   signal: AbortSignal
 ): Promise<{ codecUsed: string; audio: boolean; log?: string }> {
+  // the user's meter logos have to be decoded before the first frame is drawn
+  await logosReady()
   const ex = project.export
   const fps = session.fps
   const total = session.frameCount
@@ -86,6 +90,7 @@ export async function exportVideo(
   comp.setLenses(session.rig)
   comp.body = session.body
   comp.bikeMask = session.bikeMask
+  comp.plates = session.plates
   comp.exactSegmentation = true
   const telemetry = session.telemetry(project.logEnabled)
 

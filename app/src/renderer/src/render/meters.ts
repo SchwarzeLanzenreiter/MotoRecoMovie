@@ -1,6 +1,7 @@
-// Types and colors shared by the overlay drawing code (chronograph-style and cyber-style meters, map, floating signs).
+// Types and colors shared by the overlay drawing code (meter, map, floating signs).
 // This file used to hold the individual meters (speedometer, tachometer, gear, lean angle, front/back G, outside air temperature) and a
-// "meter set" that rearranged them by riding state; both were removed in favor of the chronograph and cyber styles (2026-10-20)
+// "meter set" that rearranged them by riding state; both were removed in favor of one round meter (2026-10-20), now drawn in the design
+// theme (render/meter.ts, render/theme.ts)
 import type { ChannelKey } from '../core/telemetry'
 
 export type Ctx = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D

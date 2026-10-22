@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { layerName } from './layerName'
 import type { ExportProgress } from '../engine/exporter'
 import { FADE_OUT, TITLE_DUR, viewAt, type Keyframe, type Layer, type OpeningTitle, type Project, type Rect, type ViewLayer, type WidgetKind } from '../engine/project'
@@ -13,8 +13,11 @@ import { CaptionsSection, LabelsSection, type AnnotationProps } from './Annotati
 import type { IncidentEvent, IncidentSettings } from '../engine/incident'
 import { Slider } from './Slider'
 import { DEFAULT_BORDER, TEMPLATES } from '../engine/layout'
+import { getTheme, THEMES } from '../render/themes'
+import type { ThemeId } from '../render/theme'
 import { t, getLang, LANG_NAMES } from '../i18n'
 import type { DirectorSettings } from '../engine/director'
+import { getMeterLogo, removeMeterLogo, subscribeLogos } from '../engine/meter-logos'
 
 export const PRESETS: { label: string; w: number; h: number }[] = [
   { label: '1920×1080 (16:9)', w: 1920, h: 1080 }, // i18n-ignore
@@ -55,6 +58,10 @@ interface Props {
   onUpdateDirector: (d: DirectorSettings) => void
   /** Opens the settings menu "Auto-generated views" (defaults for the front, corner entry, side and rear views) */
   onOpenShotViews: () => void
+  /** Choose an image for the logo in the middle of the theme's meter, and adjust it */
+  onChooseLogo: (themeId: string) => void
+  /** Adjust the logo the theme already has */
+  onEditLogo: (themeId: string) => void
   onGenerate: (range: 'export' | 'all') => void
   incidentEvents: IncidentEvent[]
   incidentAvailable: boolean
@@ -70,6 +77,13 @@ interface Props {
   audioStatus: { busy: boolean; frac: number; msg: string } | null
   /** Progress of finding the own bike in the video (to hide signs behind it; null when it is not being done) */
   maskStatus: { busy: boolean; frac: number; msg: string } | null
+  /** Search for license plates (mosaic) */
+  plateStatus: { busy: boolean; frac: number; msg: string } | null
+  /** Boxes drawn by hand around the own license plate, and whether the next drag on the video draws one */
+  plateMarks: number
+  markingPlate: boolean
+  onMarkPlate: () => void
+  onClearPlateMarks: () => void
   /** The own bike has been found in the video (signs are hidden behind it) */
   maskReady: boolean
   /** For checking: show where signs are cut for the own bike in the preview */
@@ -93,6 +107,52 @@ interface Props {
 const fmtTime = (s: number): string => {
   const m = Math.floor(s / 60)
   return `${m}:${(s - m * 60).toFixed(2).padStart(5, '0')}`
+}
+
+/** Design theme of everything drawn over the video, switched at once */
+function ThemeSection(p: Props): React.JSX.Element {
+  const cur = getTheme(p.project.theme)
+  // the logo is read from the store, which changes outside the project
+  const logo = useSyncExternalStore(subscribeLogos, () => getMeterLogo(cur.id))
+  return (
+    <div className="section">
+      <h3>
+        {t('Design theme')}
+        <span className="hint">{t('Everything over the video changes together')}</span>
+      </h3>
+      <div className="row">
+        <select data-action="theme" value={cur.id} onChange={(e) => p.onChange({ ...p.project, theme: e.target.value as ThemeId })} style={{ flex: 1, minWidth: 0 }}>
+          {THEMES.map((x) => (
+            <option key={x.id} value={x.id}>
+              {t(x.name)}
+            </option>
+          ))}
+        </select>
+        <span className="theme-swatch">
+          {[cur.pal.line, cur.pal.line2, cur.pal.hot, ...(cur.pal.stripes ?? [])].map((c, k) => (
+            <span key={k} style={{ background: c }} />
+          ))}
+        </span>
+      </div>
+      <div className="row">
+        <label className="name">{t('Meter logo')}</label>
+        <button data-action="logo-choose" onClick={() => p.onChooseLogo(cur.id)}>
+          {t('Choose image…')}
+        </button>
+        {logo && (
+          <>
+            <button data-action="logo-adjust" onClick={() => p.onEditLogo(cur.id)}>
+              {t('Adjust…')}
+            </button>
+            <button data-action="logo-remove" onClick={() => removeMeterLogo(cur.id)}>
+              {t('Remove')}
+            </button>
+          </>
+        )}
+      </div>
+      <div className="note">{t('Shown in the middle of the meter instead of the built-in emblem. Remembered on this PC for each theme.')}</div>
+    </div>
+  )
 }
 
 function LayoutSection(p: Props): React.JSX.Element {
@@ -124,7 +184,7 @@ function LayoutSection(p: Props): React.JSX.Element {
 
 /** Choose the kind of overlay and add it */
 function AddOverlay({ onAdd }: { onAdd: (w: WidgetKind) => void }): React.JSX.Element {
-  const [kind, setKind] = useState<WidgetKind>('chrono')
+  const [kind, setKind] = useState<WidgetKind>('meter')
   return (
     <>
       <select value={kind} onChange={(e) => setKind(e.target.value as WidgetKind)} style={{ flex: 1, minWidth: 0 }}>
@@ -284,10 +344,6 @@ function LayersSection(p: Props): React.JSX.Element {
               <label>
                 <input type="checkbox" checked={!!selLayer.signs} disabled={!p.hasRiding} onChange={(e) => p.onUpdateLayer(selLayer.id, { signs: e.target.checked })} /> {t('Corner signs (show curve radius in the air)')}
               </label>
-              <select value={selLayer.signStyle ?? 'real'} disabled={!selLayer.signs} onChange={(e) => p.onUpdateLayer(selLayer.id, { signStyle: e.target.value as 'real' | 'cyber' })}>
-                <option value="real">{t('Road sign')}</option>
-                <option value="cyber">{t('AR style')}</option>
-              </select>
             </div>
           )}
           {selLayer.type === 'view' && selLayer.signs && (
@@ -386,6 +442,7 @@ export function SidePanel(p: Props): React.JSX.Element {
           {t('Saves the settings on the right and the position and size of meters and other layers to one file that you can use with other videos. The main view\'s motion (keyframes), captions, place labels, the opening title, export range and seam estimate are per video and are not included.')}
         </div>
       </div>
+      <ThemeSection {...p} />
       <LayoutSection {...p} />
       <LayersSection {...p} />
       <div className="section">
@@ -594,13 +651,46 @@ export function SidePanel(p: Props): React.JSX.Element {
           <input type="number" value={ex.title?.dur ?? TITLE_DUR} min={1} max={30} step={0.5} onChange={(e) => setTitle({ dur: Math.max(1, parseFloat(e.target.value) || TITLE_DUR) })} style={{ width: 56 }} />
           <span>{t('s')}</span>
         </div>
-        <div className="note">{t('Shown in the middle of the frame from the start of the export range, in the look of the cyber gauges (the subtitle at 1/3 the size). Leave both empty for no title.')}</div>
+        <div className="note">{t('Shown in the middle of the frame from the start of the export range, in the design theme (the subtitle at 1/3 the size). Leave both empty for no title.')}</div>
         <div className="row">
           <label className="name">{t('Fade out at the end')}</label>
           <input type="number" value={ex.fadeOutSec ?? FADE_OUT} min={0} max={10} step={0.5} onChange={(e) => setEx({ fadeOutSec: Math.max(0, Math.min(10, parseFloat(e.target.value) || 0)) })} style={{ width: 56 }} />
           <span>{t('s')}</span>
         </div>
         <div className="note">{t('The picture fades to black and the sound fades out over the last seconds of the export range (0 = off).')}</div>
+        <div className="row">
+          <label>
+            <input type="checkbox" data-action="plates" checked={ex.plates !== false} onChange={(e) => setEx({ plates: e.target.checked })} /> {t('Mosaic over license plates')}
+          </label>
+        </div>
+        <div className="note">
+          {t('Pixelates the license plates of your bike and of oncoming and overtaken vehicles, in the preview too. The plates are found by AI a few times a second, in the background while the video is not playing (about half the length of the video the first time; kept for next time); the export range is finished first if needed.')}
+        </div>
+        {ex.plates !== false && p.plateStatus && (
+          <div className={p.plateStatus.busy ? 'note status' : 'note warn'}>
+            {p.plateStatus.msg}
+            {p.plateStatus.busy ? ` ${Math.round(p.plateStatus.frac * 100)}%` : ''}
+          </div>
+        )}
+        {ex.plates !== false && (
+          <>
+            <div className="row">
+              <button data-action="mark-plate" className={p.markingPlate ? 'on' : ''} onClick={p.onMarkPlate}>
+                {t('Mark your plate')}
+              </button>
+              {p.plateMarks > 0 && (
+                <button data-action="clear-plate-marks" onClick={p.onClearPlateMarks}>
+                  {t('Clear marks ({n})', { n: String(p.plateMarks) })}
+                </button>
+              )}
+            </div>
+            <div className="note">
+              {p.markingPlate
+                ? t('Drag a box around your license plate in the video.')
+                : t('If the mosaic misses your own plate, drag a box around it at that time. Where it is still off (the camera turned on its mount), mark it there again; in between it follows the marks.')}
+            </div>
+          </>
+        )}
         <div className="row">
           <label className="name">{t('Range')}</label>
           <span>
@@ -617,7 +707,9 @@ export function SidePanel(p: Props): React.JSX.Element {
               <div style={{ width: `${(100 * p.exporting.done) / p.exporting.total}%` }} />
             </div>
             <div className="note status">
-              {p.exporting.phase === 'audio'
+              {p.exporting.phase === 'plates'
+                ? t('Looking for license plates in the export range… {p}%', { p: String(Math.round(p.exporting.done * 100)) })
+                : p.exporting.phase === 'audio'
                 ? t('Mixing audio…')
                 : t('{done} / {total} frames ({fps} fps, about {min} min left)', {
                     done: String(p.exporting.done),

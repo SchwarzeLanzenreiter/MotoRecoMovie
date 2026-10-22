@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, shell, type MenuItemConstructorOptions } from 'electron'
 import { dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -52,6 +52,13 @@ function createWindow(): void {
       backgroundThrottling: false
     }
   })
+  // Print Screen saves a screenshot of the frame (renderer: engine/screenshot.ts). Windows may keep the key for itself (Snipping Tool),
+  // so it is taken as a shortcut while the window has the focus only; if that fails, the renderer still gets the key release
+  win.on('focus', () => {
+    if (!globalShortcut.isRegistered('PrintScreen')) globalShortcut.register('PrintScreen', () => win.webContents.send('menu', 'screenshot'))
+  })
+  win.on('blur', () => globalShortcut.unregister('PrintScreen'))
+  win.on('closed', () => globalShortcut.unregister('PrintScreen'))
   // Automated test mode: forward the renderer logs to stdout
   if (process.env['REFRAME_AUTOTEST']) {
     win.webContents.on('console-message', (e) => {
@@ -96,6 +103,13 @@ function ffmpegPath(): string {
 // App cache (tidied audio, etc.; anything that can be rebuilt even if deleted)
 ipcMain.handle('app:cacheDir', async () => {
   const dir = join(app.getPath('userData'), 'cache')
+  const { mkdir } = await import('node:fs/promises')
+  await mkdir(dir, { recursive: true })
+  return dir
+})
+// Logos the user chose for the meter (logos.json and the copied images; kept until the user removes them)
+ipcMain.handle('app:logoDir', async () => {
+  const dir = join(app.getPath('userData'), 'logos')
   const { mkdir } = await import('node:fs/promises')
   await mkdir(dir, { recursive: true })
   return dir

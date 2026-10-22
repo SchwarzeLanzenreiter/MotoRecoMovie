@@ -1,11 +1,11 @@
-// Drawing captions and place labels on the overlay canvas, in the look of the cyber gauges (render/hud.ts). See core/annotations.ts for what
+// Drawing captions and place labels on the overlay canvas, in the project's design theme (render/hud.ts). See core/annotations.ts for what
 // they are. All captions share one place: the "Captions" overlay layer, moved and sized on the screen like any overlay.
 import { captionAlpha, labelAt, type Caption, type PlaceLabel } from '../core/annotations'
 import type { Mat3 } from '../core/quat'
-import type { CyberPal } from './cyber'
 import type { PixelRect } from './gl-reframe'
 import { hudCaption, hudLabel } from './hud'
 import { focalFor, projectPoint, wideK } from './projection'
+import type { Theme } from './theme'
 
 type Ctx = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D
 
@@ -13,10 +13,10 @@ type Ctx = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D
 export const captionsAt = (cs: Caption[], t: number): boolean => cs.some((c) => captionAlpha(c, t) > 0 && c.text.trim())
 
 /** The caption shown at time t in rectangle r (when two overlap, the one that started last) */
-export function drawCaptions(g: Ctx, cs: Caption[], t: number, r: PixelRect, P: CyberPal): void {
+export function drawCaptions(g: Ctx, cs: Caption[], t: number, r: PixelRect, T: Theme): void {
   let shown: Caption | null = null
   for (const c of cs) if (c.text.trim() && captionAlpha(c, t) > 0 && (!shown || c.t > shown.t)) shown = c
-  if (shown) hudCaption(g, shown.text, r, captionAlpha(shown, t), P)
+  if (shown) hudCaption(g, shown.text, r, captionAlpha(shown, t), T)
 }
 
 /** Whether any label of the view is shown at time t */
@@ -26,7 +26,7 @@ export const labelsAt = (ls: PlaceLabel[], layerId: string, t: number): boolean 
  * Labels of one view at time t. view: output camera -> rig (row-major) and fov of that view, drawn into rectangle r.
  * above: rectangles of views drawn on top of this one (labels do not show through them)
  */
-export function drawPlaceLabels(g: Ctx, ls: PlaceLabel[], layerId: string, t: number, r: PixelRect, view: Mat3, fov: number, above: PixelRect[], P: CyberPal): void {
+export function drawPlaceLabels(g: Ctx, ls: PlaceLabel[], layerId: string, t: number, r: PixelRect, view: Mat3, fov: number, above: PixelRect[], T: Theme): void {
   const focal = focalFor(r.w, fov)
   const k = wideK(fov)
   const V = view
@@ -47,7 +47,7 @@ export function drawPlaceLabels(g: Ctx, ls: PlaceLabel[], layerId: string, t: nu
     const x = r.x + r.w / 2 + p[0]
     const y = r.y + r.h / 2 + p[1]
     if (x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h) continue
-    hudLabel(g, l.text, x, y, fs, at.alpha, r, P)
+    hudLabel(g, l.text, x, y, fs, at.alpha, r, T)
   }
   g.restore()
 }

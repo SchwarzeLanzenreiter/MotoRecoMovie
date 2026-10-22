@@ -78,9 +78,18 @@ To pin floating signs to points on the map, this produces a position and heading
 Signs are projected by transferring the same virtual camera orientation used to render the video (orientation in gyro coordinates) into map coordinates (east, down, north).
 The rotation M from gyro coordinates to map coordinates is ideally almost constant (it only changes slowly with gyro drift), so
 
-  M(t) = bike in the map (fused heading and grade) · (bike in the gyro frame (with the lean removed))⁻¹
+  M(t) = level bike in the map (fused heading) · (level bike in the gyro frame)⁻¹
 
-is computed at 10 Hz and smoothed with σ = 2 s.
+is computed at 10 Hz and smoothed with σ = 2 s. "Level" in the gyro frame comes from gravity (`gravityTrack` / `gravityAt` in `core/motion.ts`):
+the accelerometer reading moved into the gyro frame and averaged over ±30 s, plus the bike's own acceleration over the window, which adds up
+to the change in velocity (logged speed along the body forward) ÷ the window. The level forward is the body forward with its vertical part removed.
+
+- Leveling used to come from the grade of the GPS altitude (bike in the map = Ry(heading)·Rx(atan(grade))). On 0919 the pitch of the sign camera
+  was then off from gravity by +1.3° on average, 2.7° RMS and up to 9° (roll 2.5° RMS), worst in corners. The error is an angle, so the
+  sign drifts in proportion to its distance: 1.3° lifts a sign 200 m away by 4.5 m, which is why far signs floated while near ones stood on the
+  road. With gravity it is 0.4° RMS in pitch and 0.3° in roll (`test/signtilt.test.ts`). Without taking out the bike's own acceleration it
+  would be 1.8° RMS: in a hairpin the push outward does not cancel within the window (the correction is 2.2° median, up to 6.5°, on 0919).
+  Without IMU acceleration the grade is used as before
 
 - Signs used to be projected with "fused heading and grade + ideal view". The fused heading contains fine gyro vibration while the video is rendered with the smoothed attitude, so the signs alone seemed to jitter (in this sample, 1.7–2.3 px horizontal and 1 px vertical RMS relative to the video, at 1920 px width and 110° FOV)
 - With the current method the fine shake in the video carries over to the signs as well, so they look stuck to the scenery. The slow component agrees with the old method to within 0.1° (`test/signview.test.ts`)

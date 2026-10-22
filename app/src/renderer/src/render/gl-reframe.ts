@@ -396,6 +396,50 @@ void main() { outColor = texture(uTex, vUv); }
 // For each pixel of a view: the ray of the view (same projection as the main draw) in rig coordinates looks up the bike masks;
 // where the bike surely is (core) the sign is removed; where the bike or rider can be (envelope), the color of the video at that pixel
 // decides through the color table (5 taps, so single pixels do not flicker)
+/** Most plates pixelated in one view per draw */
+export const MOSAIC_MAX = 16
+
+/**
+ * Privacy mosaic: pixels inside any of the quads (convex, GL pixel coordinates) take the mean color of their block (uBlock px, a
+ * grid of 3×3 samples of the frame drawn so far); others are left as they are
+ */
+const MOSAIC_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uFrame;
+uniform vec2 uSize;
+uniform vec2 uQ[${4 * 16}];
+uniform float uBlock[16];
+uniform int uN;
+out vec4 outColor;
+bool inside(vec2 p, int k) {
+  bool pos = false;
+  bool neg = false;
+  for (int j = 0; j < 4; j++) {
+    vec2 a = uQ[k * 4 + j];
+    vec2 b = uQ[k * 4 + (j + 1) % 4];
+    float c = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    pos = pos || c > 0.0;
+    neg = neg || c < 0.0;
+  }
+  return !(pos && neg);
+}
+void main() {
+  vec2 p = gl_FragCoord.xy;
+  for (int k = 0; k < 16; k++) {
+    if (k >= uN) break;
+    if (!inside(p, k)) continue;
+    float bs = uBlock[k];
+    vec2 c0 = floor(p / bs) * bs;
+    vec3 acc = vec3(0.0);
+    for (int y = 0; y < 3; y++)
+      for (int x = 0; x < 3; x++) acc += texture(uFrame, (c0 + (vec2(x, y) + 0.5) * bs / 3.0) / uSize).rgb;
+    outColor = vec4(acc / 9.0, 1.0);
+    return;
+  }
+  discard;
+}
+`
+
 const SIGNS_FS = `#version 300 es
 precision highp float;
 precision highp sampler3D;
@@ -516,6 +560,8 @@ export class GlReframer {
   private lenses: LensModel[] = []
   private ovProg: WebGLProgram
   private signsProg: WebGLProgram
+  private mosaicProg: WebGLProgram
+  private mosaicTex: WebGLTexture | null = null
   private signsLoc = new Map<string, WebGLUniformLocation | null>()
   /** Textures of drawSigns: the signs, the copy of the frame, the masks (the mask set currently loaded) */
   private signsTex: WebGLTexture[] = []
@@ -587,6 +633,7 @@ export class GlReframer {
     this.prog = p
     this.ovProg = link(OVERLAY_VS, OVERLAY_FS)
     this.signsProg = link(VS, SIGNS_FS)
+    this.mosaicProg = link(VS, MOSAIC_FS)
     this.sphereProg = link(VS, SPHERE_FS)
     this.probeProg = link(VS, PROBE_FS)
     this.cutProg = link(VS, CUT_FS)
@@ -1073,6 +1120,50 @@ export class GlReframer {
    * per view (call after all views are drawn and before the overlay). above: rectangles of the views drawn after each view (they cover it).
    * debug shows the cut area in red
    */
+  /**
+   * Pixelates quads of the frame drawn so far, inside rect only (a view: what is drawn later on top of it is not touched).
+   * quads: corners in output pixels (from the top, 8 numbers each) and the block size [px]
+   */
+  drawMosaic(width: number, height: number, rect: PixelRect, quads: { pts: number[]; block: number }[]): void {
+    if (!quads.length) return
+    const gl = this.gl
+    if (!this.mosaicTex) {
+      this.mosaicTex = gl.createTexture()!
+      gl.bindTexture(gl.TEXTURE_2D, this.mosaicTex)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    }
+    gl.activeTexture(gl.TEXTURE9)
+    gl.bindTexture(gl.TEXTURE_2D, this.mosaicTex)
+    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, width, height, 0)
+    gl.useProgram(this.mosaicProg)
+    const u = (n: string): WebGLUniformLocation | null => gl.getUniformLocation(this.mosaicProg, n)
+    gl.uniform1i(u('uFrame'), 9)
+    gl.uniform2f(u('uSize'), width, height)
+    const q = new Float32Array(4 * MOSAIC_MAX * 2)
+    const b = new Float32Array(MOSAIC_MAX)
+    const n = Math.min(MOSAIC_MAX, quads.length)
+    for (let k = 0; k < n; k++) {
+      for (let j = 0; j < 4; j++) {
+        q[(k * 4 + j) * 2] = quads[k].pts[j * 2]
+        q[(k * 4 + j) * 2 + 1] = height - quads[k].pts[j * 2 + 1]
+      }
+      b[k] = Math.max(2, quads[k].block)
+    }
+    gl.uniform2fv(u('uQ[0]'), q)
+    gl.uniform1fv(u('uBlock[0]'), b)
+    gl.uniform1i(u('uN'), n)
+    gl.enable(gl.SCISSOR_TEST)
+    gl.viewport(0, 0, width, height)
+    gl.scissor(rect.x, height - (rect.y + rect.h), rect.w, rect.h)
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+    gl.disable(gl.SCISSOR_TEST)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.useProgram(this.prog)
+  }
+
   drawSigns(
     src: TexImageSource,
     width: number,

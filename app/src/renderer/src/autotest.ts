@@ -14,6 +14,11 @@ import { focalFor, wideK } from './render/projection'
 import { BAND_H, BAND_W, bodyAt, type BodyTrack } from './core/bodymap'
 import { buildBodyTrack } from './engine/bodymap'
 import { keyframeBefore } from './core/mp4'
+import { drawThemeGallery } from './themegallery'
+import { chooseLogoFile, initMeterLogos, updateMeterLogo } from './engine/meter-logos'
+import type { MeterLogo } from './core/logo'
+import { debugPlateCrops, initPlates } from './engine/plates'
+import { PLATE_SIZE } from './core/plates'
 
 async function saveCanvas(c: HTMLCanvasElement, path: string): Promise<void> {
   const blob = await new Promise<Blob>((r) => c.toBlob((b) => r(b!), 'image/png'))
@@ -33,6 +38,46 @@ export async function runAutotest(): Promise<void> {
       document.body.appendChild(c)
       await runDecodeSpike(args.path, c, args.start ?? 1400)
       if (args.capture) await window.api.test.capture(args.capture)
+    } else if (env.autotest === 'plates') {
+      // License plate detector on the crops round the given frames (args.frames), saved with the boxes drawn (args.out: folder)
+      const proj = newProject(args.path)
+      const s = await Session.open(args.path, proj.stab, (m) => console.log(m))
+      console.log('plate detector:', await initPlates())
+      for (const i of (args.frames as number[] | undefined) ?? (args.times as number[]).map((x) => s.frameOf(x))) {
+        const t0 = performance.now()
+        const crops = await debugPlateCrops(s, i)
+        console.log(`frame ${i}: ${(performance.now() - t0).toFixed(0)}ms`, JSON.stringify(crops.map((c) => ({ yaw: c.yaw, pitch: c.pitch, boxes: c.boxes.map((b) => [Math.round(b.x0), Math.round(b.y0), Math.round(b.x1), Math.round(b.y1), +b.score.toFixed(2)]) }))))
+        for (const c of crops) {
+          if (!c.boxes.length && !args.all) continue
+          const cv = document.createElement('canvas')
+          cv.width = PLATE_SIZE
+          cv.height = PLATE_SIZE
+          const g = cv.getContext('2d')!
+          g.putImageData(new ImageData(new Uint8ClampedArray(c.rgba.buffer as ArrayBuffer), PLATE_SIZE, PLATE_SIZE), 0, 0)
+          g.lineWidth = 2
+          g.font = '14px sans-serif'
+          for (const b of c.boxes) {
+            g.strokeStyle = b.score >= 0.35 ? '#00ff00' : '#ffaa00'
+            g.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0)
+            g.fillStyle = g.strokeStyle
+            g.fillText(b.score.toFixed(2), b.x0, b.y0 - 3)
+          }
+          await saveCanvas(cv, `${args.out}/plates_${i}_${c.yaw}_${c.pitch}.png`)
+        }
+      }
+    } else if (env.autotest === 'themes') {
+      // Gallery of the design themes (args.capture: PNG path; args.grey: as while the engine is stopped;
+      // args.logos: { [themeId]: { path, circle?, keyBg?, keyAll?, tolerance?, size?, opacity? } } shows an image in the middle of that theme's meter, in memory only)
+      const logos = (args.logos ?? {}) as Record<string, { path: string } & Partial<Omit<MeterLogo, 'file'>>>
+      await initMeterLogos()
+      for (const [id, { path, ...rest }] of Object.entries(logos)) {
+        await chooseLogoFile(id, path)
+        updateMeterLogo(id, rest, false)
+      }
+      const c = document.createElement('canvas')
+      drawThemeGallery(c, !!args.grey)
+      await saveCanvas(c, args.capture)
+      console.log(`themes: ${c.width}x${c.height} -> ${args.capture}`)
     } else if (env.autotest === 'render') {
       // Render the frame at the given time with several settings and save PNGs
       const proj = newProject(args.path)
@@ -269,7 +314,7 @@ export async function runAutotest(): Promise<void> {
           console.log(`Drag ${step.dragHandle} (${step.dx}, ${step.dy}) →`, JSON.stringify(st().rects))
         } else if (step.print) {
           const x = st()
-          console.log(`[${step.print}] frame ${x.frame} playing ${x.playing} fps ${(x.fps as number)?.toFixed(1)} A/V offset ${x.av === null ? '-' : (x.av as number).toFixed(1) + 'ms'} audio ${JSON.stringify(x.audio)} busy seam ${!!x.seamBusy} sound ${!!x.audioBusy} body ${!!x.bodyBusy} ${x.audioMsg ?? ""}`)
+          console.log(`[${step.print}] frame ${x.frame} playing ${x.playing} fps ${(x.fps as number)?.toFixed(1)} A/V offset ${x.av === null ? '-' : (x.av as number).toFixed(1) + 'ms'} audio ${JSON.stringify(x.audio)} busy seam ${!!x.seamBusy} sound ${!!x.audioBusy} body ${!!x.bodyBusy} plates ${x.plates ?? "-"} ${x.audioMsg ?? ""}`)
         } else if (step.raf) {
           // Number of drawn frames (requestAnimationFrame) in 1 second (to check that the screen is being redrawn)
           let n = 0
@@ -359,6 +404,26 @@ export async function runAutotest(): Promise<void> {
           await new Promise((r) => setTimeout(r, 300))
           while ((st().following as number) > 0 && performance.now() - t0 < 120000) await new Promise((r) => setTimeout(r, 200))
           console.log(`Followed ${(performance.now() - t0).toFixed(0)}ms`, JSON.stringify(st().labels))
+        } else if (step.select) {
+          // Choose a value in a <select> (CSS selector) as the user would
+          const el = document.querySelector(step.select as string) as HTMLSelectElement | null
+          if (!el) console.log('Element not found', step.select)
+          else {
+            el.value = String(step.value)
+            el.dispatchEvent(new Event('change', { bubbles: true }))
+            console.log(`select ${step.select} = ${el.value}`)
+          }
+        } else if (step.dragCanvas) {
+          // Drag on the video from (x0, y0) to (x1, y1) [px in the window] with synthesized pointer events
+          const [x0, y0, x1, y1] = step.dragCanvas as number[]
+          const c = document.querySelector('.viewer canvas') as HTMLCanvasElement
+          const opt = { bubbles: true, pointerId: 1, isPrimary: true }
+          c.dispatchEvent(new PointerEvent('pointerdown', { ...opt, clientX: x0, clientY: y0 }))
+          for (let k = 1; k <= 5; k++) {
+            c.dispatchEvent(new PointerEvent('pointermove', { ...opt, clientX: x0 + ((x1 - x0) * k) / 5, clientY: y0 + ((y1 - y0) * k) / 5 }))
+            await new Promise((r) => setTimeout(r, 30))
+          }
+          c.dispatchEvent(new PointerEvent('pointerup', { ...opt, clientX: x1, clientY: y1 }))
         } else if (step.click) {
           ;(document.querySelector(step.click as string) as HTMLElement | null)?.click()
           await new Promise((r) => setTimeout(r, 200))
