@@ -3,9 +3,11 @@
 //
 //   Outermost, upper half: tachometer (lit blocks, a solid bar or a pointer, with a red zone)
 //   Outermost, lower half: arcs extending outward from 6 o'clock. Right = throttle opening, left = brake pressure
+//                          (labelled THR % and BRK bar below the G meter, without values)
 //   Inner, upper half    : lean meter (straight up is 0°). The MAX hold resets at a switchback
 //   Center               : current lean angle (large) and MAX
-//   Inner, lower half    : gear and outside air temperature (sub-dials)
+//   Inner, lower half    : longitudinal G meter (straight down is 0 G; acceleration to the right, braking to the left),
+//                          (no numeric value), and gear and outside air temperature (sub-dials) inside it
 // Matching the riding state, the tachometer and throttle glow more while accelerating, the brake while decelerating, the lean while cornering.
 import { POP_TIME, ROLL_TIME, type Roll } from './overlay'
 import type { Ctx, Values } from './meters'
@@ -16,9 +18,10 @@ export interface MeterOpts {
   rpmRed: number
   brakeMax: number // upper limit of the brake pressure scale [bar]
   leanMax: number // upper limit of the lean meter scale [deg]
+  gMax: number // upper limit of the longitudinal G meter scale [G]
 }
 
-export const DEFAULT_METER: MeterOpts = { rpmMax: 9000, rpmRed: 8000, brakeMax: 20, leanMax: 60 }
+export const DEFAULT_METER: MeterOpts = { rpmMax: 9000, rpmRed: 8000, brakeMax: 20, leanMax: 60, gMax: 1 }
 
 /** How much each part is emphasized by the riding state (0 to 1) */
 export interface MeterEmphasis {
@@ -177,17 +180,33 @@ export function drawMeter(
     barArc(rO, bottom, bottom - quarter, fT, w, () => P.thr, Math.max(em.throttle * 1.4, 0.3))
     barArc(rO, bottom, bottom + quarter, fB, w, () => P.hot, Math.max(em.brake * 1.4, 0.3))
   }
-  const vx = R * 0.47
-  const vy = R * 0.47
-  text('THR', cx + vx, cy + vy - R * 0.08, R * 0.042, P.thr, 700, 0.3)
-  text(thr !== undefined ? `${Math.round(thr)}%` : '--', cx + vx, cy + vy, R * 0.085, P.text, 700, 0.02)
-  text('BRK', cx - vx, cy + vy - R * 0.08, R * 0.042, P.hot, 700, 0.3)
-  text(hasBrk ? brk.toFixed(1) : '--', cx - vx, cy + vy, R * 0.085, P.text, 700, 0.02)
-  text('bar', cx - vx, cy + vy + R * 0.075, R * 0.034, P.sub, 600, 0.2)
+  // Labels and units of the two arcs (no values), in the space between the G meter's numbers and the arcs
+  const lx = R * 0.25
+  const ly = R * 0.6
+  text('THR', cx + lx, cy + ly, R * 0.04, P.sub, 600, 0.3)
+  text('%', cx + lx, cy + ly + R * 0.055, R * 0.034, P.sub, 600, 0.2)
+  text('BRK', cx - lx, cy + ly, R * 0.04, P.sub, 600, 0.3)
+  text('bar', cx - lx, cy + ly + R * 0.055, R * 0.034, P.sub, 600, 0.2)
 
   // ---- Inner, upper half: lean meter ----
   const rI = R * 0.5
   const wI = R * 0.03
+  /** Indicator: a triangle riding on the inner ring (pointing outward) */
+  const pointer = (a: number, glowCol: string): void => {
+    g.save()
+    g.translate(cx + Math.cos(a) * rI, cy + Math.sin(a) * rI)
+    g.rotate(a + Math.PI / 2)
+    glow(glowCol, 1.2)
+    g.fillStyle = P.text
+    g.beginPath()
+    g.moveTo(0, -R * 0.075)
+    g.lineTo(-R * 0.035, R * 0.01)
+    g.lineTo(R * 0.035, R * 0.01)
+    g.closePath()
+    g.fill()
+    noGlow()
+    g.restore()
+  }
   const top = -Math.PI / 2
   const leanAng = (d: number): number => top + clamp(d / o.leanMax, -1, 1) * (Math.PI / 2)
   ring(rI, Math.PI, TAU, wI, P.dim)
@@ -206,20 +225,7 @@ export function drawMeter(
     glow(P.lean, 1 + em.lean * 2)
     ring(rI, top, a, wI * 2.2, P.lean)
     noGlow()
-    // Indicator: a triangle riding on the ring (pointing outward)
-    g.save()
-    g.translate(cx + Math.cos(a) * rI, cy + Math.sin(a) * rI)
-    g.rotate(a + Math.PI / 2)
-    glow(P.lean, 1.2)
-    g.fillStyle = P.text
-    g.beginPath()
-    g.moveTo(0, -R * 0.075)
-    g.lineTo(-R * 0.035, R * 0.01)
-    g.lineTo(R * 0.035, R * 0.01)
-    g.closePath()
-    g.fill()
-    noGlow()
-    g.restore()
+    pointer(a, P.lean)
   }
   // MAX hold marker (chevron)
   if (hold !== null && Math.abs(hold) > 1) {
@@ -256,9 +262,34 @@ export function drawMeter(
     if (hold !== null && Math.abs(hold) > 1) text(`MAX ${Math.abs(hold).toFixed(0)}° ${hold > 0 ? 'R' : 'L'}`, cx, cy + R * 0.02, R * 0.05, P.hot, 700, 0.12)
   }
 
+  // ---- Inner, lower half: longitudinal G meter. Mirrors the lean meter; 0 G at 6 o'clock, acceleration to the right and braking to the left
+  // like the throttle and brake arcs. The ends stop short of the horizontal so that they stay clear of the L and R letters ----
+  const GSPAN = Math.PI / 2 - 0.35
+  const gAng = (x: number): number => bottom - clamp(x / o.gMax, -1, 1) * GSPAN
+  ring(rI, bottom - GSPAN, bottom + GSPAN, wI, P.dim)
+  for (let k = -Math.round(o.gMax * 10); k <= Math.round(o.gMax * 10); k++) {
+    const x = k / 10
+    const major = k % 5 === 0
+    tick(rI + wI, rI + wI + R * (major ? 0.055 : 0.018), gAng(x), R * (major ? 0.01 : 0.005), major ? P.line : P.sub)
+    // The numbers go outside the ring (the sub-dials are inside); none at 0 and at the ends
+    if (major && k !== 0 && Math.abs(x) < o.gMax - 0.01) text(Math.abs(x).toFixed(1), cx + Math.cos(gAng(x)) * R * 0.64, cy + Math.sin(gAng(x)) * R * 0.64, R * 0.042, P.sub, 600, 0)
+  }
+  // End labels on the end angles, outside the end ticks (next to the ring they run into the L and R letters, inside into the sub-dials)
+  text('ACC', cx + Math.cos(gAng(o.gMax)) * R * 0.68, cy + Math.sin(gAng(o.gMax)) * R * 0.68, R * 0.034, P.sub, 700, 0.1)
+  text('DEC', cx + Math.cos(gAng(-o.gMax)) * R * 0.68, cy + Math.sin(gAng(-o.gMax)) * R * 0.68, R * 0.034, P.sub, 700, 0.1)
+  const accG = v.accelG
+  if (accG !== undefined) {
+    const a = gAng(accG)
+    const col = accG >= 0 ? P.thr : P.hot
+    glow(col, 1 + (accG >= 0 ? em.throttle : em.brake) * 2)
+    ring(rI, bottom, a, wI * 2.2, col)
+    noGlow()
+    pointer(a, col)
+  }
+
   // ---- Inner, lower half: gear and outside air temperature ----
   const sub = (sx: number, title: string, val: string, col: string, amt: number, roll: { prev: string; e: number; dir: number; col?: string } | null = null): void => {
-    const sy = cy + R * 0.36
+    const sy = cy + R * 0.25
     const sr = R * 0.14
     const path = (r: number): void => {
       g.beginPath()

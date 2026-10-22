@@ -8,6 +8,7 @@ import { airShift, airTempShown, enginePower, gearShift, POP_TIME, ROLL_TIME } f
 import type { Telemetry } from '../src/renderer/src/core/telemetry'
 import { airTempColor } from '../src/renderer/src/render/theme'
 import { getTheme, THEMES } from '../src/renderer/src/render/themes'
+import { drawMeter, DEFAULT_METER, type MeterEmphasis } from '../src/renderer/src/render/meter'
 
 // Stopped for 0-10 s (0 rpm), starts at 10 s (1100 rpm), stops at 30 s
 const rate = 100
@@ -84,6 +85,28 @@ assert.equal(enginePower({ ...tel, channels: {} } as Telemetry, 5), 1)
   }
   assert.equal(getTheme(undefined).id, 'bmw', 'BMW when the project has no theme')
   assert.equal(getTheme('nope').id, 'bmw')
+}
+
+// ---- Longitudinal G meter: scale default, and that it draws without a numeric readout for no data / acceleration / braking on a recording stub context ----
+{
+  assert.equal(DEFAULT_METER.gMax, 1)
+  const em: MeterEmphasis = { rpm: 0, throttle: 0, brake: 0, lean: 0 }
+  const draw = (accelG: number | undefined): string[] => {
+    const texts: string[] = []
+    const stub: unknown = new Proxy(function () {}, {
+      get: (_t, k) => (k === 'fillText' ? (s: string) => texts.push(s) : () => stub),
+      set: () => true,
+      apply: () => stub
+    })
+    for (const T of THEMES) drawMeter(stub as CanvasRenderingContext2D, { x: 0, y: 0, w: 400, h: 400 }, { rpm: 5000, lean: 20, gear: 3, airTemp: 20, accelG }, DEFAULT_METER, null, em, T)
+    return texts
+  }
+  // drawMeter runs with no data, acceleration and braking, and none of them draws a G readout (the meter shows it by the bar alone)
+  for (const a of [undefined, 0.32, -0.85]) assert.ok(!draw(a).some((x) => / G$/.test(x) || x === '--'), `no G readout text for accelG ${a}`)
+  const labels = draw(undefined)
+  for (const l of ['THR', '%', 'BRK', 'bar']) assert.ok(labels.includes(l), `arc label ${l}`)
+  assert.ok(!labels.some((x) => /^\d+%$/.test(x)), 'no numeric throttle readout')
+  assert.ok(draw(undefined).includes('0.5') && draw(undefined).includes('ACC') && draw(undefined).includes('DEC'), 'track numbers and end labels without data')
 }
 
 // ---- A short 0 in the middle of a shift keeps the previous gear (no flicker as in 1 -> N -> 2). A long 0 from stopping and shifting into neutral is kept ----

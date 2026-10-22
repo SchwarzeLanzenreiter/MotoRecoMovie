@@ -268,7 +268,8 @@ export const WIDGET_PROPS: Partial<Record<WidgetKind, PropDef[]>> = {
   meter: [
     ...RPM_PROPS,
     { key: 'brakeMax', label: 'Brake pressure max', type: 'number', min: 5, max: 60, step: 1, unit: 'bar', default: DEFAULT_METER.brakeMax }, // i18n-ignore
-    { key: 'leanMax', label: 'Lean scale', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_METER.leanMax } // i18n-ignore
+    { key: 'leanMax', label: 'Lean scale', type: 'number', min: 30, max: 70, step: 5, unit: '°', default: DEFAULT_METER.leanMax }, // i18n-ignore
+    { key: 'gMax', label: 'Longitudinal G scale', type: 'number', min: 0.3, max: 2, step: 0.1, unit: 'G', default: DEFAULT_METER.gMax } // i18n-ignore
   ],
   map: [
     {

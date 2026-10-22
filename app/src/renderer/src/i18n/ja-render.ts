@@ -18,6 +18,7 @@ export const JA_RENDER: Record<string, string> = {
   'Redline': 'レッドゾーン',
   'Brake pressure max': 'ブレーキ圧の上限',
   'Lean scale': 'リーンの目盛り',
+  'Longitudinal G scale': '前後Gのスケール',
   'Display': '表示',
   'Nearby (heading up)': '周辺（進行方向が上）',
   'Whole route (north up)': 'ルート全体（北が上）',

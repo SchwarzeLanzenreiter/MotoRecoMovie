@@ -55,7 +55,7 @@ export function drawThemeGallery(c: HTMLCanvasElement, grey = false): void {
     g.rect(x, y, TW, TH)
     g.clip()
     background(g, x, y, TW, TH)
-    drawMeter(g, { x: x + 10, y: y + 50, w: 410, h: 410 }, { rpm: 7300, throttle: 68, brakeFront: 6.5, lean: 38, gear: 4, airTemp: 22 }, DEFAULT_METER, 41, { rpm: 0.6, throttle: 0.6, brake: 0, lean: 1 }, T0, grey ? 0 : 1, null)
+    drawMeter(g, { x: x + 10, y: y + 50, w: 410, h: 410 }, { rpm: 7300, throttle: 68, brakeFront: 6.5, lean: 38, accelG: 0.42, gear: 4, airTemp: 22 }, DEFAULT_METER, 41, { rpm: 0.6, throttle: 0.6, brake: 0, lean: 1 }, T0, grey ? 0 : 1, null)
     drawSignFlat(g, x + 560, y + 140, 230, T, 45, 1, 85)
     drawSignFlat(g, x + 820, y + 140, 230, T, 140, -1, 160)
     hudCaption(g, 'Shiretoko Pass\n\u77e5\u5e8a\u5ce0', { x: x + 430, y: y + 210, w: 380, h: 100 }, 1, T)
