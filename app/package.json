@@ -1,7 +1,7 @@
 {
   "name": "motorecomovie",
   "productName": "MotoRecoMovie",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "MotoRecoMovie: a desktop app that reframes Insta360 X6 .insv files together with MotoReco vehicle logs",
   "main": "out/main/index.js",
   "scripts": {
